@@ -106,29 +106,103 @@ set -Eeuo pipefail
 umask 077
 SECRET_FILE=/opt/click-bridge/shared/secrets.env
 SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
-test -f "$SECRET_FILE"
+validate_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%a' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+validate_secret_file "$SECRET_FILE"
 test ! -e "$SECRET_BACKUP"
 install -m 0600 "$SECRET_FILE" "$SECRET_BACKUP"
-test "$(stat -c '%a' "$SECRET_BACKUP")" = 600
+validate_secret_file "$SECRET_BACKUP"
 cmp -s "$SECRET_FILE" "$SECRET_BACKUP"
 ```
 
 Follow only the generation and VM-install commands in
 [OCI deployment step 7](oci-deployment.md#7-install-the-one-shared-role-token-environment);
-do not update either client yet. Then, on the VM, validate both secret files and
-the immutable release before recreating the relay:
+do not update either client yet. Keep the same interactive Mac shell open for
+the entire rotation. In that shell, run the next block directly, not in a
+subshell or standalone script. It validates the protected local transfer file,
+registers cleanup for shell exit and interruption, then validates both VM files
+and the immutable release before recreating the relay:
 
 ```bash
 set -Eeuo pipefail
+LOCAL_SECRET_FILE=/private/tmp/click-bridge-secrets.env
+validate_local_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -f '%Lp' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+cleanup_local_rotation_secrets() {
+  local status=$?
+  if ! rm -f -- "$LOCAL_SECRET_FILE"; then
+    printf 'Could not remove %s\n' "$LOCAL_SECRET_FILE" >&2
+    status=1
+  fi
+  unset PHONE_TOKEN MAC_TOKEN
+  trap - EXIT
+  return "$status"
+}
+validate_local_secret_file "$LOCAL_SECRET_FILE"
+trap cleanup_local_rotation_secrets EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+test -n "${OCI_SSH_TARGET:-}"
+ssh "$OCI_SSH_TARGET" 'bash -se' <<'REMOTE'
+set -Eeuo pipefail
 SECRET_FILE=/opt/click-bridge/shared/secrets.env
 SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
-test -f "$SECRET_FILE"
-test -f "$SECRET_BACKUP"
-test "$(stat -c '%a' "$SECRET_FILE")" = 600
-test "$(stat -c '%a' "$SECRET_BACKUP")" = 600
-test "$(wc -l < "$SECRET_FILE")" = 3
-grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$SECRET_FILE"
-grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$SECRET_FILE"
+validate_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%a' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+validate_secret_file "$SECRET_FILE"
+validate_secret_file "$SECRET_BACKUP"
 if cmp -s "$SECRET_FILE" "$SECRET_BACKUP"; then
   printf 'Replacement tokens match the rollback copy; refusing rotation.\n' >&2
   exit 1
@@ -156,6 +230,7 @@ docker compose -p oci \
   --env-file "$SECRET_FILE" \
   -f "$COMPOSE_FILE" \
   ps
+REMOTE
 ```
 
 A plain `docker compose restart` is not a rotation: it preserves the old
@@ -164,15 +239,58 @@ container environment. Run the complete external HTTPS/WSS smoke in
 with the new protected transfer file. Only after that succeeds, save the new
 `MAC_TOKEN` in the receiver and the new `PHONE_TOKEN` in the chosen phone client.
 Confirm the Mac is **Connected** and the phone returns to **Ready**, then remove
-the VM rollback copy without reading it:
+the VM rollback copy and the local transfer file without reading either. Run
+this in the same Mac shell; its final assertions prove the token variables are
+no longer exported or set:
 
 ```bash
 set -Eeuo pipefail
+LOCAL_SECRET_FILE=/private/tmp/click-bridge-secrets.env
+cleanup_local_rotation_secrets() {
+  local status=$?
+  if ! rm -f -- "$LOCAL_SECRET_FILE"; then
+    printf 'Could not remove %s\n' "$LOCAL_SECRET_FILE" >&2
+    status=1
+  fi
+  unset PHONE_TOKEN MAC_TOKEN
+  trap - EXIT
+  return "$status"
+}
+test -n "${OCI_SSH_TARGET:-}"
+ssh "$OCI_SSH_TARGET" 'bash -se' <<'REMOTE'
+set -Eeuo pipefail
+SECRET_FILE=/opt/click-bridge/shared/secrets.env
 SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
-test -f "$SECRET_BACKUP"
-test "$(stat -c '%a' "$SECRET_BACKUP")" = 600
+validate_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%a' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+validate_secret_file "$SECRET_FILE"
+validate_secret_file "$SECRET_BACKUP"
 rm -f -- "$SECRET_BACKUP"
 test ! -e "$SECRET_BACKUP"
+REMOTE
+cleanup_local_rotation_secrets
+trap - HUP INT TERM
+test ! -e "$LOCAL_SECRET_FILE"
+test -z "${PHONE_TOKEN+x}"
+test -z "${MAC_TOKEN+x}"
+unset LOCAL_SECRET_FILE
 ```
 
 If recreation or public smoke fails, do not update the clients. Restore and
@@ -182,10 +300,29 @@ verify the prior environment on the VM:
 set -Eeuo pipefail
 SECRET_FILE=/opt/click-bridge/shared/secrets.env
 SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
-test -f "$SECRET_BACKUP"
-test "$(stat -c '%a' "$SECRET_BACKUP")" = 600
+validate_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%a' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+validate_secret_file "$SECRET_BACKUP"
 install -m 0600 "$SECRET_BACKUP" "$SECRET_FILE"
-test "$(stat -c '%a' "$SECRET_FILE")" = 600
+validate_secret_file "$SECRET_BACKUP"
+validate_secret_file "$SECRET_FILE"
 cmp -s "$SECRET_BACKUP" "$SECRET_FILE"
 ```
 
@@ -196,10 +333,27 @@ file to match the rollback copy:
 set -Eeuo pipefail
 SECRET_FILE=/opt/click-bridge/shared/secrets.env
 SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
-test -f "$SECRET_FILE"
-test -f "$SECRET_BACKUP"
-test "$(stat -c '%a' "$SECRET_FILE")" = 600
-test "$(stat -c '%a' "$SECRET_BACKUP")" = 600
+validate_secret_file() {
+  local file=$1 phone_token mac_token domain_pattern
+  test -f "$file"
+  test ! -L "$file"
+  test "$(stat -c '%a' "$file")" = 600
+  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
+  test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
+  test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
+  domain_pattern='^CLICK_BRIDGE_DOMAIN=([A-Za-z0-9]'
+  domain_pattern+='([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+'
+  domain_pattern+='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  grep -Eq "$domain_pattern" "$file"
+  grep -Eq '^PHONE_TOKEN=[0-9a-f]{64}$' "$file"
+  grep -Eq '^MAC_TOKEN=[0-9a-f]{64}$' "$file"
+  phone_token=$(sed -n 's/^PHONE_TOKEN=//p' "$file")
+  mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
+  test "$phone_token" != "$mac_token"
+}
+validate_secret_file "$SECRET_FILE"
+validate_secret_file "$SECRET_BACKUP"
 cmp -s "$SECRET_BACKUP" "$SECRET_FILE"
 export ACTIVE_RELEASE="$(tr -d '\n' < /opt/click-bridge/current-release)"
 [[ "$ACTIVE_RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
@@ -224,7 +378,9 @@ docker compose -p oci \
 ```
 
 Repeat the external smoke. Keep the rollback copy until recovery passes; remove
-it with the cleanup block only after the old clients are working again.
+it and the local transfer file with the cleanup block above only after the old
+clients are working again. Run that block in the original Mac shell so its trap
+is disarmed and `PHONE_TOKEN` and `MAC_TOKEN` are unset on the rollback path too.
 
 ## Recover safely
 
