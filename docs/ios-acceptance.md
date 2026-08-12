@@ -33,9 +33,9 @@ A delta is accepted only when the current foreground session, authenticated sock
 | Simulator build | Passed | `ClickBridgePhone` application target built for iOS Simulator |
 | Simulator install and launch | Passed | Build iOS Apps plugin built, installed, and launched `com.clickbridge.phone`; the initial SwiftUI screen rendered **Not connected**, **0%**, Settings, and the supported volume-source disclosure |
 | Generic device build | Passed | XcodeBuildMCP Release build for platform `iOS`, code signing disabled; build log `build_device_2026-08-12T04-20-43-584Z_pid69272_87d074ef.log` |
-| Full XCTest suite | Passed: **54/54 tests** | Build iOS Apps plugin result bundle `test_sim_2026-08-12T04-45-57-674Z_pid81100_f1366c7d.xcresult`; independent review bundle `test_sim_2026-08-12T04-33-06-084Z_pid77601_23c0cde8.xcresult` |
+| Full XCTest suite | Passed: **56/56 tests** | Build iOS Apps plugin result bundle `test_sim_2026-08-12T05-00-40-096Z_pid81100_d2cb62c1.xcresult`; the added cases prove Keychain-initialization failure cannot crash, persist, or leak a token |
 
-The 54 passing automated tests cover the deterministic contracts for:
+The 56 passing automated tests cover the deterministic contracts for:
 
 - upward and downward volume deltas;
 - initial baseline and exact duplicate-value callback suppression;
@@ -119,6 +119,6 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 
 ## Acceptance conclusion
 
-Automated implementation status is **passed** with successful Simulator and generic iOS device builds, the shared `ClickBridgePhone` scheme, and 54/54 passing tests in the recorded XcodeBuildMCP result bundle.
+Automated implementation status is **passed** with successful Simulator and generic iOS device builds, the shared `ClickBridgePhone` scheme, and 56/56 passing tests in the recorded XcodeBuildMCP result bundle.
 
 Physical hardware-volume and live end-to-end acceptance remain **`NOT RUN`**. A physical iPhone run is mandatory before claiming the user requirement is fully accepted.

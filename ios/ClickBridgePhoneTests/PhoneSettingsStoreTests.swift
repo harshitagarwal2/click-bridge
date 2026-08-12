@@ -51,6 +51,45 @@ final class PhoneSettingsStoreTests: XCTestCase {
         XCTAssertFalse((store.storageError ?? "").contains(supplied))
         XCTAssertEqual(store.storageError, "Secure storage is unavailable. Try again or restart the app.")
     }
+
+    func testUnavailableSecretStoreAlwaysThrowsSanitizedActionableError() {
+        let supplied = String(repeating: "d", count: 64)
+        let subject = UnavailablePhoneSecretStore()
+
+        for operation in [
+            { try subject.read(account: supplied).map { _ in } },
+            { try subject.write(supplied, account: supplied) },
+            { try subject.delete(account: supplied) }
+        ] {
+            XCTAssertThrowsError(try operation()) { error in
+                XCTAssertEqual(error.localizedDescription,
+                               "Secure storage is unavailable. Try again or restart the app.")
+                XCTAssertFalse(error.localizedDescription.contains(supplied))
+                XCTAssertFalse((error as NSError).domain.contains(supplied))
+            }
+        }
+    }
+
+    func testCompositionFallsBackWithoutCrashingAndCannotPersistToken() throws {
+        let suite = "PhoneCompositionFailure-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let supplied = String(repeating: "e", count: 64)
+        let failing = TestSecretStore(readError: NSError(domain: supplied, code: 1))
+
+        let model = PhoneComposition.makeModel(defaults: defaults, secrets: failing)
+
+        XCTAssertEqual(model.state.primaryStatus, .notConnected)
+        XCTAssertFalse(model.settings.hasToken)
+        XCTAssertEqual(model.settings.storageError,
+                       "Secure storage is unavailable. Try again or restart the app.")
+        XCTAssertThrowsError(try model.saveSettings(urlString: "wss://relay.example/ws", token: supplied)) { error in
+            XCTAssertFalse(error.localizedDescription.contains(supplied))
+        }
+        XCTAssertFalse(model.settings.hasToken)
+        XCTAssertNil(defaults.string(forKey: PhoneSettingsStore.relayURLKey))
+        XCTAssertEqual(model.state.primaryStatus, .notConnected)
+    }
 }
 
 private final class TestSecretStore: SecretStoring, @unchecked Sendable {

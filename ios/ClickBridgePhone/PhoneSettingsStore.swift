@@ -24,6 +24,20 @@ enum PhoneSettingsStorageError: LocalizedError {
     }
 }
 
+struct UnavailablePhoneSecretStore: SecretStoring {
+    func read(account: String) throws -> String? {
+        throw PhoneSettingsStorageError.unavailable
+    }
+
+    func write(_ value: String, account: String) throws {
+        throw PhoneSettingsStorageError.unavailable
+    }
+
+    func delete(account: String) throws {
+        throw PhoneSettingsStorageError.unavailable
+    }
+}
+
 extension RelayConfiguration {
     static func validated(urlString: String, token: String) throws -> Self {
         guard let components = URLComponents(string: urlString),
@@ -64,6 +78,20 @@ final class PhoneSettingsStore: ObservableObject {
             hasToken = false
             throw PhoneSettingsStorageError.unavailable
         }
+    }
+
+    static func unavailable(defaults: UserDefaults = .standard) -> PhoneSettingsStore {
+        PhoneSettingsStore(defaults: defaults,
+                           unavailableSecrets: UnavailablePhoneSecretStore())
+    }
+
+    private init(defaults: UserDefaults,
+                 unavailableSecrets: UnavailablePhoneSecretStore) {
+        self.defaults = defaults
+        secrets = unavailableSecrets
+        relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
+        hasToken = false
+        storageError = PhoneSettingsStorageError.unavailable.localizedDescription
     }
 
     func phoneToken() throws -> String? { try perform { try secrets.read(account: Self.phoneTokenAccount) } }
