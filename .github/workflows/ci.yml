@@ -40,8 +40,9 @@ jobs:
 
       - name: Verify workflow contracts
         run: |
-          node scripts/ci/test-workflows.mjs
-          node scripts/ci/verify-workflows.mjs
+          node .github/scripts/test-workflows.mjs
+          node .github/scripts/verify-workflows.mjs
+          bash .github/scripts/test-deploy-oci.sh
 
       - name: Lint workflows and shell
         run: |

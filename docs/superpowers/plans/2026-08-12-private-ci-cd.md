@@ -24,8 +24,8 @@
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
-- Create: `scripts/ci/verify-workflows.mjs`
-- Create: `scripts/ci/test-workflows.mjs`
+- Create: `.github/scripts/verify-workflows.mjs`
+- Create: `.github/scripts/test-workflows.mjs`
 
 **Interfaces:**
 - Consumes: `relay/package-lock.json`, `mac/project.yml`, optional `ios/project.yml`.
@@ -44,7 +44,7 @@ hex SHA.
 Run:
 
 ```bash
-node scripts/ci/test-workflows.mjs
+node .github/scripts/test-workflows.mjs
 ```
 
 Expected: failure because `.github/workflows/ci.yml` does not exist.
@@ -62,8 +62,8 @@ Use unique jobs named `relay-container` and `apple-clients`. Linux uses
 Run:
 
 ```bash
-node scripts/ci/test-workflows.mjs
-node scripts/ci/verify-workflows.mjs
+node .github/scripts/test-workflows.mjs
+node .github/scripts/verify-workflows.mjs
 ```
 
 Expected: both exit zero and print no secret values.
@@ -71,71 +71,24 @@ Expected: both exit zero and print no secret values.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .github/workflows/ci.yml scripts/ci
+git add .github
 git commit -m "ci: validate relay and Apple clients"
 ```
 
-### Task 2: Add immutable OCI deployment scripts
+### Task 2: Consume the verified OCI release contract
 
-**Files:**
-- Create: `deploy/oci/deploy-release.sh`
-- Create: `deploy/oci/rollback-release.sh`
-- Create: `deploy/oci/test-release-scripts.sh`
-- Modify: `docs/oci-deployment.md`
-- Modify: `docs/oci-recovery.md`
-
-**Interfaces:**
-- Consumes: `CLICK_BRIDGE_RELEASE` as a 40-character lowercase git SHA and `/opt/click-bridge/shared/secrets.env`.
-- Produces: `/opt/click-bridge/current-release`, `/opt/click-bridge/previous-release`, one healthy Compose stack, and automatic rollback.
-
-- [ ] **Step 1: Write fake-Docker deployment tests**
-
-Create a temporary fake command directory that records `docker compose build`,
-candidate `docker run`, health polling, `up -d`, WSS smoke, and rollback calls.
-Cover successful first deployment, successful replacement, candidate failure,
-post-switch smoke failure, missing previous release, invalid release ID, and
-mode-not-0600 secrets.
-
-- [ ] **Step 2: Run tests and verify RED**
-
-```bash
-bash deploy/oci/test-release-scripts.sh
-```
-
-Expected: failure because the release scripts do not exist.
-
-- [ ] **Step 3: Implement deploy and rollback scripts**
-
-Use `set -Eeuo pipefail`, validate every resolved path is under
-`/opt/click-bridge/releases/<sha>`, capture the previous release before the
-switch, trap post-switch errors, and never run recursive deletion. Use the
-shared env file directly with `docker compose --env-file`. Run the existing
-authenticated `relay/scripts/smoke-relay.mjs` without shell tracing.
-
-- [ ] **Step 4: Verify scripts**
-
-```bash
-bash -n deploy/oci/deploy-release.sh
-bash -n deploy/oci/rollback-release.sh
-bash -n deploy/oci/test-release-scripts.sh
-bash deploy/oci/test-release-scripts.sh
-```
-
-Expected: all pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add deploy/oci docs/oci-deployment.md docs/oci-recovery.md
-git commit -m "ops: automate immutable OCI releases"
-```
+The main deployment lane owns `deploy/oci/**` and the OCI runbooks. PR #3
+completed the immutable migration and verified rollback, roll-forward,
+independent restarts, and reboot recovery. This CI/CD lane does not modify that
+surface; the deployment workflow executes the established release contract
+over SSH and preserves `/opt/click-bridge/shared/secrets.env` on the VM.
 
 ### Task 3: Add the private deployment workflow and dependency automation
 
 **Files:**
 - Create: `.github/workflows/deploy-oci.yml`
 - Create: `.github/dependabot.yml`
-- Modify: `scripts/ci/test-workflows.mjs`
+- Modify: `.github/scripts/test-workflows.mjs`
 
 **Interfaces:**
 - Consumes: successful `CI` workflow run on a push to `main`; GitHub secret `OCI_DEPLOY_SSH_KEY`; variables `OCI_DEPLOY_HOST`, `OCI_DEPLOY_USER`, `OCI_DEPLOY_KNOWN_HOSTS`, and `CLICK_BRIDGE_DOMAIN`.
@@ -153,7 +106,7 @@ targets a SHA release directory, and no token or registry secret exists.
 Use only SHA-pinned `actions/checkout`; prepare the key under `$RUNNER_TEMP`
 with mode 0600; write known-hosts with mode 0600; use
 `StrictHostKeyChecking=yes`; rsync the exact checkout; invoke
-`deploy/oci/deploy-release.sh` remotely; verify public health from the runner.
+`.github/scripts/deploy-oci.sh` remotely; verify public health from the runner.
 
 - [ ] **Step 3: Add grouped Dependabot updates**
 
@@ -163,9 +116,9 @@ Configure weekly update groups for npm in `/relay`, Docker in `/`, and
 - [ ] **Step 4: Verify**
 
 ```bash
-node scripts/ci/test-workflows.mjs
-node scripts/ci/verify-workflows.mjs
-bash deploy/oci/test-release-scripts.sh
+node .github/scripts/test-workflows.mjs
+node .github/scripts/verify-workflows.mjs
+bash .github/scripts/test-deploy-oci.sh
 ```
 
 Expected: all pass.
@@ -173,7 +126,7 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .github deploy/oci scripts/ci
+git add .github
 git commit -m "ci: deploy verified main commits to OCI"
 ```
 
@@ -214,7 +167,7 @@ secret is then the only private-key copy.
 ### Task 5: Deliver, observe, merge, and verify production
 
 **Files:**
-- Modify as needed after real runner feedback: `.github/**`, `scripts/ci/**`, `deploy/oci/**`.
+- Modify as needed after real runner feedback: `.github/**` only; OCI application and runbook changes remain owned by the main deployment lane.
 
 **Interfaces:**
 - Consumes: completed app/OCI commits and the final iOS path/scheme contract.
