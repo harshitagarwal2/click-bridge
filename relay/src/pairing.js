@@ -297,6 +297,9 @@ export class PairingCoordinator {
     if (this.#completed && this.#completed.claimId === message.claimId
         && this.#completed.credentialVersion === message.credentialVersion
         && this.#owns(this.#completed.claimant, connection, generation)) {
+      if (!this.#completed.reconciled && !this.#reconcileCompletion(this.#completed)) {
+        return 'reconciliation_failed';
+      }
       this.#sendCompleted(this.#completed);
       return 'ok';
     }
@@ -322,6 +325,20 @@ export class PairingCoordinator {
     this.#clearTimer(session);
     session.activationPromise = this.#activate(session);
     return session.activationPromise;
+  }
+
+  allowsPhoneCredentialVersion(credentialVersion) {
+    if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) {
+      return false;
+    }
+    try {
+      const activeVersion = this.#authStore.snapshot().activePhoneCredentialVersion;
+      return Number.isSafeInteger(activeVersion)
+        && activeVersion >= 0
+        && credentialVersion === activeVersion;
+    } catch {
+      return false;
+    }
   }
 
   disconnectClaimant(connection, generation) {
@@ -364,19 +381,19 @@ export class PairingCoordinator {
       claimId: session.claimId,
       credentialVersion: session.credentialVersion,
       claimant: session.claimant,
-      mac: session.mac,
+      reconciled: false,
     };
     this.#clearTimer(session);
     this.#session = null;
     this.#completed = completed;
     this.#ended = null;
     this.#clearSecrets(session);
-    this.#revokeOlderPhones(completed);
+    if (!this.#reconcileCompletion(completed)) return 'reconciliation_failed';
     this.#sendCompleted(completed);
     return 'ok';
   }
 
-  #revokeOlderPhones(completed) {
+  #reconcileCompletion(completed) {
     let phones;
     try {
       phones = this.#deauthorizeOlderPhones({
@@ -385,21 +402,19 @@ export class PairingCoordinator {
       });
     } catch {
       this.#log('pairing_phone_resolution_failed');
-      throw new Error('pairing phone deauthorization failed');
+      return false;
     }
-    if (!Array.isArray(phones)) {
+    if (!Array.isArray(phones) || !phones.every((phone) => phone?.connection
+        && Number.isSafeInteger(phone.generation) && phone.generation >= 0
+        && Number.isSafeInteger(phone.credentialVersion) && phone.credentialVersion >= 0
+        && phone.credentialVersion < completed.credentialVersion
+        && !this.#owns(completed.claimant, phone.connection, phone.generation))) {
       this.#log('pairing_phone_resolution_failed');
-      return;
+      return false;
     }
     const closed = new Set();
     for (const phone of phones) {
-      if (!phone?.connection || !Number.isSafeInteger(phone.generation)
-          || !Number.isSafeInteger(phone.credentialVersion)
-          || phone.credentialVersion >= completed.credentialVersion
-          || this.#owns(completed.claimant, phone.connection, phone.generation)
-          || closed.has(phone.connection)) {
-        continue;
-      }
+      if (closed.has(phone.connection)) continue;
       closed.add(phone.connection);
       try {
         this.#close(
@@ -411,6 +426,8 @@ export class PairingCoordinator {
         this.#log('pairing_phone_revocation_failed');
       }
     }
+    completed.reconciled = true;
+    return true;
   }
 
   #sendCompleted(completed) {
@@ -420,9 +437,8 @@ export class PairingCoordinator {
       claimId: completed.claimId,
       activePhoneCredentialVersion: completed.credentialVersion,
     });
-    const completionMac = this.#mac ?? completed.mac;
-    if (completionMac?.connection) {
-      this.#send(completionMac.connection, {
+    if (this.#mac?.connection) {
+      this.#send(this.#mac.connection, {
         type: 'pair.completed',
         v: PROTOCOL_VERSION,
         requestId: completed.requestId,
@@ -533,7 +549,7 @@ export class PairingCoordinator {
       ? (session.activationPromise ? 'activating'
         : (session.pendingCredential ? 'awaiting_activation'
           : (session.claimId ? 'awaiting_approval' : 'invited')))
-      : (this.#completed ? 'completed' : 'idle');
+      : (this.#completed ? (this.#completed.reconciled ? 'completed' : 'committed') : 'idle');
     return Object.freeze({
       phase,
       requestId: session?.requestId ?? this.#completed?.requestId ?? null,
