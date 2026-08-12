@@ -19,6 +19,9 @@ const ALLOWED_MESSAGES = Object.freeze({
   awaiting_approval: new Set(['pair.credential', 'pair.failed']),
   activating: new Set(['pair.active', 'pair.failed']),
 });
+const PAIRING_SERVER_MESSAGES = new Set([
+  'pair.claimed.phone', 'pair.credential', 'pair.active', 'pair.failed',
+]);
 
 function toHex(bytes) {
   return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
@@ -79,22 +82,26 @@ export class PairingController {
     this.generation = 0;
     this.phase = 'idle';
     this.deadlineTimer = null;
+    this.pairingExpiresAtUnixMs = null;
+    this.activation = null;
   }
 
   start(reference) {
+    this.#abortActivation();
     this.#clearDeadline();
     this.#retireSocket(this.socket);
     const generation = ++this.generation;
+    this.#clearSensitive();
     this.reference = reference;
     this.claimId = this.idGenerator();
     this.acknowledgedSlot = null;
     const sessionNonce = toHex(this.randomBytes());
     const socket = this.createSocket(deriveRelayWebSocketUrl(this.location));
     this.socket = socket;
-    this.#publish('connecting');
     this.#scheduleDeadline(
       socket, generation, 'connecting', this.deadlines.connectionMs, 'connection_timeout',
     );
+    this.#publish('connecting');
 
     socket.onopen = () => {
       if (!this.#current(socket, generation)) return;
@@ -112,10 +119,10 @@ export class PairingController {
         return;
       }
       this.reference = null;
-      this.#publish('claiming');
       this.#scheduleDeadline(
         socket, generation, 'claiming', this.deadlines.claimMs, 'claim_timeout',
       );
+      this.#publish('claiming');
     };
     socket.onmessage = (event) => {
       if (!this.#current(socket, generation)) return;
@@ -145,6 +152,7 @@ export class PairingController {
     } catch {
       // Cancellation is local-first. Cleanup below must not depend on delivery.
     } finally {
+      this.#abortActivation();
       this.generation += 1;
       this.#clearDeadline();
       this.#clearSensitive();
@@ -154,6 +162,7 @@ export class PairingController {
   }
 
   async recover() {
+    this.#abortActivation();
     const ownership = { generation: ++this.generation, socket: null };
     this.#clearDeadline();
     this.#retireSocket(this.socket);
@@ -215,17 +224,19 @@ export class PairingController {
       }
       return;
     }
-    if (!this.#current(socket, generation) || message.claimId !== this.claimId) return;
+    if (!this.#current(socket, generation)) return;
+    if (!PAIRING_SERVER_MESSAGES.has(message.type)) {
+      this.#terminate('failed', 'invalid_response', socket);
+      return;
+    }
+    if (message.claimId !== this.claimId) return;
     if (!ALLOWED_MESSAGES[this.phase]?.has(message.type)) {
       this.#terminate('failed', 'invalid_response', socket);
       return;
     }
 
     if (message.type === 'pair.claimed.phone') {
-      this.#publish('awaiting_approval', null, {
-        confirmationCode: message.confirmationCode,
-        expiresAtUnixMs: message.expiresAtUnixMs,
-      });
+      this.pairingExpiresAtUnixMs = message.expiresAtUnixMs;
       const untilServerExpiry = Math.max(0, message.expiresAtUnixMs - this.now());
       this.#scheduleDeadline(
         socket,
@@ -234,6 +245,10 @@ export class PairingController {
         Math.min(this.deadlines.approvalMs, untilServerExpiry),
         'expired',
       );
+      this.#publish('awaiting_approval', null, {
+        confirmationCode: message.confirmationCode,
+        expiresAtUnixMs: message.expiresAtUnixMs,
+      });
       return;
     }
     if (message.type === 'pair.failed') {
@@ -276,8 +291,13 @@ export class PairingController {
         this.#terminate('failed', 'activation_failed', socket);
         return;
       }
+      const untilServerExpiry = Math.max(
+        0, (this.pairingExpiresAtUnixMs ?? this.now()) - this.now(),
+      );
+      this.#scheduleDeadline(
+        socket, generation, 'activating', untilServerExpiry, 'expired',
+      );
       this.#publish('activating');
-      this.#clearDeadline();
       return;
     }
     if (message.type === 'pair.active') {
@@ -309,16 +329,24 @@ export class PairingController {
       this.#failActivation('storage_failed', ownership);
       return false;
     }
+    this.#abortActivation();
+    const activation = { controller: new AbortController(), ownership };
+    this.activation = activation;
     try {
-      if (await this.startTransport(active) === false) {
+      if (await this.startTransport(active, activation.controller.signal) === false) {
+        if (this.activation === activation) this.activation = null;
         if (this.#owns(ownership)) this.#failActivation('activation_failed', ownership);
         return false;
       }
     } catch {
+      if (this.activation === activation) this.activation = null;
       if (this.#owns(ownership)) this.#failActivation('activation_failed', ownership);
       return false;
     }
-    if (!this.#owns(ownership)) return false;
+    if (!this.#owns(ownership) || activation.controller.signal.aborted) return false;
+    if (this.activation === activation) this.activation = null;
+    this.#clearDeadline();
+    this.#clearSensitive();
     this.#publish('active');
     return true;
   }
@@ -337,7 +365,10 @@ export class PairingController {
 
   #scheduleDeadline(socket, generation, phase, delay, reason) {
     this.#clearDeadline();
-    this.deadlineTimer = this.scheduler.setTimeout(() => {
+    const deadline = { generation, handle: null };
+    this.deadlineTimer = deadline;
+    deadline.handle = this.scheduler.setTimeout(() => {
+      if (this.deadlineTimer !== deadline) return;
       this.deadlineTimer = null;
       if (this.#current(socket, generation) && this.phase === phase) {
         this.#terminate('failed', reason, socket);
@@ -347,11 +378,13 @@ export class PairingController {
 
   #clearDeadline() {
     if (this.deadlineTimer === null) return;
-    this.scheduler.clearTimeout(this.deadlineTimer);
+    const deadline = this.deadlineTimer;
     this.deadlineTimer = null;
+    if (deadline.handle !== null) this.scheduler.clearTimeout(deadline.handle);
   }
 
   #terminate(phase, reason, socket) {
+    this.#abortActivation();
     this.generation += 1;
     this.#clearDeadline();
     this.#clearSensitive();
@@ -363,6 +396,13 @@ export class PairingController {
     this.reference = null;
     this.claimId = null;
     this.acknowledgedSlot = null;
+    this.pairingExpiresAtUnixMs = null;
+  }
+
+  #abortActivation() {
+    const activation = this.activation;
+    this.activation = null;
+    activation?.controller.abort();
   }
 
   #publish(phase, reason = null, details = {}) {

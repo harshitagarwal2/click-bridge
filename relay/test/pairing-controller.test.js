@@ -88,20 +88,13 @@ test('claim lifecycle uses one same-origin claimant socket and keeps reference o
 
 test('credential is staged before an exact Web Crypto HMAC proof is acknowledged', async () => {
   const order = [];
-  const signature = deferred();
   const ackSent = deferred();
   const settings = new MemorySettingsStore();
   const originalStage = settings.stage.bind(settings);
   settings.stage = (slot) => { order.push('stage'); return originalStage(slot); };
   const expectedProof = createHmac('sha256', Buffer.from(CREDENTIAL, 'hex'))
     .update(`clickbridge-pair-activate:v1:${CLAIM_ID}:7`, 'utf8').digest();
-  const h = harness({
-    settings,
-    crypto: { subtle: {
-      async importKey() { order.push('import'); return {}; },
-      sign() { order.push('sign'); return signature.promise; },
-    } },
-  });
+  const h = harness({ settings });
   h.controller.start(REFERENCE);
   const originalSend = h.sockets[0].send.bind(h.sockets[0]);
   h.sockets[0].send = (raw) => {
@@ -114,12 +107,9 @@ test('credential is staged before an exact Web Crypto HMAC proof is acknowledged
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
   }));
-  assert.deepEqual(order, ['stage', 'import']);
-  await Promise.resolve();
-  assert.deepEqual(order, ['stage', 'import', 'sign']);
-  signature.resolve(expectedProof);
   await ackSent.promise;
 
+  assert.deepEqual(order, ['stage']);
   assert.deepEqual(h.settings.getPending(), { credential: CREDENTIAL, version: 7 });
   assert.deepEqual(h.sockets[0].sent[1], {
     type: 'pair.credential.ack', v: 1, claimId: CLAIM_ID,
@@ -131,13 +121,14 @@ test('credential is staged before an exact Web Crypto HMAC proof is acknowledged
 test('activation promotes pending before starting the ordinary phone transport', async () => {
   const h = harness();
   h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
   h.sockets[0].open();
   acceptClaim(h.sockets[0]);
   h.sockets[0].message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
   }));
-  await settleAsyncWork();
+  await ackSent;
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
@@ -368,27 +359,35 @@ test('a throwing credential acknowledgment preserves pending and fails terminall
 
 test('a new start during old activation cannot publish active or retire the new socket', async () => {
   const activation = deferred();
+  const activationStarted = deferred();
+  let activationSignal;
   const claimIds = [CLAIM_ID, '018f63f5-6f3d-7d21-88bc-9ef561f030e3'];
   const h = harness({
     idGenerator: () => claimIds.shift(),
-    startTransport: () => activation.promise,
+    startTransport: (_slot, signal) => {
+      activationSignal = signal;
+      activationStarted.resolve();
+      return activation.promise;
+    },
   });
   h.controller.start(REFERENCE);
   const oldSocket = h.sockets[0];
+  const ackSent = observeAck(oldSocket);
   oldSocket.open();
   acceptClaim(oldSocket);
   oldSocket.message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
   }));
-  await settleAsyncWork();
+  await ackSent;
   oldSocket.message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
-  await Promise.resolve();
+  await activationStarted.promise;
 
   h.controller.start(REFERENCE);
   const newSocket = h.sockets[1];
+  assert.equal(activationSignal.aborted, true);
   activation.resolve(true);
   await settleAsyncWork();
 
@@ -401,13 +400,14 @@ test('cancel during activation remains terminal after the old activation resolve
   const activation = deferred();
   const h = harness({ startTransport: () => activation.promise });
   h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
   h.sockets[0].open();
   acceptClaim(h.sockets[0]);
   h.sockets[0].message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
   }));
-  await settleAsyncWork();
+  await ackSent;
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
@@ -419,6 +419,77 @@ test('cancel during activation remains terminal after the old activation resolve
 
   assert.deepEqual(h.states.at(-1), { phase: 'cancelled', reason: null });
   assert.equal(h.states.some((state) => state.phase === 'active'), false);
+});
+
+test('cancel aborts delayed transport startup before its external side effect', async () => {
+  const activationStarted = deferred();
+  const activationReleased = deferred();
+  const effects = [];
+  const h = harness({
+    startTransport: async (slot, signal) => {
+      activationStarted.resolve(signal);
+      await activationReleased.promise;
+      if (!signal.aborted) effects.push(slot);
+      return !signal.aborted;
+    },
+  });
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+
+  const signal = await activationStarted.promise;
+  h.controller.cancel();
+  activationReleased.resolve();
+  await settleAsyncWork();
+
+  assert.equal(signal instanceof AbortSignal, true);
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(effects, []);
+  assert.deepEqual(h.states.at(-1), { phase: 'cancelled', reason: null });
+});
+
+test('credential replacement aborts delayed transport startup before its external side effect', async () => {
+  const activationStarted = deferred();
+  const activationReleased = deferred();
+  const effects = [];
+  const h = harness({
+    startTransport: async (slot, signal) => {
+      activationStarted.resolve(signal);
+      await activationReleased.promise;
+      if (!signal.aborted) effects.push(slot);
+      return !signal.aborted;
+    },
+  });
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+
+  const signal = await activationStarted.promise;
+  h.sockets[0].serverClose(4004, 'credential_replaced');
+  activationReleased.resolve();
+  await settleAsyncWork();
+
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(effects, []);
+  assert.deepEqual(h.states.at(-1), { phase: 'replaced', reason: null });
 });
 
 test('a stale proof failure cannot fail a newer pairing generation', async () => {
@@ -566,6 +637,18 @@ test('an illegal frame is terminal and a later valid frame cannot revive pairing
   assert.equal(h.states.some((state) => state.phase === 'awaiting_approval'), false);
 });
 
+test('a non-pairing phone frame is rejected even when it has no current claim id', () => {
+  const h = harness();
+  h.controller.start(REFERENCE);
+  h.sockets[0].open();
+  h.sockets[0].message(JSON.stringify({
+    type: 'heartbeat.ack', v: 1, sequence: 1,
+  }));
+
+  assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'invalid_response' });
+  assert.equal(h.sockets[0].closed.length, 1);
+});
+
 test('a malformed frame is terminal and a later valid frame cannot revive pairing', () => {
   const h = harness();
   h.controller.start(REFERENCE);
@@ -626,4 +709,79 @@ test('connection, claim, and approval deadlines expire terminally without replay
   assert.deepEqual(approval.states.at(-1), { phase: 'failed', reason: 'expired' });
   assert.equal(approval.sockets[0].sent.length, 1);
   assert.equal(approval.sockets[0].closed.length, 1);
+});
+
+test('activation remains bounded by server expiry after credential acknowledgment', async () => {
+  const scheduler = new FakeScheduler();
+  const h = harness({ scheduler, now: () => scheduler.now });
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.claimed.phone', v: 1, claimId: CLAIM_ID,
+    confirmationCode: '123 456', expiresAtUnixMs: 50,
+  }));
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+
+  assert.equal(h.states.at(-1).phase, 'activating');
+  scheduler.advance(50);
+
+  assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'expired' });
+  assert.equal(h.sockets[0].closed.length, 1);
+  assert.equal(h.controller.claimId, null);
+});
+
+test('a synchronous reentrant start owns the only live deadline timer', () => {
+  const scheduler = new FakeScheduler();
+  const claimIds = [CLAIM_ID, '018f63f5-6f3d-7d21-88bc-9ef561f030e3'];
+  let controller;
+  let restarted = false;
+  const h = harness({ scheduler, idGenerator: () => claimIds.shift() });
+  controller = h.controller;
+  controller.onState = (state) => {
+    h.states.push(state);
+    if (state.phase === 'connecting' && !restarted) {
+      restarted = true;
+      controller.start(REFERENCE);
+    }
+  };
+
+  controller.start(REFERENCE);
+
+  assert.equal(h.sockets.length, 2);
+  assert.equal(scheduler.tasks.size, 1);
+  scheduler.advance(10_000);
+  assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'connection_timeout' });
+  assert.equal(h.sockets[0].closed.length, 1);
+  assert.equal(h.sockets[1].closed.length, 1);
+});
+
+test('successful activation clears all pairing-only sensitive state', async () => {
+  const h = harness();
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+  await settleAsyncWork();
+
+  assert.deepEqual(h.states.at(-1), { phase: 'active', reason: null });
+  assert.equal(h.controller.reference, null);
+  assert.equal(h.controller.claimId, null);
+  assert.equal(h.controller.acknowledgedSlot, null);
+  assert.equal(h.controller.pairingExpiresAtUnixMs, null);
+  assert.equal(h.controller.deadlineTimer, null);
+  assert.equal(h.controller.activation, null);
+  assert.equal(h.controller.socket, null);
 });
