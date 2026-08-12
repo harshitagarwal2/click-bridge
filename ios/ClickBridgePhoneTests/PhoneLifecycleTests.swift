@@ -83,7 +83,7 @@ final class PhoneLifecycleTests: XCTestCase {
                                        token: replacementToken)
 
         XCTAssertEqual(harness.model.settings.relayURLString, "wss://new.example/ws")
-        XCTAssertEqual(harness.secret.value, replacementToken)
+        XCTAssertEqual(try harness.settings.phoneToken(), replacementToken)
         XCTAssertNil(harness.model.state.issue)
     }
 
@@ -396,6 +396,7 @@ final class PhoneLifecycleTests: XCTestCase {
         let intentRouter: PhoneClickIntentRouter
         let defaults: UserDefaults
         let secret: LifecycleSecretStore
+        let settings: PhoneSettingsStore
         let model: PhoneAppModel
 
         init(token: String? = String(repeating: "a", count: 64),
@@ -426,6 +427,7 @@ final class PhoneLifecycleTests: XCTestCase {
             self.intentRouter = intentRouter
             self.defaults = defaults
             self.secret = secret
+            self.settings = settings
             model = PhoneAppModel(settings: settings,
                                   volumeController: VolumeDeltaController(source: source),
                                   transport: transport,
