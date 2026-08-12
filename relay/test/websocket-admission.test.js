@@ -9,6 +9,7 @@ import { WebSocket } from 'ws';
 
 import { attachWebSocketServer, createServer } from '../src/server.js';
 import { PROTOCOL_VERSION } from '../src/constants.js';
+import { parseClientMessage } from '../src/protocol.js';
 
 const PHONE_TOKEN = '1'.repeat(64);
 const MAC_TOKEN = '2'.repeat(64);
@@ -19,6 +20,7 @@ const hello = (role, token) => ({ type: 'hello', v: PROTOCOL_VERSION, role, toke
 
 function client(url) {
   const ws = new WebSocket(url);
+  const inbox = [];
   let closeResolve;
   const closePromise = new Promise((resolve) => { closeResolve = resolve; });
   const openPromise = new Promise((resolve, reject) => {
@@ -26,8 +28,10 @@ function client(url) {
     ws.once('error', reject);
   });
   ws.once('close', (code) => closeResolve(code));
+  ws.on('message', (data) => inbox.push(JSON.parse(data.toString())));
   return {
     ws,
+    inbox,
     open: () => ws.readyState === WebSocket.OPEN ? Promise.resolve() : openPromise,
     closed: () => closePromise,
     send: (message) => ws.send(JSON.stringify(message)),
@@ -123,18 +127,28 @@ function connectionCount(server) {
   });
 }
 
-function fakeWebSocket() {
+function fakeWebSocket({ acknowledgeClose = true } = {}) {
   const ws = new EventEmitter();
   ws.OPEN = WebSocket.OPEN;
   ws.CLOSED = WebSocket.CLOSED;
+  ws.CLOSING = WebSocket.CLOSING;
   ws.readyState = WebSocket.OPEN;
-  ws.send = () => {};
+  ws.sent = [];
+  ws.send = (value) => { ws.sent.push(JSON.parse(value)); };
   ws.close = () => {
+    if (ws.readyState === WebSocket.CLOSED) return;
+    if (!acknowledgeClose) {
+      ws.readyState = WebSocket.CLOSING;
+      return;
+    }
+    ws.readyState = WebSocket.CLOSED;
+    ws.emit('close');
+  };
+  ws.terminate = () => {
     if (ws.readyState === WebSocket.CLOSED) return;
     ws.readyState = WebSocket.CLOSED;
     ws.emit('close');
   };
-  ws.terminate = ws.close;
   return ws;
 }
 
@@ -473,6 +487,226 @@ test('non-reading displaced role cannot block a valid replacement sequence', asy
   } finally {
     predecessor.ws._socket?.destroy();
     replacement?.ws._socket?.destroy();
+    await server.close();
+  }
+});
+
+test('every terminal authentication path fences later valid hello before slot release', async (t) => {
+  const cases = [
+    ['malformed hello', '{malformed', false],
+    ['bad token', JSON.stringify(hello('phone', '9'.repeat(64))), false],
+    ['parser internal error', 'trigger-internal-error', true],
+    ['auth timeout', null, false],
+  ];
+  for (const [name, firstFrame, injectParserFailure] of cases) {
+    await t.test(name, async () => {
+      const predecessor = Object.freeze({ id: 'predecessor', role: 'phone' });
+      const state = {
+        phone: predecessor,
+        replacements: 0,
+        routedMessages: 0,
+        replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+        detachIfCurrent() {}, publishState() {},
+        handlePhoneMessage() { this.routedMessages += 1; },
+        handleMacMessage() { this.routedMessages += 1; },
+      };
+      const logs = [];
+      const callbacks = [];
+      const closeDeadlines = [];
+      let fireAuthTimeout;
+      const httpServer = http.createServer((_req, res) => res.end());
+      const attachment = attachWebSocketServer({
+        httpServer,
+        state,
+        connections: new Map(),
+        phoneToken: PHONE_TOKEN,
+        macToken: MAC_TOKEN,
+        log: { info(value) { logs.push(JSON.parse(value)); }, error() {} },
+        maxTotalWebSocketConnections: 2,
+        maxUnauthenticatedWebSocketConnections: 1,
+        terminalCloseDeadlineMs: 100,
+        scheduleAuthTimeout(callback) {
+          fireAuthTimeout = callback;
+          return { unref() {} };
+        },
+        scheduleTerminalClose(callback) {
+          closeDeadlines.push(callback);
+          return { unref() {} };
+        },
+        parseClient(raw, role) {
+          if (injectParserFailure && raw === firstFrame) throw new Error('sensitive parser detail');
+          return parseClientMessage(raw, role);
+        },
+        performWebSocketUpgrade(_req, _socket, _head, done) { callbacks.push(done); },
+      });
+      const hostile = fakeWebSocket({ acknowledgeClose: false });
+      const original = fakeUpgradeSocket();
+      try {
+        httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+        callbacks[0](hostile);
+        if (firstFrame === null) fireAuthTimeout();
+        else hostile.emit('message', Buffer.from(firstFrame), false);
+        assert.equal(hostile.readyState, WebSocket.CLOSING, 'terminal close starts synchronously');
+
+        hostile.emit('message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false);
+        hostile.emit('message', Buffer.from(JSON.stringify({
+          type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 1,
+        })), false);
+        assert.equal(state.phone, predecessor);
+        assert.equal(state.replacements, 0);
+        assert.equal(state.routedMessages, 0);
+        assert.equal(hostile.sent.some((message) => message.type === 'hello.ok'), false);
+        assert.equal(logs.some((entry) => entry.event === 'authenticated'), false);
+        assert.equal(closeDeadlines.length, 1, 'terminal path installs one close deadline');
+
+        const blocked = fakeUpgradeSocket();
+        httpServer.emit('upgrade', { url: '/ws' }, blocked, Buffer.alloc(0));
+        assert.match(
+          blocked.response,
+          /503 Service Unavailable/,
+          'unauthenticated slot is not released by a fenced valid hello',
+        );
+
+        closeDeadlines.shift()();
+        assert.equal(hostile.readyState, WebSocket.CLOSED, 'deadline terminates the hostile socket');
+        hostile.emit('error', Object.assign(new Error('duplicate terminal event'), { code: 'EIO' }));
+        hostile.emit('close');
+        const recovered = fakeUpgradeSocket();
+        httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+        assert.equal(callbacks.length, 2, 'close releases exactly one reservation');
+        const excess = fakeUpgradeSocket();
+        httpServer.emit('upgrade', { url: '/ws' }, excess, Buffer.alloc(0));
+        assert.match(excess.response, /503 Service Unavailable/, 'duplicate close/error cannot underflow');
+        recovered.destroy();
+      } finally {
+        hostile.terminate();
+        original.destroy();
+        await attachment.close();
+        await new Promise((resolve) => httpServer.close(resolve));
+      }
+    });
+  }
+});
+
+test('socket error fences a late valid hello before idempotent admission release', async () => {
+  const predecessor = Object.freeze({ id: 'predecessor', role: 'phone' });
+  const state = {
+    phone: predecessor,
+    replacements: 0,
+    replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+    detachIfCurrent() {}, publishState() {}, handlePhoneMessage() {}, handleMacMessage() {},
+  };
+  const logs = [];
+  let accept;
+  const httpServer = http.createServer((_req, res) => res.end());
+  const attachment = attachWebSocketServer({
+    httpServer,
+    state,
+    connections: new Map(),
+    phoneToken: PHONE_TOKEN,
+    macToken: MAC_TOKEN,
+    log: { info(value) { logs.push(JSON.parse(value)); }, error() {} },
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    performWebSocketUpgrade(_req, _socket, _head, done) { accept = done; },
+  });
+  const original = fakeUpgradeSocket();
+  const hostile = fakeWebSocket({ acknowledgeClose: false });
+  try {
+    httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    accept(hostile);
+    hostile.emit('error', Object.assign(new Error('transport failed'), { code: 'EIO' }));
+    hostile.emit('message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false);
+    hostile.emit('close');
+
+    assert.equal(hostile.__clickBridgeTerminal, true);
+    assert.equal(state.phone, predecessor);
+    assert.equal(state.replacements, 0);
+    assert.equal(hostile.sent.some((message) => message.type === 'hello.ok'), false);
+    assert.equal(logs.some((entry) => entry.event === 'authenticated'), false);
+
+    const recovered = fakeUpgradeSocket();
+    httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+    assert.equal(original.destroyed, false);
+    const excess = fakeUpgradeSocket();
+    httpServer.emit('upgrade', { url: '/ws' }, excess, Buffer.alloc(0));
+    assert.match(excess.response, /503 Service Unavailable/);
+    recovered.destroy();
+  } finally {
+    hostile.terminate();
+    original.destroy();
+    await attachment.close();
+    await new Promise((resolve) => httpServer.close(resolve));
+  }
+});
+
+test('upgrade callback followed by throw revokes accepted websocket before cap reuse', async () => {
+  const acceptedSockets = [];
+  const pending = [];
+  const logs = [];
+  const state = {
+    phone: null,
+    replacements: 0,
+    routedMessages: 0,
+    replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+    detachIfCurrent() {}, publishState() {},
+    handlePhoneMessage() { this.routedMessages += 1; },
+    handleMacMessage() { this.routedMessages += 1; },
+  };
+  let adapterCalls = 0;
+  let failNext = true;
+  let server;
+  ({ server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    stateFactory: () => state,
+    log: { info(value) { logs.push(JSON.parse(value)); }, error() {} },
+    performWebSocketUpgrade(_req, _socket, _head, done) {
+      adapterCalls += 1;
+      if (!failNext) {
+        pending.push(done);
+        return;
+      }
+      failNext = false;
+      const accepted = fakeWebSocket();
+      acceptedSockets.push(accepted);
+      server.wss.clients.add(accepted);
+      accepted.once('close', () => server.wss.clients.delete(accepted));
+      done(accepted);
+      throw new Error('after callback');
+    },
+  }));
+  try {
+    for (let cycle = 1; cycle <= 2; cycle += 1) {
+      const admitted = fakeUpgradeSocket();
+      server.httpServer.emit('upgrade', { url: '/ws' }, admitted, Buffer.alloc(0));
+      assert.equal(admitted.destroyed, true);
+      assert.equal(acceptedSockets.at(-1).readyState, WebSocket.CLOSED);
+      assert.equal(server.wss.clients.has(acceptedSockets.at(-1)), false);
+      acceptedSockets.at(-1).emit(
+        'message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false,
+      );
+      assert.equal(state.phone, null, 'accepted-then-thrown websocket cannot authenticate late');
+      assert.equal(state.replacements, 0);
+      assert.equal(state.routedMessages, 0);
+      assert.equal(acceptedSockets.at(-1).sent.some((message) => message.type === 'hello.ok'), false);
+      assert.equal(logs.some((entry) => entry.event === 'authenticated'), false);
+
+      const contender = fakeUpgradeSocket();
+      const rejected = fakeUpgradeSocket();
+      server.httpServer.emit('upgrade', { url: '/ws' }, contender, Buffer.alloc(0));
+      server.httpServer.emit('upgrade', { url: '/ws' }, rejected, Buffer.alloc(0));
+      assert.equal(pending.length, cycle);
+      assert.equal(adapterCalls, cycle * 2, 'exactly one contender reuses recovered capacity');
+      assert.match(rejected.response, /503 Service Unavailable/);
+      const held = fakeWebSocket();
+      pending.at(-1)(held);
+      held.terminate();
+      failNext = true;
+      contender.destroy();
+    }
+  } finally {
+    for (const accepted of acceptedSockets) accepted.terminate();
     await server.close();
   }
 });
