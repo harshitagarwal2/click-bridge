@@ -5,6 +5,8 @@ struct StrictPhoneWireDecoder: Sendable {
     private static let uuid = try! NSRegularExpression(
         pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     )
+    private static let token = try! NSRegularExpression(pattern: "^[0-9a-f]{64}$")
+    private static let confirmationCode = try! NSRegularExpression(pattern: "^[0-9]{3} [0-9]{3}$")
     private let decoder = JSONDecoder()
 
     func rejectBinary(_ data: Data) throws -> Never {
@@ -12,6 +14,22 @@ struct StrictPhoneWireDecoder: Sendable {
     }
 
     func decodeText(_ text: String) throws -> PhoneServerMessage {
+        try decode(text, pairingContext: nil, activeGeneration: nil)
+    }
+
+    func decodePairingText(
+        _ text: String,
+        context: PhonePairingReceiveContext,
+        activeGeneration: UInt64
+    ) throws -> PhoneServerMessage {
+        try decode(text, pairingContext: context, activeGeneration: activeGeneration)
+    }
+
+    private func decode(
+        _ text: String,
+        pairingContext: PhonePairingReceiveContext?,
+        activeGeneration: UInt64?
+    ) throws -> PhoneServerMessage {
         let data = Data(text.utf8)
         guard data.count <= PhoneProtocolV1.maximumMessageBytes else { throw PhoneWireError.tooLarge }
         guard let object = try? JSONSerialization.jsonObject(with: data),
@@ -22,6 +40,12 @@ struct StrictPhoneWireDecoder: Sendable {
             throw PhoneWireError.unsupportedVersion
         }
 
+        try validateReceiveContext(
+            message,
+            type: type,
+            pairingContext: pairingContext,
+            activeGeneration: activeGeneration
+        )
         try validate(message, type: type)
         do {
             switch type {
@@ -32,12 +56,44 @@ struct StrictPhoneWireDecoder: Sendable {
             case "action.result": return .actionResult(try decoder.decode(ActionResult.self, from: data))
             case "diagnostics.counters": return .diagnosticsCounters(try decoder.decode(DiagnosticsCounters.self, from: data))
             case "time.sync.response": return .timeSyncResponse(try decoder.decode(TimeSyncResponse.self, from: data))
+            case "pair.claimed.phone": return .pairClaimedPhone(try decoder.decode(PairClaimedPhone.self, from: data))
+            case "pair.credential": return .pairCredential(try decoder.decode(PairCredential.self, from: data))
+            case "pair.active": return .pairActive(try decoder.decode(PairActive.self, from: data))
+            case "pair.failed": return .pairFailed(try decoder.decode(PairFailedClaimant.self, from: data))
             default: throw PhoneWireError.messageNotAllowed
             }
         } catch let error as PhoneWireError {
             throw error
         } catch {
             throw PhoneWireError.decodeFailed(type)
+        }
+    }
+
+    private func validateReceiveContext(
+        _ message: [String: Any],
+        type: String,
+        pairingContext: PhonePairingReceiveContext?,
+        activeGeneration: UInt64?
+    ) throws {
+        let pairingTypes = Set([
+            "pair.claimed.phone", "pair.credential", "pair.active", "pair.failed",
+        ])
+        guard let pairingContext else {
+            guard !pairingTypes.contains(type) else { throw PhoneWireError.messageNotAllowed }
+            return
+        }
+        guard activeGeneration == pairingContext.generation else {
+            throw PhoneWireError.messageNotAllowed
+        }
+        let allowed: Set<String>
+        switch pairingContext.state {
+        case .claiming: allowed = ["pair.claimed.phone", "pair.failed"]
+        case .awaitingCredential: allowed = ["pair.credential", "pair.failed"]
+        case .awaitingActivation: allowed = ["pair.active", "pair.failed"]
+        }
+        guard allowed.contains(type),
+              try string(message, "claimId") == pairingContext.claimID.uuidString.lowercased() else {
+            throw PhoneWireError.messageNotAllowed
         }
     }
 
@@ -96,7 +152,31 @@ struct StrictPhoneWireDecoder: Sendable {
             let receive = try number(message, "macReceiveUnixMs")
             let send = try number(message, "macSendUnixMs")
             guard phone > 0, receive > 0, send >= receive else { throw PhoneWireError.invalidValue }
-        case "hello", "heartbeat.request", "time.sync.request", "action.request", "mac.state", "diagnostics.request":
+        case "pair.claimed.phone":
+            try exact(message, ["type", "v", "claimId", "confirmationCode", "expiresAtUnixMs"])
+            try validUUID(message, "claimId")
+            guard matches(Self.confirmationCode, try string(message, "confirmationCode")),
+                  try safeNonnegativeInteger(message, "expiresAtUnixMs") > 0 else { throw PhoneWireError.invalidValue }
+        case "pair.credential":
+            try exact(message, ["type", "v", "claimId", "credential", "credentialVersion"])
+            try validUUID(message, "claimId")
+            guard matches(Self.token, try string(message, "credential")) else { throw PhoneWireError.invalidValue }
+            guard try safeNonnegativeInteger(message, "credentialVersion") > 0 else {
+                throw PhoneWireError.invalidValue
+            }
+        case "pair.active":
+            try exact(message, ["type", "v", "claimId", "activePhoneCredentialVersion"])
+            try validUUID(message, "claimId")
+            guard try safeNonnegativeInteger(message, "activePhoneCredentialVersion") > 0 else {
+                throw PhoneWireError.invalidValue
+            }
+        case "pair.failed":
+            try exact(message, ["type", "v", "claimId", "reason"])
+            try validUUID(message, "claimId")
+            try oneOf(string(message, "reason"), PairingFailureReason.allCases.map(\.rawValue))
+        case "hello", "heartbeat.request", "time.sync.request", "action.request", "mac.state", "diagnostics.request",
+             "pair.create", "pair.status.request", "pair.created", "pair.status", "pair.cancel", "pair.claim", "pair.claimed.mac",
+             "pair.approve", "pair.deny", "pair.credential.ack", "pair.completed", "pair.cancel.claim":
             throw PhoneWireError.messageNotAllowed
         default:
             throw PhoneWireError.unknownType(type)
@@ -130,10 +210,12 @@ struct StrictPhoneWireDecoder: Sendable {
 
     private func nonnegativeInteger(_ message: [String: Any], _ key: String) throws -> Int {
         let value = try number(message, key)
-        guard value >= 0, value.rounded(.towardZero) == value, value <= Double(Int.max) else {
+        guard value >= 0,
+              value.rounded(.towardZero) == value,
+              let integer = Int(exactly: value) else {
             throw PhoneWireError.invalidValue
         }
-        return Int(value)
+        return integer
     }
 
     private func validUUID(_ message: [String: Any], _ key: String) throws {
@@ -144,8 +226,22 @@ struct StrictPhoneWireDecoder: Sendable {
         }
     }
 
+    private func safeNonnegativeInteger(_ message: [String: Any], _ key: String) throws -> Int {
+        let value = try number(message, key)
+        guard value >= 0,
+              value.rounded(.towardZero) == value,
+              value <= 9_007_199_254_740_991,
+              let integer = Int(exactly: value) else { throw PhoneWireError.invalidValue }
+        return integer
+    }
+
     private func oneOf(_ value: String, _ allowed: [String]) throws {
         guard allowed.contains(value) else { throw PhoneWireError.invalidValue }
+    }
+
+    private func matches(_ expression: NSRegularExpression, _ value: String) -> Bool {
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.firstMatch(in: value, range: range)?.range == range
     }
 }
 

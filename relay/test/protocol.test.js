@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   parseClientMessage,
   parseServerMessage,
+  parsePairingServerMessage,
   encodeMessage,
   actionFingerprint,
   isExpired,
@@ -22,6 +23,7 @@ import {
   CLOCK_HEALTH_SAMPLES,
   CLOCK_HEALTH_EXCHANGE_TIMEOUT_MS,
 } from '../src/constants.js';
+import * as relayConstants from '../src/constants.js';
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '../../contracts/fixtures');
 const INVALID_FIXTURES = join(FIXTURES, 'invalid');
@@ -35,6 +37,21 @@ const throwsCode = (fn, code) =>
     (error) => error instanceof ProtocolError && error.code === code,
     `expected ProtocolError ${code}`,
   );
+
+function parsePairingFixture(raw) {
+  const message = JSON.parse(raw);
+  const state = message.type === 'pair.credential'
+    ? 'awaiting_credential'
+    : message.type === 'pair.active'
+      ? 'awaiting_activation'
+      : 'claiming';
+  return parsePairingServerMessage(raw, {
+    state,
+    claimId: message.claimId,
+    generation: 1,
+    activeGeneration: 1,
+  });
+}
 
 function parseCanonical(raw) {
   const message = JSON.parse(raw);
@@ -59,6 +76,40 @@ function parseCanonical(raw) {
     case 'state':
     case 'relay.ack':
       return parseServerMessage(raw, 'phone');
+    case 'pair.create':
+    case 'pair.status.request':
+    case 'pair.cancel':
+    case 'pair.approve':
+    case 'pair.deny':
+      return parseClientMessage(raw, 'mac');
+    case 'pair.claim':
+      return parseClientMessage(raw, 'pairing.claim');
+    case 'pair.credential.ack':
+    case 'pair.cancel.claim':
+      return parseClientMessage(raw, 'pairing.claimed');
+    case 'pair.created':
+    case 'pair.status':
+    case 'pair.claimed.mac':
+    case 'pair.completed':
+      return parseServerMessage(raw, 'mac');
+    case 'pair.claimed.phone':
+      return parsePairingServerMessage(raw, {
+        state: 'claiming', claimId: message.claimId, generation: 1, activeGeneration: 1,
+      });
+    case 'pair.credential':
+      return parsePairingServerMessage(raw, {
+        state: 'awaiting_credential', claimId: message.claimId, generation: 1, activeGeneration: 1,
+      });
+    case 'pair.active':
+      return parsePairingServerMessage(raw, {
+        state: 'awaiting_activation', claimId: message.claimId, generation: 1, activeGeneration: 1,
+      });
+    case 'pair.failed':
+      return 'requestId' in message
+        ? parseServerMessage(raw, 'mac')
+        : parsePairingServerMessage(raw, {
+          state: 'claiming', claimId: message.claimId, generation: 1, activeGeneration: 1,
+        });
     default:
       throw new Error(`fixture has unknown type ${message.type}`);
   }
@@ -68,6 +119,207 @@ test('timing invariants and clock-health constants match the plan', () => {
   for (const [name, holds] of INVARIANTS) assert.ok(holds, name);
   assert.equal(CLOCK_HEALTH_SAMPLES, 5);
   assert.equal(CLOCK_HEALTH_EXCHANGE_TIMEOUT_MS, 3500);
+});
+
+test('pairing constants freeze the approved protocol and invitation lifetime', () => {
+  assert.equal(relayConstants.PAIRING_VERSION, 1);
+  assert.equal(relayConstants.PAIRING_TTL_MS, 300_000);
+  assert.equal(relayConstants.LEGACY_PHONE_CREDENTIAL_VERSION, 0);
+  assert.equal(relayConstants.CREDENTIAL_REPLACED_CLOSE_CODE, 4004);
+  assert.equal(relayConstants.CREDENTIAL_REPLACED_CLOSE_REASON, 'credential_replaced');
+});
+
+test('pairing claims require an explicit unauthenticated pairing state', () => {
+  const claim = load('pair.claim.json');
+  const cancel = load('pair.cancel.claim.json');
+
+  throwsCode(() => parseClientMessage(claim), 'expected_hello');
+  throwsCode(() => parseClientMessage(claim, 'phone'), 'message_not_allowed_for_role');
+  assert.equal(parseClientMessage(claim, 'pairing.claim').type, 'pair.claim');
+
+  throwsCode(
+    () => parseClientMessage(cancel, 'pairing.claim'),
+    'message_not_allowed_for_state',
+  );
+  assert.equal(parseClientMessage(cancel, 'pairing.claimed').type, 'pair.cancel.claim');
+});
+
+test('prototype names cannot masquerade as pairing states', () => {
+  const claim = load('pair.claim.json');
+  for (const state of ['toString', 'constructor', '__proto__']) {
+    throwsCode(() => parseClientMessage(claim, state), 'invalid_role');
+  }
+});
+
+test('pairing messages are restricted to their exact client and server roles', () => {
+  throwsCode(
+    () => parseClientMessage(load('pair.create.json'), 'phone'),
+    'message_not_allowed_for_role',
+  );
+  throwsCode(
+    () => parseServerMessage(load('pair.created.json'), 'phone'),
+    'message_not_allowed_for_role',
+  );
+  throwsCode(
+    () => parseServerMessage(load('pair.credential.json'), 'mac'),
+    'message_not_allowed_for_role',
+  );
+});
+
+test('server pairing messages require the current dedicated claimant context', () => {
+  const claimed = object('pair.claimed.phone.json');
+  const raw = JSON.stringify(claimed);
+  const current = {
+    state: 'claiming', claimId: claimed.claimId, generation: 7, activeGeneration: 7,
+  };
+
+  throwsCode(() => parseServerMessage(raw, 'phone'), 'message_not_allowed_for_role');
+  assert.equal(parsePairingServerMessage(raw, current).type, 'pair.claimed.phone');
+  throwsCode(
+    () => parsePairingServerMessage(raw, { ...current, state: 'awaiting_credential' }),
+    'message_not_allowed_for_state',
+  );
+  throwsCode(
+    () => parsePairingServerMessage(raw, {
+      ...current, claimId: '018f63f5-6f3d-7d21-88bc-9ef561f030e3',
+    }),
+    'claim_mismatch',
+  );
+  throwsCode(
+    () => parsePairingServerMessage(raw, { ...current, activeGeneration: 8 }),
+    'stale_generation',
+  );
+});
+
+test('claimant context fields must be own data properties', () => {
+  const claimed = object('pair.claimed.phone.json');
+  const raw = JSON.stringify(claimed);
+  const current = {
+    state: 'claiming',
+    claimId: claimed.claimId,
+    generation: 7,
+    activeGeneration: 7,
+  };
+  throwsCode(
+    () => parsePairingServerMessage(raw, Object.create(current)),
+    'missing_field',
+  );
+
+  for (const key of Object.keys(current)) {
+    let getterCalls = 0;
+    const accessor = { ...current };
+    Object.defineProperty(accessor, key, {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return current[key];
+      },
+    });
+    assert.throws(() => parsePairingServerMessage(raw, accessor), ProtocolError);
+    assert.equal(getterCalls, 0, `${key} getter must not run`);
+  }
+
+  const descriptorReads = new Map();
+  const proxy = new Proxy(current, {
+    get() {
+      throw new Error('context properties must not be read after capture');
+    },
+    getOwnPropertyDescriptor(target, key) {
+      descriptorReads.set(key, (descriptorReads.get(key) ?? 0) + 1);
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  assert.equal(parsePairingServerMessage(raw, proxy).type, claimed.type);
+  assert.deepEqual(Object.fromEntries(descriptorReads), {
+    state: 1,
+    claimId: 1,
+    generation: 1,
+    activeGeneration: 1,
+  });
+});
+
+test('ordinary server parsing never accepts claimant pairing frames without an authenticated role', () => {
+  for (const name of [
+    'pair.claimed.phone.json',
+    'pair.credential.json',
+    'pair.active.json',
+    'pair.failed.claimant.json',
+  ]) {
+    const raw = load(name);
+    throwsCode(() => parseServerMessage(raw, null), 'invalid_role');
+    throwsCode(() => parseServerMessage(raw, undefined), 'message_not_allowed_for_role');
+  }
+});
+
+test('pairing status is an explicit capability-gated request and legacy version zero is enrolled', () => {
+  const request = object('pair.status.request.json');
+  const status = object('pair.status.json');
+
+  assert.equal(parseClientMessage(JSON.stringify(request), 'mac').type, 'pair.status.request');
+  throwsCode(
+    () => parseClientMessage(JSON.stringify(request), 'phone'),
+    'message_not_allowed_for_role',
+  );
+  assert.equal(status.requestId, request.requestId);
+  assert.equal(status.enrollmentState, 'legacy');
+  assert.equal(status.activePhoneCredentialVersion, relayConstants.LEGACY_PHONE_CREDENTIAL_VERSION);
+  assert.equal(parseServerMessage(JSON.stringify(status), 'mac').type, 'pair.status');
+
+  for (const mismatch of [
+    { ...status, enrollmentState: 'paired' },
+    { ...status, activePhoneCredentialVersion: 1 },
+  ]) {
+    throwsCode(() => parseServerMessage(JSON.stringify(mismatch), 'mac'), 'invalid_value');
+  }
+});
+
+test('credential rotation reserves version zero exclusively for legacy enrollment status', () => {
+  const cases = [
+    [object('pair.credential.json'), parsePairingFixture],
+    [object('pair.credential.ack.json'), (raw) => parseClientMessage(raw, 'pairing.claimed')],
+    [object('pair.active.json'), parsePairingFixture],
+    [object('pair.completed.json'), (raw) => parseServerMessage(raw, 'mac')],
+  ];
+
+  for (const [message, parse] of cases) {
+    const versionField = Object.hasOwn(message, 'credentialVersion')
+      ? 'credentialVersion'
+      : 'activePhoneCredentialVersion';
+    throwsCode(() => parse(JSON.stringify({ ...message, [versionField]: 0 })), 'invalid_value');
+  }
+});
+
+test('pairing references are canonical unpadded base64url encodings of exactly 32 bytes', () => {
+  const claim = object('pair.claim.json');
+  assert.equal(claim.reference, 'A'.repeat(43));
+  assert.doesNotThrow(() => parseClientMessage(JSON.stringify(claim), 'pairing.claim'));
+
+  for (const reference of [
+    `${'A'.repeat(42)}B`,
+    `${'A'.repeat(43)}=`,
+    `${'A'.repeat(42)}+`,
+    'A'.repeat(42),
+  ]) {
+    throwsCode(
+      () => parseClientMessage(JSON.stringify({ ...claim, reference }), 'pairing.claim'),
+      'invalid_reference',
+    );
+  }
+});
+
+test('pair.failed accepts only the three role-specific exact shapes', () => {
+  assert.doesNotThrow(() => parseServerMessage(load('pair.failed.mac-before-claim.json'), 'mac'));
+  assert.doesNotThrow(() => parseServerMessage(load('pair.failed.mac-after-claim.json'), 'mac'));
+  assert.doesNotThrow(() => parsePairingFixture(load('pair.failed.claimant.json')));
+
+  const mixed = {
+    ...object('pair.failed.claimant.json'),
+    requestId: object('pair.failed.mac-before-claim.json').requestId,
+  };
+  throwsCode(
+    () => parsePairingFixture(JSON.stringify(mixed)),
+    'message_not_allowed_for_role',
+  );
 });
 
 test('every valid fixture is canonical, strictly parseable, and re-encodes identically', () => {
@@ -146,10 +398,62 @@ test('missing and wrong versions are rejected', () => {
   throwsCode(() => parseClientMessage(JSON.stringify({ ...hello, v: 2 })), 'unsupported_version');
 });
 
+test('object-valued versions never invoke attacker-controlled coercion', () => {
+  const hostileVersion = { toString: null, valueOf: null };
+  const clientRaw = JSON.stringify({ ...object('hello.phone.json'), v: hostileVersion });
+  const serverRaw = JSON.stringify({ ...object('hello.ok.json'), v: hostileVersion });
+
+  throwsCode(() => parseClientMessage(clientRaw), 'unsupported_version');
+  throwsCode(() => parseServerMessage(serverRaw, 'phone'), 'unsupported_version');
+});
+
+test('object-valued hello.ok roles never invoke attacker-controlled coercion', () => {
+  const raw = JSON.stringify({
+    ...object('hello.ok.json'),
+    role: { toString: null, valueOf: null },
+  });
+
+  throwsCode(() => parseServerMessage(raw, 'phone'), 'message_not_allowed_for_role');
+});
+
 test('unknown types and fields are rejected', () => {
   throwsCode(() => parseClientMessage('{"type":"unknown","v":1}'), 'unknown_type');
   const hello = object('hello.phone.json');
   throwsCode(() => parseClientMessage(JSON.stringify({ ...hello, extra: true })), 'unknown_field');
+});
+
+test('prototype property names are unknown types at parse and encode boundaries', () => {
+  for (const type of ['toString', 'constructor', '__proto__']) {
+    const raw = JSON.stringify({ type, v: 1 });
+    throwsCode(() => parseClientMessage(raw), 'unknown_type');
+    throwsCode(() => parseServerMessage(raw, 'phone'), 'unknown_type');
+    throwsCode(() => encodeMessage({ type, v: 1 }), 'unknown_type');
+  }
+});
+
+function assertProxyRoleRejected(parse, raw) {
+  let roleTraps = 0;
+  const role = new Proxy({}, {
+    get() {
+      roleTraps += 1;
+      throw new Error('role proxy must not be inspected');
+    },
+    getOwnPropertyDescriptor() {
+      roleTraps += 1;
+      throw new Error('role proxy must not be inspected');
+    },
+  });
+
+  throwsCode(() => parse(raw, role), 'invalid_role');
+  assert.equal(roleTraps, 0);
+}
+
+test('parseClientMessage rejects proxy-valued roles without invoking user code', () => {
+  assertProxyRoleRejected(parseClientMessage, load('action.request.json'));
+});
+
+test('parseServerMessage rejects proxy-valued roles without invoking user code', () => {
+  assertProxyRoleRejected(parseServerMessage, load('mac.state.json'));
 });
 
 test('token must be exactly 64 lowercase hexadecimal characters', () => {
@@ -296,8 +600,16 @@ test('canonical invalid descriptors exercise the declared parser error', () => {
       throw new Error(`unknown invalid fixture kind ${descriptor.kind}`);
     }
 
-    const parser = descriptor.parser === 'server' ? parseServerMessage : parseClientMessage;
-    throwsCode(() => parser(raw, descriptor.role), descriptor.expectedError, name);
+    const messageType = descriptor.kind === 'message' ? descriptor.message?.type : null;
+    const isPairingServer = descriptor.parser === 'server'
+      && descriptor.role === 'phone'
+      && ['pair.claimed.phone', 'pair.credential', 'pair.active', 'pair.failed'].includes(messageType);
+    const parse = isPairingServer
+      ? () => parsePairingFixture(raw)
+      : descriptor.parser === 'server'
+        ? () => parseServerMessage(raw, descriptor.role)
+        : () => parseClientMessage(raw, descriptor.role);
+    throwsCode(parse, descriptor.expectedError, name);
   }
 });
 
@@ -331,4 +643,53 @@ test('encodeMessage rejects non-canonical messages', () => {
     () => encodeMessage({ type: 'hello', v: 1, role: 'phone', token: 'short' }),
     'invalid_token_shape',
   );
+});
+
+test('encodeMessage requires own data properties and snapshots descriptors once', () => {
+  const cancel = object('pair.cancel.json');
+  throwsCode(() => encodeMessage(Object.create(cancel)), 'missing_type');
+
+  for (const key of Object.keys(cancel)) {
+    let getterCalls = 0;
+    const accessor = { ...cancel };
+    Object.defineProperty(accessor, key, {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return cancel[key];
+      },
+    });
+    assert.throws(() => encodeMessage(accessor), ProtocolError);
+    assert.equal(getterCalls, 0, `${key} getter must not run`);
+  }
+
+  const descriptorReads = new Map();
+  const proxy = new Proxy(cancel, {
+    get() {
+      throw new Error('message properties must not be read after capture');
+    },
+    getOwnPropertyDescriptor(target, key) {
+      descriptorReads.set(key, (descriptorReads.get(key) ?? 0) + 1);
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  assert.equal(encodeMessage(proxy), JSON.stringify(cancel));
+  assert.deepEqual(
+    Object.fromEntries(descriptorReads),
+    { type: 1, v: 1, requestId: 1 },
+  );
+});
+
+test('encodeMessage rejects proxy-valued versions without invoking user code', () => {
+  const cancel = object('pair.cancel.json');
+  let versionReads = 0;
+  const version = new Proxy({}, {
+    get() {
+      versionReads += 1;
+      throw new Error('version proxy must not be inspected');
+    },
+  });
+
+  throwsCode(() => encodeMessage({ ...cancel, v: version }), 'unsupported_version');
+  assert.equal(versionReads, 0);
 });

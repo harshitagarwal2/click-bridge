@@ -5,6 +5,7 @@ struct StrictWireDecoder: Sendable {
     private let decoder = JSONDecoder()
     private static let uuid = try! NSRegularExpression(pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     private static let token = try! NSRegularExpression(pattern: "^[0-9a-f]{64}$")
+    private static let confirmationCode = try! NSRegularExpression(pattern: "^[0-9]{3} [0-9]{3}$")
 
     func rejectBinary(_ data: Data) throws -> Never { throw WireError.binaryFrame }
 
@@ -104,6 +105,62 @@ struct StrictWireDecoder: Sendable {
             } else {
                 guard reason != "ok" else { throw WireError.invalidValue }
             }
+        case "pair.create":
+            try exact(message, ["type", "v", "requestId", "pairingVersion"])
+            try uuid(message, "requestId")
+            try pairingVersion(message)
+        case "pair.status.request":
+            try exact(message, ["type", "v", "requestId", "pairingVersion"])
+            try uuid(message, "requestId")
+            try pairingVersion(message)
+        case "pair.created":
+            try exact(message, ["type", "v", "requestId", "reference", "expiresAtUnixMs"])
+            try uuid(message, "requestId")
+            guard Self.isCanonicalPairingReference(try string(message, "reference")) else {
+                throw WireError.invalidValue
+            }
+            try positiveInteger(message, "expiresAtUnixMs")
+        case "pair.status":
+            try exact(message, ["type", "v", "requestId", "enrollmentState", "activePhoneCredentialVersion"])
+            try uuid(message, "requestId")
+            let enrollmentState = try string(message, "enrollmentState")
+            try oneOf(enrollmentState, ["legacy", "paired"])
+            let credentialVersion = try safeNonNegativeInteger(message, "activePhoneCredentialVersion")
+            let isConsistent = enrollmentState == "legacy"
+                ? credentialVersion == Constants.legacyPhoneCredentialVersion
+                : credentialVersion > Constants.legacyPhoneCredentialVersion
+            guard isConsistent else { throw WireError.invalidValue }
+        case "pair.cancel":
+            try exact(message, ["type", "v", "requestId"])
+            try uuid(message, "requestId")
+        case "pair.claimed.mac":
+            try exact(message, ["type", "v", "requestId", "claimId", "confirmationCode", "expiresAtUnixMs", "clientKind"])
+            try uuid(message, "requestId")
+            try uuid(message, "claimId")
+            guard Self.matches(Self.confirmationCode, try string(message, "confirmationCode")) else { throw WireError.invalidValue }
+            try positiveInteger(message, "expiresAtUnixMs")
+            try oneOf(string(message, "clientKind"), ["ios", "pwa"])
+        case "pair.approve", "pair.deny":
+            try exact(message, ["type", "v", "requestId", "claimId"])
+            try uuid(message, "requestId")
+            try uuid(message, "claimId")
+        case "pair.completed":
+            try exact(message, ["type", "v", "requestId", "claimId", "activePhoneCredentialVersion"])
+            try uuid(message, "requestId")
+            try uuid(message, "claimId")
+            guard try safeNonNegativeInteger(message, "activePhoneCredentialVersion") > 0 else {
+                throw WireError.invalidValue
+            }
+        case "pair.failed":
+            var fields = ["type", "v", "requestId", "reason"]
+            if message["claimId"] != nil { fields.insert("claimId", at: 3) }
+            try exact(message, fields)
+            try uuid(message, "requestId")
+            if message["claimId"] != nil { try uuid(message, "claimId") }
+            try oneOf(string(message, "reason"), PairingFailureReason.allWireValues)
+        case "pair.claim", "pair.claimed.phone", "pair.credential", "pair.credential.ack",
+             "pair.active", "pair.cancel.claim":
+            throw WireError.messageNotAllowed
         default:
             throw WireError.unknownType(type)
         }
@@ -137,10 +194,31 @@ struct StrictWireDecoder: Sendable {
 
     private func nonNegativeInteger(_ message: [String: Any], _ key: String) throws -> Int {
         let value = try number(message, key)
-        guard value >= 0, value.rounded(.towardZero) == value, value <= Double(Int.max) else {
+        guard value >= 0,
+              value.rounded(.towardZero) == value,
+              let integer = Int(exactly: value) else {
             throw WireError.invalidValue
         }
-        return Int(value)
+        return integer
+    }
+
+    private func positiveInteger(_ message: [String: Any], _ key: String) throws {
+        guard try safeNonNegativeInteger(message, key) > 0 else { throw WireError.invalidValue }
+    }
+
+    private func safeNonNegativeInteger(_ message: [String: Any], _ key: String) throws -> Int {
+        let value = try number(message, key)
+        guard value >= 0,
+              value.rounded(.towardZero) == value,
+              value <= 9_007_199_254_740_991,
+              let integer = Int(exactly: value) else { throw WireError.invalidValue }
+        return integer
+    }
+
+    private func pairingVersion(_ message: [String: Any]) throws {
+        guard try safeNonNegativeInteger(message, "pairingVersion") == Constants.pairingVersion else {
+            throw WireError.invalidValue
+        }
     }
 
     private func uuid(_ message: [String: Any], _ key: String) throws {
@@ -160,11 +238,29 @@ struct StrictWireDecoder: Sendable {
         return expression.firstMatch(in: value, range: range)?.range == range
     }
 
+    private static func isCanonicalPairingReference(_ value: String) -> Bool {
+        guard value.count == 43,
+              value.unicodeScalars.allSatisfy({
+                  (65...90).contains($0.value) || (97...122).contains($0.value)
+                      || (48...57).contains($0.value) || $0 == "-" || $0 == "_"
+              }) else { return false }
+        let standard = value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/") + "="
+        guard let decoded = Data(base64Encoded: standard), decoded.count == 32 else { return false }
+        let canonical = decoded.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return canonical == value
+    }
+
     private func validate(_ message: WireMessage, allowedFor role: WireRole) throws {
         let allowed: Bool
         switch (role, message) {
         case (.mac, .helloOK(let hello)): allowed = hello.role == "mac"
         case (.mac, .heartbeatAck), (.mac, .actionRequest), (.mac, .timeSyncRequest), (.mac, .diagnosticsRequest): allowed = true
+        case (.mac, .pairCreated), (.mac, .pairStatus), (.mac, .pairClaimedMac), (.mac, .pairCompleted),
+             (.mac, .pairFailed): allowed = true
         case (.phone, .helloOK(let hello)): allowed = hello.role == "phone"
         case (.phone, .heartbeatAck), (.phone, .state), (.phone, .relayAck), (.phone, .actionResult),
              (.phone, .timeSyncResponse), (.phone, .diagnosticsCounters): allowed = true
@@ -172,6 +268,13 @@ struct StrictWireDecoder: Sendable {
         }
         guard allowed else { throw WireError.messageNotAllowed }
     }
+}
+
+private extension PairingFailureReason {
+    static let allWireValues = [
+        "expired", "used", "cancelled", "denied", "mac_offline", "storage_failed",
+        "activation_failed", "invalid_request", "replaced", "unsupported",
+    ]
 }
 
 private extension ResultReason {

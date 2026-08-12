@@ -10,7 +10,8 @@ final class WireMessageTests: XCTestCase {
 
     private func isInvalidFixture(_ url: URL) -> Bool {
         let name = url.lastPathComponent
-        return name.hasPrefix("invalid-") || name == "malformed.json" || name == "oversized.json"
+        return name.hasPrefix("invalid-") || name.hasPrefix("pair-")
+            || name == "malformed.json" || name == "oversized.json"
             || name == "unknown-field.json" || name == "wrong-role.json" || name == "wrong-version.json"
             || name == "binary-descriptor.json"
     }
@@ -18,11 +19,99 @@ final class WireMessageTests: XCTestCase {
     func testEveryCanonicalFixtureStrictlyDecodesAndSemanticallyRoundTrips() throws {
         let urls = try fixtureURLs()
         XCTAssertFalse(urls.isEmpty)
-        for url in urls where !isInvalidFixture(url) {
+        for url in urls where !isInvalidFixture(url) && !url.lastPathComponent.hasPrefix("pair.") {
             let data = try Data(contentsOf: url)
             let decoded = try StrictWireDecoder().decodeText(String(decoding: data, as: UTF8.self))
             let encoded = try Wire.encode(decoded)
             XCTAssertEqual(try StrictWireDecoder().decodeText(encoded), decoded, url.lastPathComponent)
+        }
+    }
+
+    func testMacPairingFixturesStrictlyDecodeForMacAndRoundTrip() throws {
+        let names = [
+            "pair.create", "pair.created", "pair.status.request", "pair.status", "pair.cancel", "pair.claimed.mac",
+            "pair.approve", "pair.deny", "pair.completed", "pair.failed.mac-before-claim",
+            "pair.failed.mac-after-claim",
+        ]
+
+        for name in names {
+            let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: "json"), name)
+            let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            let decoded = try StrictWireDecoder().decodeText(text)
+            XCTAssertEqual(try StrictWireDecoder().decodeText(try Wire.encode(decoded)), decoded, name)
+        }
+    }
+
+    func testMacPairingDecoderRejectsClaimantMessagesAndSecretBearingFailures() {
+        let invalid = [
+            #"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","confirmationCode":"482 917","expiresAtUnixMs":1786500000000}"#,
+            #"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","credentialVersion":1}"#,
+            #"{"type":"pair.failed","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030e1","reason":"expired","credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+            #"{"type":"pair.completed","v":1,"requestId":"018F63F5-6F3D-7D21-88BC-9EF561F030E1","claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","activePhoneCredentialVersion":1}"#,
+        ]
+
+        for text in invalid {
+            XCTAssertThrowsError(try StrictWireDecoder().decodeText(text), text)
+        }
+    }
+
+    func testPairingStatusIsRequestedExplicitlyAndLegacyVersionZeroRequiresReplacement() throws {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e0"
+        let request = WireMessage.pairStatusRequest(PairStatusRequest(requestId: requestID))
+        let requestText = try Wire.encode(request)
+        XCTAssertEqual(
+            try XCTUnwrap(JSONSerialization.jsonObject(with: Data(requestText.utf8)) as? [String: Any])["type"] as? String,
+            "pair.status.request"
+        )
+
+        let statusText = #"{"type":"pair.status","v":1,"requestId":"\#(requestID)","enrollmentState":"legacy","activePhoneCredentialVersion":0}"#
+        let decoded = try StrictWireDecoder().decodeText(statusText, for: .mac)
+        guard case .pairStatus(let status) = decoded else {
+            return XCTFail("expected pair.status")
+        }
+        XCTAssertEqual(status.requestId, requestID)
+        XCTAssertEqual(status.activePhoneCredentialVersion, Constants.legacyPhoneCredentialVersion)
+        XCTAssertEqual(status.enrollmentState, .legacy)
+        XCTAssertTrue(status.requiresReplacementConfirmation)
+    }
+
+    func testMacPairingReferenceRequiresCanonicalThirtyTwoByteBase64URL() throws {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e1"
+        let canonical = #"{"type":"pair.created","v":1,"requestId":"\#(requestID)","reference":"\#(String(repeating: "A", count: 43))","expiresAtUnixMs":1786500000000}"#
+        XCTAssertNoThrow(try StrictWireDecoder().decodeText(canonical))
+
+        for reference in [
+            String(repeating: "A", count: 42) + "B",
+            String(repeating: "A", count: 43) + "=",
+            String(repeating: "A", count: 42) + "+",
+        ] {
+            let invalid = #"{"type":"pair.created","v":1,"requestId":"\#(requestID)","reference":"\#(reference)","expiresAtUnixMs":1786500000000}"#
+            XCTAssertThrowsError(try StrictWireDecoder().decodeText(invalid), reference)
+        }
+    }
+
+    func testMacApprovalCasesEncodeFixedWireTypes() throws {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e1"
+        let claimID = "018f63f5-6f3d-7d21-88bc-9ef561f030e2"
+        let approve = try Wire.encode(WireMessage.pairApprove(PairApprove(requestId: requestID, claimId: claimID)))
+        let deny = try Wire.encode(WireMessage.pairDeny(PairDeny(requestId: requestID, claimId: claimID)))
+
+        XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: Data(approve.utf8)) as? [String: Any])["type"] as? String, "pair.approve")
+        XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: Data(deny.utf8)) as? [String: Any])["type"] as? String, "pair.deny")
+    }
+
+    func testPairingSafeIntegerOverflowFailsClosedInsteadOfTrapping() {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e0"
+        let oversized = #"{"type":"pair.status","v":1,"requestId":"\#(requestID)","enrollmentState":"paired","activePhoneCredentialVersion":9223372036854775808}"#
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(oversized, for: .mac)) { error in
+            XCTAssertEqual(error as? WireError, .invalidValue)
+        }
+    }
+
+    func testCredentialRotationRejectsLegacyVersionZero() {
+        let completed = #"{"type":"pair.completed","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030e1","claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","activePhoneCredentialVersion":0}"#
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(completed, for: .mac)) { error in
+            XCTAssertEqual(error as? WireError, .invalidValue)
         }
     }
 
