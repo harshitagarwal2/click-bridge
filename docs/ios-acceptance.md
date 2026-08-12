@@ -1,6 +1,6 @@
 # Native iOS Client Acceptance
 
-**Automated status:** Passed: 66/66 tests, Release Simulator run, and generic iOS Release build
+**Automated status:** Passed: 71/71 tests, Release Simulator run, and generic iOS Release build
 
 **Physical iPhone status:** `NOT RUN`
 
@@ -39,10 +39,10 @@ A delta is accepted only when the current foreground session, authenticated sock
 | Release Simulator build | Passed | `ClickBridgePhone` built in Release configuration for iOS Simulator |
 | Release Simulator install and launch | Passed | The Release app installed and launched on iPhone 17 / iOS 26.3 |
 | Generic device build | Passed | Release build for generic platform `iOS` with code signing disabled |
-| Full XCTest suite | Passed: **66/66 tests** | XcodeBuildMCP full suite, including focused on-screen trigger, App Intent routing, no-delayed-shortcut guarantees, and fail-closed Keychain coverage |
+| Full XCTest suite | Passed: **71/71 tests** | XcodeBuildMCP full suite, including takeover close ordering, focused on-screen trigger, App Intent routing, no-delayed-shortcut guarantees, and fail-closed Keychain coverage |
 | Release bundle inspection | Passed | The app bundle contains `Assets.car` with `AppIcon`, `PrivacyInfo.xcprivacy`, and `Metadata.appintents`; `ITSAppUsesNonExemptEncryption` is `false` |
 
-The 66 passing automated tests cover the deterministic contracts for:
+The 71 passing automated tests cover the deterministic contracts for:
 
 - upward and downward volume deltas;
 - initial baseline and exact duplicate-value callback suppression;
@@ -145,6 +145,6 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 
 ## Acceptance conclusion
 
-Automated implementation status is **passed** with 66/66 XcodeBuildMCP tests, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
+Automated implementation status is **passed** with 71/71 XcodeBuildMCP tests, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
 
 Physical hardware-volume and live end-to-end acceptance remain **`NOT RUN`**. A physical iPhone run is mandatory before claiming the user requirement is fully accepted.
