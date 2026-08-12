@@ -50,6 +50,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
+        LSApplicationCategoryType: public.app-category.utilities
         # Menu-bar only: no Dock icon, no main window.
         LSUIElement: true
         LSMinimumSystemVersion: "13.0"

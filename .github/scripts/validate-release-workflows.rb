@@ -3,6 +3,7 @@ require "fileutils"
 require "open3"
 require "tmpdir"
 require "yaml"
+require "open3"
 
 ROOT = File.expand_path("../..", __dir__)
 WORKFLOW_DIR = File.join(ROOT, ".github", "workflows")
@@ -313,6 +314,12 @@ mac_entitlements = File.read(mac_entitlements_path)
 %w[com.apple.security.app-sandbox com.apple.security.network.client].each do |entitlement|
   fail_contract("Mac TestFlight entitlements are missing #{entitlement}") unless mac_entitlements.include?(entitlement)
 end
+
+mac_info_plist_path = File.join(ROOT, "mac", "ClickBridgeMac", "Info.plist")
+mac_category, mac_category_status = Open3.capture2(
+  "plutil", "-extract", "LSApplicationCategoryType", "raw", "-o", "-", mac_info_plist_path
+)
+fail_contract("Mac App Store category must be utilities") unless mac_category_status.success? && mac_category.strip == "public.app-category.utilities"
 
 %w[testflight.yml macos-notarized-release.yml].each do |filename|
   workflow = File.read(File.join(WORKFLOW_DIR, filename))
