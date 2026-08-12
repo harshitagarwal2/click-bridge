@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ClickBridge.Core</RootNamespace>
+    <!--
+      Platform-agnostic on purpose: wire protocol, relay connection, action
+      dedupe/TTL cache, and pairing state machine have no Windows or macOS
+      dependency. This lets the whole logic layer build and test on any OS
+      (see ../../tests/ClickBridge.Core.Tests), the same way the wire
+      protocol is hand-mirrored across Swift/JS in the rest of this repo.
+    -->
+  </PropertyGroup>
+
+</Project>

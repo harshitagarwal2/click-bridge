@@ -27,3 +27,4 @@ benchmarks/*.csv
 !benchmarks/measurements.example.csv
 _to_delete/
 .omx/
+.omc/

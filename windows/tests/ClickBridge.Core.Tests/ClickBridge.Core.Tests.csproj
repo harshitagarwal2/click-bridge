@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ClickBridge.Core.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ClickBridge.Core\ClickBridge.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Same canonical cross-language fixtures the Swift client asserts
+      against (mac/ClickBridgeMac.xcodeproj target ClickBridgeMacTests).
+      Copied at build time so tests read them from the output directory
+      without a fragile relative "../../../.." walk at test-run time.
+    -->
+    <None Include="..\..\..\contracts\fixtures\**\*.json" LinkBase="fixtures">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

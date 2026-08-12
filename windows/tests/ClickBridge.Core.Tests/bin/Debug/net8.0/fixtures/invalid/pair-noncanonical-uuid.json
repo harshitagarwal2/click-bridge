@@ -1,0 +1,1 @@
+{"kind":"message","parser":"client","role":"pairing.claim","message":{"type":"pair.claim","v":1,"reference":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","claimId":"018F63F5-6F3D-7D21-88BC-9EF561F030E2","sessionNonce":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","pairingVersion":1,"clientKind":"ios"},"expectedError":"invalid_uuid"}

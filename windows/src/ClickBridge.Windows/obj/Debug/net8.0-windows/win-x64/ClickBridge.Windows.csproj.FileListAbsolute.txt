@@ -1,0 +1,16 @@
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.csproj.AssemblyReference.cache
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.GeneratedMSBuildEditorConfig.editorconfig
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.AssemblyInfoInputs.cache
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.AssemblyInfo.cs
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.csproj.CoreCompileInputs.cache
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.Windows.sourcelink.json
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/bin/Debug/net8.0-windows/win-x64/ClickBridge.deps.json
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/bin/Debug/net8.0-windows/win-x64/ClickBridge.dll
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/bin/Debug/net8.0-windows/win-x64/ClickBridge.pdb
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/bin/Debug/net8.0-windows/win-x64/ClickBridge.Core.dll
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/bin/Debug/net8.0-windows/win-x64/ClickBridge.Core.pdb
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBri.D62BDF8B.Up2Date
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.dll
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/refint/ClickBridge.dll
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ClickBridge.pdb
+/Users/harshitagarwal/Desktop/clicker/windows/src/ClickBridge.Windows/obj/Debug/net8.0-windows/win-x64/ref/ClickBridge.dll
