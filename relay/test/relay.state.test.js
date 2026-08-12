@@ -9,7 +9,7 @@ import {
   PROTOCOL_VERSION,
 } from '../src/constants.js';
 
-function harness({ start = 1_800_000_000_000 } = {}) {
+function harness({ start = 1_800_000_000_000, authorizePhone = () => true } = {}) {
   let wallNow = start;
   let monotonicUs = 100;
   let nextTimer = 0;
@@ -29,6 +29,7 @@ function harness({ start = 1_800_000_000_000 } = {}) {
       events.push({ connection, event });
       return true;
     },
+    authorizePhone,
     log: (event, detail = {}) => logs.push({ event, detail }),
   });
   const connection = (id) => Object.freeze({ id });
@@ -151,6 +152,25 @@ test('unexpired action is forwarded once and ack remains distinct from result', 
   assert.equal(h.messages(phone, 'action.result').length, 1);
   assert.equal(h.messages(phone, 'relay.ack').length, 1, 'result never mutates the ack');
   assert.equal(h.state.pendingActions.size, 0);
+});
+
+test('a phone that lost credential authorization cannot forward actions', () => {
+  let authorized = true;
+  const h = harness({ authorizePhone: () => authorized });
+  const phone = h.connection('phone');
+  const mac = h.connection('mac');
+  h.state.replaceRole('phone', phone);
+  h.state.replaceRole('mac', mac);
+
+  authorized = false;
+  const outcome = h.state.handlePhoneMessage(phone, action(1_800_000_000_000));
+
+  assert.equal(outcome, 'ignored');
+  assert.equal(h.messages(mac, 'action.request').length, 0);
+  assert.deepEqual(h.logs.at(-1), {
+    event: 'stale_phone_credential',
+    detail: { type: 'action.request' },
+  });
 });
 
 test('mac_offline acknowledgement is terminal and creates no route', () => {

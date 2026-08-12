@@ -1,4 +1,6 @@
-import { timingSafeEqual } from 'node:crypto';
+import * as crypto from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import * as fs from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import { dirname, join } from 'node:path';
@@ -20,9 +22,42 @@ import {
 import { createSecurityHeaders } from './csp.js';
 import { encodeMessage, parseClientMessage, ProtocolError } from './protocol.js';
 import { RelayState } from './relay.js';
+import { createPhoneAuthStore } from './auth-store.js';
+import { PairingCoordinator } from './pairing.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = join(HERE, '..', 'public');
+const DEFAULT_PHONE_AUTH_RECORD = '/var/lib/click-bridge/auth/phone-auth.json';
+
+function parsePairingEnabled(value = '0') {
+  if (value !== '0' && value !== '1') {
+    throw new Error('PAIRING_ENABLED must be exactly 0 or 1');
+  }
+  return value === '1';
+}
+
+function isValidAppleTeamId(value) {
+  return typeof value === 'string' && /^[A-Z0-9]{10}$/.test(value);
+}
+
+function validWebSocketOrigin(req, clickBridgeDomain) {
+  const headers = req.headers ?? Object.create(null);
+  const origin = headers.origin;
+  if (origin === undefined) return true;
+  if (typeof origin !== 'string') return false;
+  if (origin === `https://${clickBridgeDomain}`) return true;
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'http:'
+      && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')
+      && typeof headers.host === 'string'
+      && parsed.host === headers.host
+      && parsed.username === '' && parsed.password === ''
+      && origin === parsed.origin;
+  } catch {
+    return false;
+  }
+}
 
 function validateAdmissionLimits(maxTotal, maxUnauthenticated) {
   if (!Number.isInteger(maxTotal) || maxTotal < 1
@@ -201,12 +236,33 @@ function constantTimeEquals(left, right) {
   return timingSafeEqual(leftBytes, rightBytes);
 }
 
+function captureCredentialDescriptor(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  let descriptor;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(value, 'credentialVersion');
+  } catch {
+    return null;
+  }
+  if (!descriptor || Object.hasOwn(descriptor, 'get') || Object.hasOwn(descriptor, 'set')) {
+    return null;
+  }
+  const credentialVersion = descriptor.value;
+  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) return null;
+  return Object.freeze({ credentialVersion });
+}
+
 function writeResponse(res, status, headers, body = '') {
   res.writeHead(status, headers);
   res.end(body);
 }
 
-export function createHttpHandler({ publicDir = DEFAULT_PUBLIC_DIR, clickBridgeDomain }) {
+export function createHttpHandler({
+  publicDir = DEFAULT_PUBLIC_DIR,
+  clickBridgeDomain,
+  pairingEnabled = false,
+  appleTeamId,
+}) {
   const securityHeaders = createSecurityHeaders(clickBridgeDomain);
   return async function handleHttp(req, res) {
     let pathname;
@@ -229,6 +285,39 @@ export function createHttpHandler({ publicDir = DEFAULT_PUBLIC_DIR, clickBridgeD
         'Content-Length': 2,
         'Cache-Control': 'no-store',
       }, body);
+      return;
+    }
+    if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web')) {
+      try {
+        const body = await readFile(join(publicDir, 'pair.html'));
+        writeResponse(res, 200, {
+          ...securityHeaders,
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Length': body.byteLength,
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        }, req.method === 'HEAD' ? '' : body);
+      } catch {
+        writeResponse(res, 500, securityHeaders);
+      }
+      return;
+    }
+    if (pairingEnabled && pathname === '/.well-known/apple-app-site-association') {
+      const body = Buffer.from(JSON.stringify({
+        applinks: {
+          details: [{
+            appIDs: [`${appleTeamId}.com.clickbridge.phone`],
+            components: [{ '/': '/pair/web', exclude: true }, { '/': '/pair' }],
+          }],
+        },
+      }));
+      writeResponse(res, 200, {
+        ...securityHeaders,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': body.byteLength,
+        'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
+      }, req.method === 'HEAD' ? '' : body);
       return;
     }
 
@@ -260,8 +349,13 @@ export function attachWebSocketServer({
   httpServer,
   state,
   connections,
+  authorizedPhones = new Set(),
   phoneToken,
   macToken,
+  authStore,
+  pairing,
+  pairingEnabled = false,
+  clickBridgeDomain,
   log = console,
   parseClient = parseClientMessage,
   encode = encodeMessage,
@@ -283,6 +377,23 @@ export function attachWebSocketServer({
       || terminalCloseDeadlineMs > AUTH_TIMEOUT_MS) {
     throw new Error(`terminalCloseDeadlineMs must be an integer from 1 through ${AUTH_TIMEOUT_MS}`);
   }
+  const credentialStore = authStore ?? Object.freeze({
+    authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
+      ? Object.freeze({ credentialVersion: 0 }) : null,
+  });
+  const pairingCoordinator = pairing ?? Object.freeze({
+    acknowledge: async () => 'unsupported',
+    cancelByClaimant: () => 'unsupported',
+    claim: () => 'unsupported',
+    macConnected: () => 'unsupported',
+    macDisconnected: () => 'unsupported',
+    disconnectClaimant: () => 'unsupported',
+    requestStatus: () => 'unsupported',
+    create: () => 'unsupported',
+    cancelByMac: () => 'unsupported',
+    approve: () => 'unsupported',
+    deny: () => 'unsupported',
+  });
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   const admissionController = createAdmissionController(
     maxTotalWebSocketConnections,
@@ -303,6 +414,11 @@ export function attachWebSocketServer({
     }
     if (pathname !== '/ws') {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if (!validWebSocketOrigin(req, clickBridgeDomain)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
@@ -434,6 +550,11 @@ export function attachWebSocketServer({
     const admission = ws.__clickBridgeAdmission;
     let role = null;
     let connection = null;
+    let generation = 0;
+    let phase = 'unauthenticated';
+    let operationGeneration = 0;
+    const pendingFrames = [];
+    let processingFrames = false;
     ws.__clickBridgePongTimer = null;
     const authTimer = scheduleAuthTimeout(() => {
       if (role === null) {
@@ -450,29 +571,92 @@ export function attachWebSocketServer({
       ws.__clickBridgePongTimer = null;
     });
 
-    ws.on('message', (data, isBinary) => {
+    const failProtocol = (event, error, closeCode = 4003, reason = 'bad message') => {
+      log.info?.(JSON.stringify({
+        event,
+        code: error instanceof ProtocolError ? error.code : 'parser_failure',
+      }));
+      closeWithDeadline(
+        ws, error instanceof ProtocolError ? closeCode : 1011,
+        error instanceof ProtocolError ? reason : 'internal error',
+        terminalCloseDeadlineMs, scheduleTerminalClose,
+      );
+    };
+
+    const handleMessage = (raw, isBinary, ownedOperation) => {
       if (ws.__clickBridgeTerminal) return;
-      const raw = isBinary ? data : data.toString('utf8');
+      if (ownedOperation !== operationGeneration) return;
+
+      if (phase === 'claimant') {
+        let message;
+        try {
+          message = parseClient(raw, 'pairing.claimed');
+        } catch (error) {
+          failProtocol('claim_message_rejected', error, 4003, 'bad pairing message');
+          return;
+        }
+        if (message.type === 'pair.credential.ack') {
+          const claimantConnection = connection;
+          const claimantGeneration = generation;
+          const claimantClaimId = message.claimId;
+          return Promise.resolve(
+            pairingCoordinator.acknowledge(connection, generation, message),
+          ).then(() => {
+            if (ownedOperation !== operationGeneration || ws.__clickBridgeTerminal) return;
+            if (phase !== 'claimant' || connection !== claimantConnection
+                || generation !== claimantGeneration
+                || connection.claimId !== claimantClaimId) return;
+          });
+        } else {
+          pairingCoordinator.cancelByClaimant(connection, generation, message);
+        }
+        return;
+      }
+
       if (role === null) {
         let message;
         try {
-          message = parseClient(raw, null);
-        } catch (error) {
-          if (error instanceof ProtocolError) {
-            log.info?.(JSON.stringify({ event: 'auth_rejected', code: error.code }));
-            closeWithDeadline(
-              ws, 4003, 'bad hello', terminalCloseDeadlineMs, scheduleTerminalClose,
-            );
-          } else {
-            log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'parser_failure' }));
+          message = parseClient(raw, pairingEnabled ? 'pairing.initial' : null);
+        } catch (initialError) {
+          failProtocol('auth_rejected', initialError, 4003, 'bad initial message');
+          return;
+        }
+        if (message.type === 'pair.claim') {
+            if (ownedOperation !== operationGeneration || ws.__clickBridgeTerminal) return;
+            generation += 1;
+            connection = Object.freeze({
+              id: ++nextConnectionId,
+              role: 'claimant',
+              generation,
+              claimId: message.claimId,
+            });
+            connections.set(connection, ws);
+            phase = 'claimant';
+            clearTimeout(authTimer);
+            admission.releaseUnauthenticated();
+            pairingCoordinator.claim(connection, generation, message);
+            return;
+        }
+
+        let descriptor = null;
+        if (message.role === 'phone') {
+          try {
+            const candidate = credentialStore.authenticateCredential(message.token);
+            if (candidate !== null) descriptor = captureCredentialDescriptor(candidate);
+            if (candidate !== null && descriptor === null) {
+              throw new TypeError('invalid credential descriptor');
+            }
+          } catch {
+            log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'verifier_failure' }));
             closeWithDeadline(
               ws, 1011, 'internal error', terminalCloseDeadlineMs, scheduleTerminalClose,
             );
+            return;
           }
-          return;
+        } else if (constantTimeEquals(message.token, macToken)) {
+          descriptor = Object.freeze({ credentialVersion: null });
         }
-        const expectedToken = message.role === 'phone' ? phoneToken : macToken;
-        if (!constantTimeEquals(message.token, expectedToken)) {
+        if (!descriptor) {
           log.info?.(JSON.stringify({
             event: 'auth_rejected', code: 'bad_token', role: message.role,
           }));
@@ -482,13 +666,22 @@ export function attachWebSocketServer({
           return;
         }
 
-        if (ws.__clickBridgeTerminal) return;
+        if (ownedOperation !== operationGeneration || ws.__clickBridgeTerminal) return;
         role = message.role;
+        phase = role;
         clearTimeout(authTimer);
         admission.releaseUnauthenticated();
-        connection = Object.freeze({ id: ++nextConnectionId, role });
+        generation += 1;
+        connection = Object.freeze({
+          id: ++nextConnectionId,
+          role,
+          generation,
+          credentialVersion: descriptor.credentialVersion,
+        });
         connections.set(connection, ws);
+        if (role === 'phone') authorizedPhones.add(connection);
         state.replaceRole(role, connection);
+        if (role === 'mac') pairingCoordinator.macConnected(connection, generation);
         ws.send(encode({ type: 'hello.ok', v: PROTOCOL_VERSION, role }));
         state.publishState();
         log.info?.(JSON.stringify({ event: 'authenticated', role }));
@@ -513,11 +706,94 @@ export function attachWebSocketServer({
         }
         return;
       }
-      if (role === 'phone') state.handlePhoneMessage(connection, message);
-      else state.handleMacMessage(connection, message);
+      if (role === 'phone') {
+        state.handlePhoneMessage(connection, message);
+      } else if (message.type.startsWith('pair.')) {
+        if (!pairingEnabled) {
+          const failure = {
+            type: 'pair.failed', v: PROTOCOL_VERSION,
+            requestId: message.requestId, reason: 'unsupported',
+          };
+          if (Object.hasOwn(message, 'claimId')) failure.claimId = message.claimId;
+          ws.send(encode(failure));
+          return;
+        }
+        if (message.type === 'pair.status.request') {
+          pairingCoordinator.requestStatus(connection, generation, message);
+        } else if (message.type === 'pair.create') {
+          pairingCoordinator.create(connection, generation, message);
+        } else if (message.type === 'pair.cancel') {
+          pairingCoordinator.cancelByMac(connection, generation, message);
+        } else if (message.type === 'pair.approve') {
+          pairingCoordinator.approve(connection, generation, message);
+        } else {
+          pairingCoordinator.deny(connection, generation, message);
+        }
+      } else {
+        state.handleMacMessage(connection, message);
+      }
+    };
+
+    const drainFrames = () => {
+      if (processingFrames) return;
+      processingFrames = true;
+      while (pendingFrames.length > 0) {
+        if (ws.__clickBridgeTerminal) {
+          pendingFrames.length = 0;
+          processingFrames = false;
+          return;
+        }
+        const frame = pendingFrames.shift();
+        let result;
+        try {
+          result = handleMessage(frame.raw, frame.isBinary, frame.ownedOperation);
+        } catch {
+          if (frame.ownedOperation === operationGeneration && !ws.__clickBridgeTerminal) {
+            log.info?.(JSON.stringify({
+              event: 'message_internal_error', code: 'handler_failure',
+            }));
+            closeWithDeadline(
+              ws, 1011, 'internal error', terminalCloseDeadlineMs, scheduleTerminalClose,
+            );
+          }
+          continue;
+        }
+        if (result && typeof result.then === 'function') {
+          result.catch(() => {
+            if (frame.ownedOperation !== operationGeneration || ws.__clickBridgeTerminal) return;
+            log.info?.(JSON.stringify({
+              event: 'message_internal_error', code: 'handler_failure',
+            }));
+            closeWithDeadline(
+              ws, 1011, 'internal error', terminalCloseDeadlineMs, scheduleTerminalClose,
+            );
+          }).finally(() => {
+            processingFrames = false;
+            drainFrames();
+          });
+          return;
+        }
+      }
+      processingFrames = false;
+    };
+
+    ws.on('message', (data, isBinary) => {
+      if (ws.__clickBridgeTerminal) return;
+      const ownedOperation = operationGeneration;
+      let raw;
+      try {
+        raw = isBinary ? data : data.toString('utf8');
+      } catch (error) {
+        failProtocol('message_internal_error', error, 4003, 'bad message');
+        return;
+      }
+      pendingFrames.push({ raw, isBinary, ownedOperation });
+      drainFrames();
     });
 
     ws.on('close', () => {
+      operationGeneration += 1;
+      pendingFrames.length = 0;
       admission.releaseAll();
       clearTimeout(authTimer);
       if (ws.__clickBridgeCloseTimer) clearTimeout(ws.__clickBridgeCloseTimer);
@@ -526,13 +802,21 @@ export function attachWebSocketServer({
       ws.__clickBridgePongTimer = null;
       if (connection) {
         connections.delete(connection);
-        state.detachIfCurrent(role, connection);
+        authorizedPhones.delete(connection);
+        if (phase === 'claimant') pairingCoordinator.disconnectClaimant(connection, generation);
+        else {
+          state.detachIfCurrent(role, connection);
+          if (role === 'mac') pairingCoordinator.macDisconnected(connection, generation);
+        }
         log.info?.(JSON.stringify({ event: 'disconnected', role }));
       }
     });
     ws.on('error', (error) => {
+      operationGeneration += 1;
+      pendingFrames.length = 0;
       ws.__clickBridgeTerminal = true;
       admission.releaseAll();
+      if (connection) authorizedPhones.delete(connection);
       log.info?.(JSON.stringify({
         event: 'socket_error', role: role ?? 'unauthenticated',
         code: typeof error?.code === 'string' ? error.code : 'socket_error',
@@ -586,6 +870,11 @@ export function createServer({
   pingIntervalMs = SERVER_PING_INTERVAL_MS,
   pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
   terminalCloseDeadlineMs = TERMINAL_CLOSE_DEADLINE_MS,
+  pairingEnabled = '0',
+  appleTeamId,
+  phoneAuthRecord,
+  authStore,
+  pairingOptions = {},
   maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
   performWebSocketUpgrade,
@@ -606,8 +895,33 @@ export function createServer({
   if (!isValidHostname(clickBridgeDomain)) {
     throw new Error('CLICK_BRIDGE_DOMAIN must be a bare valid hostname');
   }
+  const pairingIsEnabled = parsePairingEnabled(pairingEnabled);
+  if (pairingIsEnabled && !isValidAppleTeamId(appleTeamId)) {
+    throw new Error('APPLE_TEAM_ID must be 10 uppercase alphanumeric characters when pairing is enabled');
+  }
+  if (pairingIsEnabled && !authStore && !phoneAuthRecord) {
+    throw new Error('PHONE_AUTH_RECORD or authStore is required when pairing is enabled');
+  }
+
+  let redactedLog;
+  const credentialStore = authStore ?? (pairingIsEnabled && phoneAuthRecord
+    ? createPhoneAuthStore({
+      recordPath: phoneAuthRecord,
+      initialPhoneToken: phoneToken,
+      fs,
+      crypto,
+      log: () => redactedLog?.('phone_auth_store_failure'),
+    })
+    : Object.freeze({
+      async initialize() {},
+      snapshot: () => Object.freeze({ activePhoneCredentialVersion: 0 }),
+      authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
+        ? Object.freeze({ credentialVersion: 0 }) : null,
+      async activate() { throw new Error('durable auth store unavailable'); },
+    }));
 
   const connections = new Map();
+  const authorizedPhones = new Set();
   const emit = (connection, event) => {
     const ws = connections.get(connection);
     if (!ws) return false;
@@ -621,18 +935,67 @@ export function createServer({
     }
     return false;
   };
-  const redactedLog = (event, detail = {}) => {
+  redactedLog = (event, detail = {}) => {
     log.info?.(JSON.stringify({ event, ...detail }));
   };
-  const state = stateFactory({ ...stateOptions, emit, log: redactedLog });
-  const httpServer = http.createServer(createHttpHandler({ publicDir, clickBridgeDomain }));
+  let state;
+  const deauthorizeOlderPhones = ({ credentialVersion, exclude }) => {
+    const older = [];
+    for (const connection of [...authorizedPhones]) {
+      if (connection.role !== 'phone'
+          || connection === exclude.connection
+          || connection.credentialVersion >= credentialVersion) continue;
+      authorizedPhones.delete(connection);
+      state.detachIfCurrent('phone', connection);
+      older.push({
+        connection,
+        generation: connection.generation,
+        credentialVersion: connection.credentialVersion,
+      });
+    }
+    return older;
+  };
+  const pairing = new PairingCoordinator({
+    enabled: pairingIsEnabled,
+    now: pairingOptions.now ?? (() => Date.now()),
+    randomBytes: pairingOptions.randomBytes ?? randomBytes,
+    randomInt: pairingOptions.randomInt ?? randomInt,
+    scheduler: pairingOptions.scheduler ?? {
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (timer) => clearTimeout(timer),
+    },
+    authStore: credentialStore,
+    emit: (connection, message) => emit(connection, { kind: 'message', message }),
+    close: (connection, code, reason) => emit(connection, { kind: 'close', code, reason }),
+    deauthorizeOlderPhones,
+    log: redactedLog,
+  });
+  state = stateFactory({
+    ...stateOptions,
+    emit,
+    log: redactedLog,
+    authorizePhone: (connection) => authorizedPhones.has(connection)
+      && (!pairingIsEnabled
+        || pairing.allowsPhoneCredentialVersion(connection.credentialVersion) === true),
+  });
+  const httpServer = http.createServer(createHttpHandler({
+    publicDir,
+    clickBridgeDomain,
+    pairingEnabled: pairingIsEnabled,
+    appleTeamId,
+  }));
   httpServer.on('connection', (socket) => socket.setNoDelay?.(true));
   const attachment = attachWebSocketServer({
     httpServer,
     state,
     connections,
+    authorizedPhones,
     phoneToken,
     macToken,
+    authStore: credentialStore,
+    pairing,
+    pairingEnabled: pairingIsEnabled,
+    clickBridgeDomain,
     log,
     parseClient,
     encode,
@@ -644,20 +1007,26 @@ export function createServer({
     maxUnauthenticatedWebSocketConnections,
     performWebSocketUpgrade,
   });
+  let serverClosing = false;
 
   return {
     httpServer,
     wss: attachment.wss,
     state,
-    listen: (port, host) => new Promise((resolve, reject) => {
-      const onError = (error) => reject(error);
-      httpServer.once('error', onError);
-      httpServer.listen(port, host, () => {
-        httpServer.off('error', onError);
-        resolve();
+    listen: async (port, host) => {
+      await credentialStore.initialize();
+      if (serverClosing) throw new Error('server is closing');
+      return new Promise((resolve, reject) => {
+        const onError = (error) => reject(error);
+        httpServer.once('error', onError);
+        httpServer.listen(port, host, () => {
+          httpServer.off('error', onError);
+          resolve();
+        });
       });
-    }),
+    },
     async close() {
+      serverClosing = true;
       state.dispose?.();
       await attachment.close();
       if (httpServer.listening) {
@@ -677,6 +1046,9 @@ if (isMain) {
       phoneToken: process.env.PHONE_TOKEN,
       macToken: process.env.MAC_TOKEN,
       clickBridgeDomain: process.env.CLICK_BRIDGE_DOMAIN,
+      pairingEnabled: process.env.PAIRING_ENABLED ?? '0',
+      appleTeamId: process.env.APPLE_TEAM_ID,
+      phoneAuthRecord: process.env.PHONE_AUTH_RECORD ?? DEFAULT_PHONE_AUTH_RECORD,
     });
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be an integer from 1 through 65535');
