@@ -374,9 +374,29 @@ exit 0
 FAKE_SLEEP
 chmod +x "$FAKE_BIN/sleep"
 
+cat > "$FAKE_BIN/stat" <<'FAKE_STAT'
+#!/usr/bin/env bash
+set -eu
+if test -z "${FAKE_STAT_STYLE:-}"; then
+  exec /usr/bin/stat "$@"
+fi
+case "${FAKE_STAT_STYLE:-}:$*" in
+  'gnu:-c %a '*) printf '%s\n' 600 ;;
+  'gnu:-f %Lp '*) printf '%s\n' 'gnu-stat-incompatible-output' ;;
+  'bsd:-c %a '*) exit 1 ;;
+  'bsd:-f %Lp '*) printf '%s\n' 600 ;;
+  *) exit 2 ;;
+esac
+FAKE_STAT
+chmod +x "$FAKE_BIN/stat"
+
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
+}
+
+file_mode() {
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
 }
 
 assert_file_equals() {
@@ -479,7 +499,7 @@ assert_document_operator_recipes() {
     bash "$generation" 2>&1)" || fail "$document secret recipe failed: $output"
   assert_secret_free "$output" "$document secret recipe"
   test -z "$output" || fail "$document secret recipe emitted output"
-  test "$(stat -f %Lp "$secrets" 2>/dev/null || stat -c %a "$secrets")" = 600 ||
+  test "$(file_mode "$secrets")" = 600 ||
     fail "$document secret recipe did not create mode 0600"
   test "$(wc -l < "$secrets" | tr -d ' ')" = 5 || fail "$document secret recipe did not create five lines"
   expected="$TEST_ROOT/${label}-expected.env"
@@ -499,6 +519,21 @@ assert_document_operator_recipes() {
     fail "$document pairing recipe did not edit 0 to 1 exactly once"
   test "$(grep -c '^APPLE_TEAM_ID=XXXXXXXXXX$' "$secrets")" = 1 ||
     fail "$document pairing recipe did not add APPLE_TEAM_ID exactly once"
+
+  local stat_style
+  for stat_style in gnu bsd; do
+    secrets="$TEST_ROOT/${label}-${stat_style}-secrets.env"
+    counter="$TEST_ROOT/${label}-${stat_style}-openssl-count"
+    : > "$counter"
+    output="$(env PATH="$FAKE_BIN:/usr/bin:/bin" \
+      CLICK_BRIDGE_SECRETS_FILE="$secrets" FAKE_OPENSSL_COUNTER="$counter" \
+      bash "$generation" 2>&1)" || fail "$document $stat_style secret recipe failed: $output"
+    output="$(env PATH="$FAKE_BIN:/usr/bin:/bin" FAKE_STAT_STYLE="$stat_style" \
+      CLICK_BRIDGE_SECRETS_FILE="$secrets" bash "$enable" 2>&1)" ||
+      fail "$document pairing recipe rejected $stat_style stat behavior: $output"
+    assert_secret_free "$output" "$document $stat_style pairing recipe"
+    test -z "$output" || fail "$document $stat_style pairing recipe emitted output"
+  done
 }
 
 new_case_root() {

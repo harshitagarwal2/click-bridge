@@ -310,6 +310,9 @@ exactly once. The canonical auth-record line remains unchanged:
 # click-bridge-pairing-enable-recipe:start
 set -Eeuo pipefail
 CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
+file_mode() {
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
+}
 test "$(grep -c '^PAIRING_ENABLED=0$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
 test "$(grep -c '^APPLE_TEAM_ID=' "$CLICK_BRIDGE_SECRETS_FILE" || true)" = 0
 sed -i.bak 's/^PAIRING_ENABLED=0$/PAIRING_ENABLED=1/' "$CLICK_BRIDGE_SECRETS_FILE"
@@ -317,7 +320,7 @@ rm -f "$CLICK_BRIDGE_SECRETS_FILE.bak"
 printf '%s\n' 'APPLE_TEAM_ID=XXXXXXXXXX' >> "$CLICK_BRIDGE_SECRETS_FILE"
 test "$(grep -c '^PAIRING_ENABLED=1$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
 test "$(grep -c '^APPLE_TEAM_ID=XXXXXXXXXX$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
-test "$(stat -f %Lp "$CLICK_BRIDGE_SECRETS_FILE" 2>/dev/null || stat -c %a "$CLICK_BRIDGE_SECRETS_FILE")" = 600
+test "$(file_mode "$CLICK_BRIDGE_SECRETS_FILE")" = 600
 # click-bridge-pairing-enable-recipe:end
 ```
 
