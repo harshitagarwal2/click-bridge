@@ -122,10 +122,11 @@ verify_public_release() {
 
   for attempt in $(seq 1 "$PUBLIC_HEALTH_ATTEMPTS"); do
     : "$attempt"
-    if CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \
+    if CLICK_BRIDGE_RELEASE="$release" CLICK_BRIDGE_DOMAIN="$CLICK_BRIDGE_DOMAIN" \
+      docker run --rm --network host \
       --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
-      --env-file "$SHARED_ENV" \
-      node:24-alpine node -e \
+      --env CLICK_BRIDGE_DOMAIN \
+      node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e \
       'fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'; then
       ready=1
       break
@@ -135,12 +136,18 @@ verify_public_release() {
 
   [[ "$ready" = 1 ]] || return 1
 
-  CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \
+  CLICK_BRIDGE_RELEASE="$release" \
+    CLICK_BRIDGE_DOMAIN="$CLICK_BRIDGE_DOMAIN" \
+    PHONE_TOKEN="$PHONE_TOKEN" \
+    MAC_TOKEN="$MAC_TOKEN" \
+    docker run --rm --network host \
     --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
-    --env-file "$SHARED_ENV" \
+    --env CLICK_BRIDGE_DOMAIN \
+    --env PHONE_TOKEN \
+    --env MAC_TOKEN \
     --volume "$directory/relay:/workspace:ro" \
     --workdir /tmp/smoke \
-    node:24-alpine sh -euc \
+    node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 sh -euc \
     'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 }
 
@@ -160,6 +167,8 @@ for required_key in PHONE_TOKEN MAC_TOKEN CLICK_BRIDGE_DOMAIN; do
     die "$SHARED_ENV must define $required_key exactly once"
 done
 CLICK_BRIDGE_DOMAIN="$(sed -n 's/^CLICK_BRIDGE_DOMAIN=//p' "$SHARED_ENV")"
+PHONE_TOKEN="$(sed -n 's/^PHONE_TOKEN=//p' "$SHARED_ENV")"
+MAC_TOKEN="$(sed -n 's/^MAC_TOKEN=//p' "$SHARED_ENV")"
 [[ "$CLICK_BRIDGE_DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] ||
   die 'CLICK_BRIDGE_DOMAIN is not a valid hostname'
 release_directory "$CLICK_BRIDGE_RELEASE" >/dev/null

@@ -11,10 +11,50 @@ import {
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import * as workflowVerifier from "./verify-workflows.mjs";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
+);
+
+const reviewedCaddy =
+  "caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648";
+const reviewedNode =
+  "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43";
+const { validateDeploymentImages } = workflowVerifier;
+assert.equal(
+  typeof validateDeploymentImages,
+  "function",
+  "workflow verification must expose deployment image validation",
+);
+
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: "FROM node:24-alpine\n",
+      compose: `services:\n  caddy:\n    image: ${reviewedCaddy}\n`,
+      deployScript: `${reviewedNode}\n${reviewedNode}\n`,
+    }),
+  /tag-only|reviewed digest/,
+  "deployment image validation must reject tag-only references",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `FROM ${reviewedNode}\n`,
+      compose: "services:\n  caddy:\n    image: caddy:2-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      deployScript: `${reviewedNode}\n${reviewedNode}\n`,
+    }),
+  /reviewed digest/,
+  "deployment image validation must reject unreviewed digests",
+);
+assert.doesNotThrow(() =>
+  validateDeploymentImages({
+    dockerfile: `FROM ${reviewedNode}\n`,
+    compose: `services:\n  caddy:\n    image: ${reviewedCaddy}\n`,
+    deployScript: `${reviewedNode}\n${reviewedNode}\n`,
+  }),
 );
 
 function readRequired(relativePath) {

@@ -3,6 +3,35 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+const reviewedCaddy =
+  "caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648";
+const reviewedNode =
+  "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43";
+
+export function validateDeploymentImages({ dockerfile, compose, deployScript }) {
+  const baseReferences = dockerfile.match(/node:24-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  assert.deepEqual(
+    baseReferences,
+    [reviewedNode],
+    "relay base image must use the reviewed digest; tag-only references are forbidden",
+  );
+
+  const caddyReferences = compose.match(/caddy:2-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  assert.deepEqual(
+    caddyReferences,
+    [reviewedCaddy],
+    "Caddy must use exactly the reviewed digest; tag-only references are forbidden",
+  );
+
+  const verifierReferences =
+    deployScript.match(/node:24-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  assert.deepEqual(
+    verifierReferences,
+    [reviewedNode, reviewedNode],
+    "both verifier containers must match the reviewed Node digest; tag-only references are forbidden",
+  );
+}
+
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
@@ -34,9 +63,14 @@ const dockerfile = readFileSync(
   path.join(repositoryRoot, "deploy/oci/Dockerfile"),
   "utf8",
 );
-assert.match(
-  dockerfile,
-  /^FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43$/m,
+const compose = readFileSync(
+  path.join(repositoryRoot, "deploy/oci/compose.yaml"),
+  "utf8",
 );
+const deployScript = readFileSync(
+  path.join(repositoryRoot, ".github/scripts/deploy-oci.sh"),
+  "utf8",
+);
+validateDeploymentImages({ dockerfile, compose, deployScript });
 
 console.log(`verified ${workflowFiles.length} workflow file(s)`);
