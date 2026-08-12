@@ -1,106 +1,102 @@
 # Click Bridge
 
-Click Bridge lets one foreground phone client send one action over the internet
-so a macOS menu-bar app can post exactly three independent ordinary left mouse clicks at the Mac's current
-pointer location. The native iOS client supports system output-volume changes,
-an on-screen **Trigger 3 Clicks** button, and a **Trigger 3 Clicks** App Shortcut. The
-tap-based PWA remains available as the fallback phone client.
+Click Bridge turns one accepted phone action into exactly **three independent
+ordinary left clicks** at the Mac's current pointer location. Use either the
+native iOS app (volume change, **Trigger 3 Clicks**, or App Shortcut) or the
+installable PWA; the relay carries one logical `click` action to the macOS
+menu-bar receiver.
 
-The relay/PWA, macOS, and native iOS implementations are present with automated
-test and build evidence recorded in this repository. Physical iPhone volume and
-haptic behavior, macOS Accessibility-authorized clicking, and an end-to-end
-Octo Browser click session still require the explicit hardware acceptance runs;
-the automated evidence does not stand in for those gates.
+> **Acceptance status:** automated tests and builds are recorded, but physical
+> iPhone volume/haptic behavior, Accessibility-authorized clicking in Octo, and
+> end-to-end latency are still **NOT RUN**. A `Posted` result means the Mac
+> attempted the three `CGEvent` click pairs; only an observed Octo `+3` proves
+> the physical target received them.
 
-## Canonical scope
+## Start here
 
-- `FINAL-PLAN.md` is the only active implementation plan.
-- The foreground native iOS client reuses the existing phone role and protocol.
-  Its XcodeGen source is `ios/project.yml`, and its shared scheme is
-  `ClickBridgePhone`.
-- Native volume changes, the on-screen **Trigger 3 Clicks** button, and the App
-  Shortcut all feed the same readiness and one-action-in-flight boundary.
-- The existing installable PWA is preserved as the tap-based fallback.
-- Tailscale (Task 11) and hedged delivery (Task 12) are latency experiments and
-  must not be enabled before the Milestone 1 acceptance gate passes.
-- Earlier plans and prototypes are non-authoritative historical evidence under
-  `archive/`.
+1. **Relay:** use the existing trusted HTTPS/WSS endpoint, or follow the
+   [OCI deployment runbook](docs/oci-deployment.md). Production clients require
+   `wss://<host>/ws`. Keep `PHONE_TOKEN` and `MAC_TOKEN` out of URLs, logs,
+   screenshots, and Git; the VM's canonical copy is the mode-`0600`
+   `/opt/click-bridge/shared/secrets.env` file.
+2. **Mac receiver:** follow [Install and run the macOS receiver](docs/install-macos.md),
+   save the matching `MAC_TOKEN`, grant macOS Accessibility access, and turn on
+   **Remote control enabled** from the Click Bridge menu-bar item.
+3. **Phone — choose one live client:** in the native app, open **Settings**,
+   enter the relay WSS URL and `PHONE_TOKEN`, save, and keep the app in the
+   foreground. Or open the relay's HTTPS page, install the PWA from the browser
+   menu, then use **Settings → Save / replace** for `PHONE_TOKEN`. Disconnect or
+   background the native app before using the PWA, and keep the chosen client
+   foreground-visible.
+4. Wait for **Ready**, place the Mac pointer over the intended target, then use
+   one phone trigger. One accepted logical action becomes three left-button
+   down/up pairs; it is not one physical click and the phone supplies no cursor
+   coordinates.
 
-Repository and environment facts are recorded in
-[`docs/preflight.md`](docs/preflight.md).
-Xcode Cloud setup, workflow ownership, and TestFlight rollout are recorded in
-[`docs/xcode-cloud.md`](docs/xcode-cloud.md).
+Turn **Remote control enabled** off before maintenance or whenever remote input
+is not wanted. That switch and Accessibility permission are separate gates:
+turning the switch on does not grant macOS permission. Quitting the Mac app
+makes the phone report the Mac offline.
 
-## Delivery acceptance path
+## Read the status before retrying
 
-| Task | Gate |
-|---|---|
-| 1 | Repository boundaries and preflight facts are recorded |
-| 2 | One canonical wire contract passes Node and Swift fixture tests |
-| 3 | Relay behavior passes unit, socket, and lifecycle tests |
-| 4 | The foreground phone PWA passes state, asset, CSP, and browser checks |
-| 5 | The macOS shell and relay client build and pass tests |
-| 6 | Permission, at-most-once action processing, and `CGEvent` click tests pass |
-| 7 | A local phone-to-relay-to-Mac click works on the harmless counter page |
-| 8 | The relay is deployed to the selected OCI SJC VM behind public HTTPS/WSS |
-| 9 | Physical Octo Browser acceptance and latency benchmarking pass; canonical cleanup finishes |
-| 10 | Native iOS automated checks pass; physical iPhone volume/haptic acceptance remains a separate required gate |
+- **Ready:** phone authenticated; Mac online; remote control, Accessibility,
+  and clock checks ready.
+- **Not connected / Connecting:** open phone settings, verify the exact WSS URL
+  and token, then reconnect.
+- **Mac offline:** start Click Bridge on the Mac and use **Reconnect** if needed.
+- **Mac not ready / Grant input permission / Enable remote control:** grant
+  Accessibility and separately enable the Mac menu-bar toggle.
+- **Checking clock / Clock check unavailable / Clock mismatch:** wait, use
+  **Retry clock check**, or enable automatic date and time on both devices.
+- **Sending / Forwarded:** one action is already in flight. Do not submit
+  another. Forwarded is not a physical-success result.
+- **Rejected / error:** follow the displayed reason; rejected actions do not
+  become successful clicks.
+- **Unknown:** a click may have occurred. Inspect the Mac/target before trying
+  again; the client does not replay it.
+- **Another phone took over:** stop the other client, then tap **Reconnect this
+  phone** (iOS) or re-save the PWA token. Only one phone client is live.
 
-Task 13 is the final repository verification pass. Tasks 11 and 12 remain
-optional after Milestone 1 and are retained only if measured latency improves;
-Task 10 is required before final handoff.
+## Token storage and replacement
 
-## Intended architecture
+Both role tokens are exactly 64 lowercase hexadecimal characters and are
+different from each other.
 
-```text
-Phone foreground client
-  +-- native iOS client
-  |     +-- output-volume changes
-  |     +-- on-screen Trigger 3 Clicks
-  |     +-- Trigger 3 Clicks App Shortcut
-  +-- preserved PWA fallback
-        |
-        | HTTPS/WSS + existing phone protocol
-        v
-OCI SJC: Caddy -> Node relay
-                       |
-                       | persistent WSS
-                       v
-              macOS menu-bar app
-                       |
-                       v
-          three ordinary CGEvent clicks
-```
+- **OCI relay:** both tokens live in
+  `/opt/click-bridge/shared/secrets.env`, mode `0600`. Install the replacement,
+  force-recreate the active relay container, pass the public HTTPS/WSS smoke,
+  then update both clients to match.
+- **Mac receiver:** `MAC_TOKEN` is in Keychain; relay URL and remote toggle are
+  in UserDefaults. **Settings → Save** replaces and reconnects; **Clear** removes
+  the token and disconnects.
+- **Native iOS:** `PHONE_TOKEN` is in Keychain; relay URL is in UserDefaults.
+  Enter a replacement in Settings; leave it blank to retain the saved token.
+- **PWA:** `PHONE_TOKEN` is in that browser profile's localStorage. Use
+  **Save / replace** or **Clear**. PWA storage is not Keychain storage.
 
-The relay keeps only live connection and routing state; the Mac process owns
-action deduplication and native click execution. The native iOS client keeps one
-authenticated WSS connection, one action in flight, and no queue; every native
-entry point uses the current foreground, relay, Mac, and clock-readiness gates.
-At 0% or 100%, one direction cannot create another observable volume delta.
-Control Center, wired/Bluetooth headsets, and AirPods can also trigger because
-iOS reports volume changes rather than the physical source. Haptics wait for the
-Mac terminal result.
+For a deliberate two-role rotation, keep the new tokens out of shell arguments
+and output, then follow [Rotate role tokens](docs/install-macos.md#rotate-role-tokens).
+The relay container must be recreated to load the new environment—a plain
+restart keeps its old tokens. Update the saved Mac and phone tokens only after
+the recreated relay passes its public health and WSS smoke checks.
 
-One accepted phone input still creates one logical action ID, one terminal
-result, and at most one terminal-result haptic. The Mac expands that logical
-action into exactly three independent ordinary click pairs; the wire action
-remains `click`.
+## Recovery and proof
 
-## Repository layout
+- Mac install, update, permission recovery, and bundle rollback:
+  [docs/install-macos.md](docs/install-macos.md)
+- Relay inspection, failed-candidate recovery, service restart, VM recovery,
+  rollback, and roll-forward: [docs/oci-recovery.md](docs/oci-recovery.md)
+- Public endpoint and immutable-release procedure:
+  [docs/oci-deployment.md](docs/oci-deployment.md)
+- Native iOS configuration and automated evidence:
+  [docs/ios-acceptance.md](docs/ios-acceptance.md)
+- Required physical matrix (**NOT RUN**):
+  [docs/physical-smoke-test.md](docs/physical-smoke-test.md)
+- Latency method and still-empty result (**NOT RUN**):
+  [docs/benchmark.md](docs/benchmark.md) and
+  [docs/latency-report.md](docs/latency-report.md)
 
-```text
-contracts/fixtures/   Canonical wire-protocol fixtures
-relay/src/            Node relay implementation
-relay/public/         Foreground phone web app
-relay/test/           Relay and web-app tests
-mac/                  Swift macOS app and tests
-ios/project.yml       Native iOS XcodeGen source; shared ClickBridgePhone scheme
-ios/                  Native iOS app and deterministic tests
-deploy/oci/           OCI Docker, Compose, and Caddy configuration
-tests/manual/         Harmless physical click counter
-docs/                 Preflight, deployment, smoke-test, and benchmark notes
-archive/              Non-authoritative historical material
-```
-
-Use the acceptance criteria in `FINAL-PLAN.md` and the current evidence records
-under `docs/`. Treat any gate marked `NOT RUN` as outstanding.
+`FINAL-PLAN.md` is the only active implementation plan. Older plans under
+`archive/` are historical evidence, and Tailscale/hedged delivery remain off
+until the physical Milestone 1 gate passes.
