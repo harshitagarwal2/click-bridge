@@ -68,11 +68,15 @@ final class PhoneRelayClient: PhoneActionTransport {
 
     func send(_ message: PhoneClientMessage) -> Bool {
         guard isAuthenticated, let socket else { return false }
+        let expectedGeneration = generation
         do {
-            try socket.send(text: message.encodedText())
+            try socket.send(text: message.encodedText()) { [weak self, weak socket] error in
+                guard let self, let socket, error != nil else { return }
+                self.fail(generation: expectedGeneration, socket: socket, reason: "send_failed")
+            }
             return true
         } catch {
-            fail(generation: generation, socket: socket, reason: "send_failed")
+            fail(generation: expectedGeneration, socket: socket, reason: "send_failed")
             return false
         }
     }
@@ -119,7 +123,10 @@ final class PhoneRelayClient: PhoneActionTransport {
         do {
             try socket.send(text: PhoneClientMessage.hello(
                 Hello(role: "phone", token: configuration.token)
-            ).encodedText())
+            ).encodedText()) { [weak self, weak socket] error in
+                guard let self, let socket, error != nil else { return }
+                self.fail(generation: expectedGeneration, socket: socket, reason: "hello_send_failed")
+            }
         } catch {
             fail(generation: expectedGeneration, socket: socket, reason: "hello_send_failed")
         }
@@ -177,7 +184,14 @@ final class PhoneRelayClient: PhoneActionTransport {
             do {
                 try socket.send(text: PhoneClientMessage.heartbeatRequest(
                     HeartbeatRequest(sequence: sequence)
-                ).encodedText())
+                ).encodedText()) { [weak self, weak socket] error in
+                    guard let self, let socket, error != nil else { return }
+                    self.fail(
+                        generation: expectedGeneration,
+                        socket: socket,
+                        reason: "heartbeat_send_failed"
+                    )
+                }
             } catch {
                 self.fail(generation: expectedGeneration, socket: socket, reason: "heartbeat_send_failed")
                 return
@@ -318,9 +332,11 @@ final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSoc
         receiveNext(from: task)
     }
 
-    func send(text: String) throws {
+    func send(text: String, completion: @escaping @MainActor @Sendable (Error?) -> Void) throws {
         guard let task else { throw URLError(.notConnectedToInternet) }
-        task.send(.string(text)) { _ in }
+        task.send(.string(text)) { error in
+            Task { @MainActor in completion(error) }
+        }
     }
 
     func close(code: URLSessionWebSocketTask.CloseCode, reason: String) {

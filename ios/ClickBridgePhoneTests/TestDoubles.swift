@@ -150,14 +150,26 @@ final class FakePhoneWebSocket: PhoneWebSocket {
     private(set) var sentTexts: [String] = []
     private(set) var closes: [(URLSessionWebSocketTask.CloseCode, String)] = []
     var sendError: Error?
+    var automaticallyCompletesSends = true
+    private var pendingSendCompletions: [@MainActor @Sendable (Error?) -> Void] = []
 
     func open(url: URL) {
         openedURLs.append(url)
     }
 
-    func send(text: String) throws {
+    func send(text: String, completion: @escaping @MainActor @Sendable (Error?) -> Void) throws {
         if let sendError { throw sendError }
         sentTexts.append(text)
+        if automaticallyCompletesSends {
+            completion(nil)
+        } else {
+            pendingSendCompletions.append(completion)
+        }
+    }
+
+    func completeNextSend(error: Error?) {
+        guard !pendingSendCompletions.isEmpty else { return }
+        pendingSendCompletions.removeFirst()(error)
     }
 
     func close(code: URLSessionWebSocketTask.CloseCode, reason: String) {

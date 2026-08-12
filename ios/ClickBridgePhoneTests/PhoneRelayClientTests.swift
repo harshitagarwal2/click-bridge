@@ -216,6 +216,75 @@ final class PhoneRelayClientTests: XCTestCase {
         XCTAssertEqual(socket.sentTexts.filter { $0.contains(#""sequence":9"#) }.count, 1)
     }
 
+    func testDelayedSendFailureInvalidatesExactlyOneGenerationWithoutResendingAction() throws {
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(factory: factory, scheduler: scheduler, randomUnit: { 0.5 })
+        let actionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let message = PhoneClientMessage.actionRequest(ActionRequest(
+            actionID: actionID,
+            action: "click",
+            issuedAtUnixMilliseconds: 1_000,
+            expiresAtUnixMilliseconds: 2_000
+        ))
+
+        subject.connect(configuration: configuration)
+        let socket = factory.sockets[0]
+        socket.emitOpen()
+        socket.emitText(#"{"type":"hello.ok","v":1,"role":"phone"}"#)
+        socket.automaticallyCompletesSends = false
+        let sendingGeneration = subject.generation
+
+        XCTAssertTrue(subject.send(message))
+        socket.completeNextSend(error: FakePhoneWebSocketError.sendFailed)
+
+        XCTAssertEqual(subject.generation, sendingGeneration + 1)
+        XCTAssertEqual(socket.closes.filter { $0.1 == "send_failed" }.count, 1)
+        XCTAssertEqual(scheduler.entries.map(\.delay), [0.125])
+        XCTAssertEqual(
+            factory.sockets.flatMap(\.sentTexts).filter {
+                $0.lowercased().contains(actionID.uuidString.lowercased())
+            }.count,
+            1
+        )
+
+        scheduler.runFirst(after: 0.125)
+        XCTAssertEqual(factory.sockets.count, 2)
+        XCTAssertEqual(
+            factory.sockets.flatMap(\.sentTexts).filter {
+                $0.lowercased().contains(actionID.uuidString.lowercased())
+            }.count,
+            1
+        )
+    }
+
+    func testStaleSendFailureCannotAffectReplacementGeneration() throws {
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(factory: factory, scheduler: scheduler)
+        let message = PhoneClientMessage.heartbeatRequest(HeartbeatRequest(sequence: 9))
+
+        subject.connect(configuration: configuration)
+        let oldSocket = factory.sockets[0]
+        oldSocket.emitOpen()
+        oldSocket.emitText(#"{"type":"hello.ok","v":1,"role":"phone"}"#)
+        oldSocket.automaticallyCompletesSends = false
+        XCTAssertTrue(subject.send(message))
+
+        subject.connect(configuration: configuration)
+        let currentSocket = factory.sockets[1]
+        currentSocket.emitOpen()
+        currentSocket.emitText(#"{"type":"hello.ok","v":1,"role":"phone"}"#)
+        let currentGeneration = subject.generation
+
+        oldSocket.completeNextSend(error: FakePhoneWebSocketError.sendFailed)
+
+        XCTAssertEqual(subject.generation, currentGeneration)
+        XCTAssertTrue(subject.isAuthenticated)
+        XCTAssertTrue(currentSocket.closes.isEmpty)
+        XCTAssertEqual(scheduler.entries.map(\.delay), [PhoneProtocolV1.heartbeatInterval])
+    }
+
     func testConnectAndDisconnectCancelOldTimersAndAdvanceGeneration() {
         let factory = FakePhoneWebSocketFactory()
         let scheduler = FakePhoneScheduler()
