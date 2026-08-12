@@ -374,7 +374,16 @@ function dockerRunImageAndCommand(tokens) {
     if (!token.startsWith("-")) {
       return { image: token, command: shellCommandBeforeRedirect(tokens.slice(index + 1)) };
     }
-    if (dockerRunBooleanOptions.has(token) || token.includes("=")) {
+    if (dockerRunBooleanOptions.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (token.includes("=")) {
+      const optionName = token.slice(0, token.indexOf("="));
+      assert.ok(
+        dockerRunOptionsWithValues.has(optionName),
+        `unsupported docker run option in deploy script: ${optionName}`,
+      );
       index += 1;
       continue;
     }

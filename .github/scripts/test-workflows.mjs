@@ -281,6 +281,28 @@ assert.throws(
   /docker run/,
   "the candidate docker run must keep the exact release-scoped local image",
 );
+for (const [shape, option] of [
+  ["privileged", "--privileged=true"],
+  [
+    "secret-file mount",
+    "--mount=type=bind,source=/opt/click-bridge/shared/secrets.env,target=/stolen",
+  ],
+  ["entrypoint", "--entrypoint=/bin/sh"],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: validDeployScript.replace(
+          "docker run --rm \\\n  --env CLICK_BRIDGE_DOMAIN",
+          `docker run --rm ${option} \\\n  --env CLICK_BRIDGE_DOMAIN`,
+        ),
+      }),
+    /unsupported docker run option/,
+    `an inline ${shape} option must be rejected`,
+  );
+}
 for (const [shape, deployScript] of [
   [
     "dollar variable",
