@@ -1,2 +1,6 @@
-// Optional local signing overrides. The question mark keeps fresh checkouts buildable.
+// Repository defaults keep fresh checkouts buildable with ad-hoc signing.
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+// Optional local signing overrides are applied after the repository defaults.
 #include? "Local.xcconfig"

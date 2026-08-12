@@ -19,12 +19,9 @@ settings:
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
-    # Deterministic ad-hoc signing so a personal build works with no account.
-    # Local.xcconfig may override with an Apple Development identity, which
-    # avoids re-granting input permission after every rebuild.
+    # Signing defaults live in Config/Base.xcconfig so its optional
+    # Local.xcconfig include can override them for a stable local identity.
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
-    DEVELOPMENT_TEAM: ""
     # App Sandbox is deliberately absent. CGEvent.post IS sandbox-compatible;
     # staying unsandboxed is a simplicity choice for a personal build, not a
     # technical requirement.
