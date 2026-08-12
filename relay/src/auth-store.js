@@ -199,18 +199,33 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     return current;
   }
 
-  async function matchesCredential(credential) {
-    const record = snapshot();
-    let candidate;
-    try {
-      candidate = verifierForCredential(credential, crypto);
-    } catch {
-      return false;
+  function authenticateCredential(credential) {
+    const record = current;
+    if (!record
+        || record.schemaVersion !== SCHEMA_VERSION
+        || !Number.isSafeInteger(record.activePhoneCredentialVersion)
+        || record.activePhoneCredentialVersion < 0
+        || typeof record.activePhoneVerifier !== 'string'
+        || !HEX_64.test(record.activePhoneVerifier)) {
+      return null;
     }
-    return crypto.timingSafeEqual(
-      Buffer.from(candidate, 'hex'),
-      Buffer.from(record.activePhoneVerifier, 'hex'),
-    );
+    try {
+      const candidate = verifierForCredential(credential, crypto);
+      if (!crypto.timingSafeEqual(
+        Buffer.from(candidate, 'hex'),
+        Buffer.from(record.activePhoneVerifier, 'hex'),
+      )) {
+        return null;
+      }
+      return Object.freeze({ credentialVersion: record.activePhoneCredentialVersion });
+    } catch {
+      return null;
+    }
+  }
+
+  async function matchesCredential(credential) {
+    snapshot();
+    return authenticateCredential(credential) !== null;
   }
 
   async function activate(input) {
@@ -238,5 +253,5 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     return operation;
   }
 
-  return Object.freeze({ initialize, snapshot, matchesCredential, activate });
+  return Object.freeze({ initialize, snapshot, authenticateCredential, matchesCredential, activate });
 }

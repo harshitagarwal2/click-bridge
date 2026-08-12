@@ -98,6 +98,90 @@ test('an existing valid record is authoritative over the environment credential'
   assert.equal(await readFile(recordPath, 'utf8'), expectedRecord(7, VERIFIER_B));
 });
 
+test('authenticateCredential returns only an immutable version descriptor for the matching authority record', async () => {
+  const { recordPath } = await temporaryRecordPath();
+  const store = createPhoneAuthStore({
+    recordPath,
+    initialPhoneToken: TOKEN_A,
+    fs: realFs,
+    crypto: realCrypto,
+    log: () => {},
+  });
+  await store.initialize();
+
+  const descriptor = store.authenticateCredential(TOKEN_A);
+  assert.deepEqual(descriptor, { credentialVersion: 0 });
+  assert.deepEqual(Object.keys(descriptor), ['credentialVersion']);
+  assert.equal(Object.isFrozen(descriptor), true);
+  assert.equal(JSON.stringify(descriptor).includes(TOKEN_A), false);
+  assert.equal(JSON.stringify(descriptor).includes(VERIFIER_A), false);
+  assert.throws(() => {
+    descriptor.credentialVersion = 99;
+  }, TypeError);
+  assert.equal(descriptor.credentialVersion, 0);
+});
+
+test('authenticateCredential fails closed for uninitialized, wrong, and malformed credentials', async () => {
+  const { recordPath } = await temporaryRecordPath();
+  const store = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_A, fs: realFs, crypto: realCrypto, log: () => {} });
+
+  for (const credential of [TOKEN_A, TOKEN_B, '', null, undefined, ['01'.repeat(32)], new String(TOKEN_A)]) {
+    assert.equal(store.authenticateCredential(credential), null);
+  }
+
+  await store.initialize();
+  for (const credential of [TOKEN_B, '', null, undefined, ['01'.repeat(32)], new String(TOKEN_A)]) {
+    assert.equal(store.authenticateCredential(credential), null);
+  }
+});
+
+test('authenticateCredential remains closed after malformed authority initialization fails', async () => {
+  const { recordPath } = await temporaryRecordPath();
+  await writeFile(recordPath, '{"schemaVersion":1}\n', { mode: 0o600 });
+  const store = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_A, fs: realFs, crypto: realCrypto, log: () => {} });
+
+  await captureAuthStoreError(() => store.initialize(), AUTH_STORE_ERROR_CODES.RECORD_INVALID);
+  assert.equal(store.authenticateCredential(TOKEN_A), null);
+});
+
+test('authenticateCredential binds a successful comparison to the same immutable authority version', async () => {
+  const { recordPath } = await temporaryRecordPath();
+  const store = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_A, fs: realFs, crypto: realCrypto, log: () => {} });
+  await store.initialize();
+
+  const authenticatedBeforeRotation = store.authenticateCredential(TOKEN_A);
+  await store.activate({ expectedVersion: 0, credentialVersion: 1, verifier: VERIFIER_B });
+
+  assert.deepEqual(authenticatedBeforeRotation, { credentialVersion: 0 });
+  assert.equal(store.authenticateCredential(TOKEN_A), null);
+  assert.deepEqual(store.authenticateCredential(TOKEN_B), { credentialVersion: 1 });
+});
+
+test('authenticateCredential is synchronous and redacts hostile crypto failures', async () => {
+  const { recordPath } = await temporaryRecordPath();
+  const logs = [];
+  const store = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_A, fs: realFs, crypto: realCrypto, log: (entry) => logs.push(String(entry)) });
+  await store.initialize();
+
+  const failureText = `${TOKEN_A} ${VERIFIER_A}`;
+  const hostileStore = createPhoneAuthStore({
+    recordPath,
+    initialPhoneToken: TOKEN_B,
+    fs: realFs,
+    crypto: {
+      ...realCrypto,
+      timingSafeEqual() { throw new Error(failureText); },
+    },
+    log: (entry) => logs.push(String(entry)),
+  });
+  await hostileStore.initialize();
+
+  const result = hostileStore.authenticateCredential(TOKEN_A);
+  assert.equal(result, null);
+  assert.equal(result instanceof Promise, false);
+  assert.equal(logs.some((entry) => entry.includes(TOKEN_A) || entry.includes(VERIFIER_A)), false);
+});
+
 test('initialize fails closed for malformed, permissive, and wrong-owner records', async () => {
   const malformed = await temporaryRecordPath();
   await writeFile(malformed.recordPath, '{"schemaVersion":1}\n', { mode: 0o600 });
