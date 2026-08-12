@@ -144,6 +144,11 @@ testflight = File.read(File.join(WORKFLOW_DIR, "testflight.yml"))
 fail_contract("TestFlight must not upload an IPA artifact") if testflight.include?("actions/upload-artifact")
 fail_contract("TestFlight must skip submission/distribution") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("skip_submission: true")
 fail_contract("TestFlight must not distribute to testers") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("distribute_external: false")
+%w[ios/ClickBridgePhone/Info.plist mac/ClickBridgeMac/Info.plist].each do |relative_path|
+  info_plist = File.read(File.join(ROOT, relative_path))
+  fail_contract("#{relative_path} must consume MARKETING_VERSION") unless info_plist.include?("$(MARKETING_VERSION)")
+  fail_contract("#{relative_path} must consume CURRENT_PROJECT_VERSION") unless info_plist.include?("$(CURRENT_PROJECT_VERSION)")
+end
 %w[
   MAC_DISTRIBUTION_CERTIFICATE_BASE64
   MAC_DISTRIBUTION_CERTIFICATE_PASSWORD
