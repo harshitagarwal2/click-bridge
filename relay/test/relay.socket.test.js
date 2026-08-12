@@ -161,6 +161,7 @@ test('the completed PWA dependency graph is reachable through the static allowli
       '/transport-coordinator.js',
       '/clock-health-controller.js',
       '/phone-settings-store.js',
+      '/credential-lifecycle-controller.js',
       '/benchmark-session.js',
       '/benchmark-controller.js',
       '/state.js',

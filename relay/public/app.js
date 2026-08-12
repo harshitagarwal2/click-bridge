@@ -1,10 +1,11 @@
 import { ClockHealthController } from './clock-health-controller.js';
+import { CredentialLifecycleController } from './credential-lifecycle-controller.js';
 import {
   BenchmarkRequestRouter, BenchmarkRunSequence, BenchmarkSession,
   CounterSnapshotRequester, createIdleSchedule,
 } from './benchmark-session.js';
 import { BenchmarkController } from './benchmark-controller.js';
-import { clearTokenChange, PhoneSettingsStore, saveTokenChange } from './phone-settings-store.js';
+import { PhoneSettingsStore } from './phone-settings-store.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
 import { activationDecision, initialState, PHASE, reduce, view } from './state.js';
@@ -29,7 +30,7 @@ const element = {
   wakeStatus: byId('wake-status'),
 };
 
-const settings = new PhoneSettingsStore(window.localStorage);
+const settings = new PhoneSettingsStore(window.localStorage, navigator.locks);
 const scheduler = createRuntimeScheduler(window);
 let state = initialState();
 let lastMacReadyGeneration = null;
@@ -281,31 +282,17 @@ element.openSettings.addEventListener('click', () => {
   element.settings.showModal();
 });
 
-element.saveToken.addEventListener('click', () => {
+element.saveToken.addEventListener('click', async () => {
   const token = element.tokenInput.value.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(token)) {
     element.tokenState.textContent = 'Token must be exactly 64 lowercase hex characters.';
     return;
   }
-  const outcome = saveTokenChange(settings, token, () => {
-    element.tokenInput.value = '';
-    benchmarkRequests.cancelAll('token replaced');
-    oci.close('token_replaced');
-    dispatch({ type: 'token.set', token });
-    oci.resume();
-  });
-  if (!outcome.ok) element.tokenState.textContent = outcome.message;
+  await credentialLifecycle.save(token);
 });
 
-element.clearToken.addEventListener('click', () => {
-  const outcome = clearTokenChange(settings, () => {
-    coordinator.abandon('token_cleared');
-    clockHealth.macNotReady();
-    benchmarkRequests.cancelAll('token cleared');
-    oci.close('token_cleared');
-    dispatch({ type: 'token.cleared' });
-  });
-  if (!outcome.ok) element.tokenState.textContent = outcome.message;
+element.clearToken.addEventListener('click', async () => {
+  await credentialLifecycle.clear();
 });
 
 element.keepWarm.addEventListener('change', () => {
@@ -411,7 +398,7 @@ function goHidden() {
 
 function goVisible() {
   dispatch({ type: 'visibility', visible: true });
-  if (state.token && !oci.ready) oci.connect();
+  credentialLifecycle.visible();
   wakeLockController.acquire();
 }
 
@@ -425,13 +412,38 @@ window.addEventListener('pageshow', () => {
 });
 window.addEventListener('online', () => {
   benchmarkController.transportLost('network changed');
-  if (document.visibilityState === 'visible' && state.token && !oci.ready) oci.connect();
+  credentialLifecycle.online();
 });
 navigator.connection?.addEventListener?.('change', () => {
   if (!benchmarkController.active) return;
   benchmarkController.transportLost('network changed');
   benchmarkController.transportReady()
     .catch((error) => { element.diagnostics.textContent = error.message; render(); });
+});
+
+function applySavedToken(token) {
+  element.tokenInput.value = '';
+  benchmarkRequests.cancelAll('token replaced');
+  oci.close('token_replaced');
+  dispatch({ type: 'token.set', token });
+  oci.resume();
+}
+
+const credentialLifecycle = new CredentialLifecycleController({
+  settings,
+  isVisible: () => document.visibilityState === 'visible',
+  currentToken: () => state.token,
+  transportReady: () => oci.ready,
+  applyToken: applySavedToken,
+  clearToken: () => {
+    coordinator.abandon('token_cleared');
+    clockHealth.macNotReady();
+    benchmarkRequests.cancelAll('token cleared');
+    oci.close('token_cleared');
+    dispatch({ type: 'token.cleared' });
+  },
+  connect: () => oci.connect(),
+  reportError: (message) => { element.tokenState.textContent = message; },
 });
 
 const savedToken = settings.getToken();

@@ -166,6 +166,8 @@ const STATIC_FILES = new Map([
   ['/transport-coordinator.js', ['transport-coordinator.js', 'text/javascript; charset=utf-8']],
   ['/clock-health-controller.js', ['clock-health-controller.js', 'text/javascript; charset=utf-8']],
   ['/phone-settings-store.js', ['phone-settings-store.js', 'text/javascript; charset=utf-8']],
+  ['/credential-lifecycle-controller.js', ['credential-lifecycle-controller.js',
+    'text/javascript; charset=utf-8']],
   ['/wake-lock-controller.js', ['wake-lock-controller.js', 'text/javascript; charset=utf-8']],
   ['/benchmark-session.js', ['benchmark-session.js', 'text/javascript; charset=utf-8']],
   ['/benchmark-controller.js', ['benchmark-controller.js', 'text/javascript; charset=utf-8']],
