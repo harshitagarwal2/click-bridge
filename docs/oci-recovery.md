@@ -29,7 +29,14 @@ the original `/opt/click-bridge/{relay,deploy}` tree, its mode-0600
 `deploy/oci/.env`, and its old image. If the first immutable cutover fails:
 
 ```bash
+set -eu
+test -f /opt/click-bridge/candidate-release
 FAILED_RELEASE="$(cat /opt/click-bridge/candidate-release)"
+case "$FAILED_RELEASE" in
+  [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z) ;;
+  *) printf 'Invalid migration release ID.\n' >&2; exit 1 ;;
+esac
+test -d "/opt/click-bridge/releases/$FAILED_RELEASE"
 cd "/opt/click-bridge/releases/$FAILED_RELEASE"
 export CLICK_BRIDGE_RELEASE="$FAILED_RELEASE"
 docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env \

@@ -1999,8 +1999,13 @@ Only after the public smoke passes, record the active release on the VM:
 
 ~~~bash
 printf '%s\n' "$CLICK_BRIDGE_RELEASE" > /opt/click-bridge/current-release
-rm -f /opt/click-bridge/candidate-release
 ~~~
+
+For the first flat-layout migration, retain `candidate-release` through the
+entire Step 12 rollback, roll-forward, restart, reboot, and external-smoke gate.
+The emergency legacy fallback must validate its strict release-ID format and
+directory before intentionally stopping the new stack. Remove the marker only
+after the complete recovery gate passes.
 
 - [ ] **Step 12: Verify rollback and recovery behavior**
 

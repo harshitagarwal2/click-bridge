@@ -379,8 +379,12 @@ Only after all checks pass:
 
 ```bash
 printf '%s\n' "$CLICK_BRIDGE_RELEASE" > /opt/click-bridge/current-release
-rm -f /opt/click-bridge/candidate-release
 ```
+
+For the first flat-layout migration, retain `candidate-release` through every
+rebuild, rollback, roll-forward, container-restart, reboot, and external-smoke
+check below. It is the strictly validated pointer used by the emergency legacy
+fallback.
 
 ## 11. Exercise recovery before acceptance
 
@@ -396,6 +400,11 @@ Retain both releases and images until every recovery check passes. Then remove
 the exact temporary transfer file and clear token variables:
 
 ```bash
+MIGRATION_RELEASE="$(cat /opt/click-bridge/candidate-release)"
+[[ "$MIGRATION_RELEASE" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+test "$MIGRATION_RELEASE" = "$(cat /opt/click-bridge/current-release)" || \
+  test "$MIGRATION_RELEASE" = "$(cat /opt/click-bridge/previous-release)"
+rm -f /opt/click-bridge/candidate-release
 unset PHONE_TOKEN MAC_TOKEN
 rm -f /private/tmp/click-bridge-secrets.env
 ```
