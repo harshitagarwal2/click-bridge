@@ -107,6 +107,9 @@ final class PairingController: ObservableObject {
         case invitation(Invitation)
         case approval(Approval)
         case approving
+        case denying
+        case cancelling
+        case cancelFailed
         case completed(activePhoneCredentialVersion: Int)
         case denied
         case expired
@@ -191,7 +194,7 @@ final class PairingController: ObservableObject {
     func regenerate() async {
         guard capabilityAvailable else { return }
         switch (state, retryAction) {
-        case (.failed, .status):
+        case (.failed, .status), (.cancelFailed, .status):
             await refreshStatus(capabilityAvailable: true)
         case (.failed, .create), (.expired, .create):
             await createInvitation()
@@ -237,11 +240,24 @@ final class PairingController: ObservableObject {
 
     func cancel() async {
         guard let requestID = currentRequestID else { return }
-        let ownership = beginSend(in: state)
-        _ = try? await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
-        guard owns(ownership) else { return }
-        retryAction = .none
-        reset(to: .ready)
+        switch state {
+        case .creating, .invitation, .approval:
+            break
+        default:
+            return
+        }
+        let ownership = beginSend(in: .cancelling)
+        do {
+            try await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
+            guard owns(ownership) else { return }
+            retryAction = .none
+            reset(to: .ready)
+        } catch {
+            guard owns(ownership) else { return }
+            enrollment = nil
+            retryAction = .status
+            reset(to: .cancelFailed)
+        }
     }
 
     func refreshExpiry() async {
@@ -260,9 +276,17 @@ final class PairingController: ObservableObject {
         }
         guard let expiresAt, now() >= expiresAt else { return }
         if let requestID = currentRequestID {
-            let ownership = beginSend(in: state)
-            try? await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
-            guard owns(ownership) else { return }
+            let ownership = beginSend(in: .cancelling)
+            do {
+                try await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
+                guard owns(ownership) else { return }
+            } catch {
+                guard owns(ownership) else { return }
+                enrollment = nil
+                retryAction = .status
+                reset(to: .cancelFailed)
+                return
+            }
         }
         retryAction = canRegenerateInvitation ? .create : .none
         reset(to: .expired)
@@ -288,7 +312,7 @@ final class PairingController: ObservableObject {
                 expiresAt: Date(timeIntervalSince1970: TimeInterval(created.expiresAtUnixMs) / 1_000)
             )))
         case .pairClaimedMac(let claimed)
-            where isWaitingForClaim && claimed.requestId == currentRequestID:
+            where canAcceptClaim && claimed.requestId == currentRequestID:
             currentClaimID = claimed.claimId
             transition(to: .approval(Approval(
                 confirmationCode: claimed.confirmationCode,
@@ -318,7 +342,7 @@ final class PairingController: ObservableObject {
     private func rejectClaim(terminalState: State) async {
         guard let requestID = currentRequestID, let claimID = currentClaimID else { return }
         guard case .approval = state else { return }
-        let ownership = beginSend(in: state)
+        let ownership = beginSend(in: .denying)
         do {
             try await transport.sendPairing(.pairDeny(PairDeny(requestId: requestID, claimId: claimID)))
         } catch {
@@ -333,9 +357,13 @@ final class PairingController: ObservableObject {
         transition(to: terminalState)
     }
 
-    private var isWaitingForClaim: Bool {
-        if case .invitation = state { return true }
-        return false
+    private var canAcceptClaim: Bool {
+        switch state {
+        case .invitation, .cancelling:
+            return true
+        default:
+            return false
+        }
     }
 
     private func reset(to state: State) {

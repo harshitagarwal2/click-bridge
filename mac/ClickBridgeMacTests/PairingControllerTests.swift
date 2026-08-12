@@ -299,6 +299,109 @@ final class PairingControllerTests: XCTestCase {
         }
     }
 
+    func testSuspendedDenyBlocksContradictoryApprove() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let deny = Task { await controller.deny() }
+        try await transport.waitUntilSendCount(3)
+        await controller.approve()
+
+        XCTAssertEqual(await transport.messages().count, 3)
+        await transport.completeSend(at: 2, with: .success(()))
+        await deny.value
+        XCTAssertEqual(controller.state, .denied)
+    }
+
+    func testSuspendedCancelBlocksContradictoryApprove() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await controller.approve()
+
+        XCTAssertEqual(await transport.messages().count, 3)
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .ready)
+    }
+
+    func testSuspendedApproveBlocksContradictoryCancel() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let approve = Task { await controller.approve() }
+        try await transport.waitUntilSendCount(3)
+        await controller.cancel()
+
+        XCTAssertEqual(await transport.messages().count, 3)
+        await transport.completeSend(at: 2, with: .success(()))
+        await approve.value
+        XCTAssertEqual(controller.state, .approving)
+    }
+
+    func testCancelFailureRequiresStatusReconciliationBeforePairingCanContinue() async {
+        let transport = PairingTransportRecorder(results: [
+            .success(()), .success(()), .failure(TestTransportError.failed), .success(())
+        ])
+        let controller = subject(transport: transport)
+        await moveToInvitation(controller)
+
+        await controller.cancel()
+
+        XCTAssertEqual(controller.state, .cancelFailed)
+        await controller.beginPairing()
+        await controller.confirmReplacement()
+        await controller.approve()
+        XCTAssertEqual(await transport.messages().count, 3)
+
+        await controller.regenerate()
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 4)
+        guard case .pairStatusRequest = messages[3] else {
+            return XCTFail("Expected status reconciliation after cancel failure")
+        }
+    }
+
+    func testExpiryCancelFailureRequiresStatusReconciliation() async {
+        let transport = PairingTransportRecorder(results: [
+            .success(()), .success(()), .failure(TestTransportError.failed), .success(())
+        ])
+        var now = Date(timeIntervalSince1970: 1_000)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { self.requestID },
+            now: { now }
+        )
+        await controller.refreshStatus(capabilityAvailable: true)
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: requestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+        await controller.beginPairing()
+        await controller.confirmReplacement()
+        await controller.receive(.pairCreated(PairCreated(
+            requestId: requestID,
+            reference: reference,
+            expiresAtUnixMs: 1_001_000
+        )))
+
+        now = Date(timeIntervalSince1970: 1_002)
+        await controller.refreshExpiry()
+
+        XCTAssertEqual(controller.state, .cancelFailed)
+        await controller.regenerate()
+        guard case .pairStatusRequest = await transport.messages().last else {
+            return XCTFail("Expected status reconciliation after expiry cancel failure")
+        }
+    }
+
     private func subject(transport: PairingTransportRecorder) -> PairingController {
         PairingController(
             transport: transport,
@@ -328,6 +431,36 @@ final class PairingControllerTests: XCTestCase {
             confirmationCode: "482 917",
             expiresAtUnixMs: 1_300_000,
             clientKind: .ios
+        )))
+    }
+
+    private func moveToApproval(
+        _ controller: PairingController,
+        transport: PairingTransportRecorder
+    ) async throws {
+        try await moveToInvitation(controller, transport: transport)
+        await controller.receive(.pairClaimedMac(PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_300_000,
+            clientKind: .ios
+        )))
+    }
+
+    private func moveToInvitation(_ controller: PairingController) async {
+        await controller.refreshStatus(capabilityAvailable: true)
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: requestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+        await controller.beginPairing()
+        await controller.confirmReplacement()
+        await controller.receive(.pairCreated(PairCreated(
+            requestId: requestID,
+            reference: reference,
+            expiresAtUnixMs: 1_300_000
         )))
     }
 
