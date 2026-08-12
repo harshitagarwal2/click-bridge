@@ -6,6 +6,7 @@ import {
   PAIRING_TTL_MS,
   PROTOCOL_VERSION,
 } from './constants.js';
+import { AUTH_STORE_ERROR_CODES } from './auth-store.js';
 
 const ACTIVATION_CONTEXT = 'clickbridge-pair-activate:v1';
 
@@ -52,6 +53,7 @@ export class PairingCoordinator {
   #authStore;
   #emit;
   #close;
+  #getAuthenticatedPhones;
   #log;
   #mac = null;
   #session = null;
@@ -67,6 +69,7 @@ export class PairingCoordinator {
     authStore,
     emit,
     close,
+    getAuthenticatedPhones = () => [],
     log = () => {},
   }) {
     this.#enabled = enabled;
@@ -77,12 +80,17 @@ export class PairingCoordinator {
     this.#authStore = authStore;
     this.#emit = emit;
     this.#close = close;
+    this.#getAuthenticatedPhones = getAuthenticatedPhones;
     this.#log = log;
   }
 
   macConnected(connection, generation) {
     if (!this.#enabled) return 'unsupported';
     if (this.#mac && !this.#owns(this.#mac, connection, generation)) {
+      if (this.#isActivating()) {
+        this.#mac = { connection, generation };
+        return 'activation_in_progress';
+      }
       this.#terminate('replaced');
     }
     this.#mac = { connection, generation };
@@ -98,6 +106,7 @@ export class PairingCoordinator {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
     this.#mac = null;
+    if (this.#isActivating()) return 'activation_in_progress';
     this.#terminate('mac_offline');
     return 'ok';
   }
@@ -105,6 +114,10 @@ export class PairingCoordinator {
   create(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (this.#isActivating()) return 'activation_in_progress';
+    if (this.#session && this.#expired(this.#session)) {
+      this.#terminate('expired');
+    }
     if (this.#session?.requestId === message.requestId
         && this.#owns(this.#session.mac, connection, generation)) {
       return 'ok';
@@ -118,14 +131,20 @@ export class PairingCoordinator {
       throw new TypeError('randomBytes must return 32 bytes');
     }
     const reference = invitation.toString('base64url');
+    if (invitationVerifier(reference) !== sha256(invitation)) {
+      throw new TypeError('randomBytes produced a non-canonical invitation');
+    }
     const expiresAtUnixMs = this.#now() + PAIRING_TTL_MS;
-    this.#send(connection, {
+    if (!this.#send(connection, {
       type: 'pair.created',
       v: PROTOCOL_VERSION,
       requestId: message.requestId,
       reference,
       expiresAtUnixMs,
-    });
+    })) {
+      this.#log('pairing_invitation_delivery_failed');
+      return 'delivery_failed';
+    }
 
     const session = {
       requestId: message.requestId,
@@ -156,6 +175,12 @@ export class PairingCoordinator {
     if (!this.#enabled) return 'unsupported';
     const session = this.#session;
     const verifier = invitationVerifier(message.reference);
+    if (session && this.#expired(session)) {
+      const wasClaimant = this.#owns(session.claimant, connection, generation);
+      this.#terminate('expired');
+      if (!wasClaimant) this.#send(connection, failureForClaimant(message.claimId, 'expired'));
+      return 'expired';
+    }
     if (session?.claimId) {
       const duplicate = session.claimId === message.claimId
         && session.sessionNonce === message.sessionNonce
@@ -163,6 +188,7 @@ export class PairingCoordinator {
         && sameHex(verifier, session.claimVerifier)
         && this.#owns(session.claimant, connection, generation);
       if (duplicate) {
+        if (session.activationPromise) return 'activation_in_progress';
         if (session.pendingCredential) this.#sendCredential(session);
         else this.#sendClaimed(session);
         return 'ok';
@@ -173,11 +199,6 @@ export class PairingCoordinator {
     if (!session || !verifier || !sameHex(verifier, session.verifier)) {
       this.#send(connection, failureForClaimant(message.claimId, 'used'));
       return 'used';
-    }
-    if (this.#now() >= session.expiresAtUnixMs) {
-      this.#terminate('expired');
-      this.#send(connection, failureForClaimant(message.claimId, 'expired'));
-      return 'expired';
     }
     const confirmation = this.#randomInt(1_000_000);
     if (!Number.isSafeInteger(confirmation) || confirmation < 0 || confirmation >= 1_000_000) {
@@ -198,10 +219,11 @@ export class PairingCoordinator {
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
     const session = this.#session;
     if (!session || !this.#matchesClaim(session, message)) return 'invalid_request';
-    if (this.#now() >= session.expiresAtUnixMs) {
+    if (this.#expired(session)) {
       this.#terminate('expired');
       return 'expired';
     }
+    if (session.activationPromise) return 'activation_in_progress';
     if (session.pendingCredential) {
       this.#sendCredential(session);
       return 'ok';
@@ -212,6 +234,12 @@ export class PairingCoordinator {
       throw new TypeError('randomBytes must return 32 bytes');
     }
     const snapshot = this.#authStore.snapshot();
+    if (!Number.isSafeInteger(snapshot.activePhoneCredentialVersion)
+        || snapshot.activePhoneCredentialVersion < 0
+        || snapshot.activePhoneCredentialVersion === Number.MAX_SAFE_INTEGER) {
+      this.#terminate('activation_failed');
+      return 'activation_failed';
+    }
     session.verifier = null;
     session.confirmationCode = null;
     session.pendingCredential = credential.toString('hex');
@@ -225,6 +253,7 @@ export class PairingCoordinator {
   deny(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (this.#isActivating()) return 'activation_in_progress';
     if (this.#matchesEndedMac(message, 'denied', true)) return 'ok';
     if (!this.#session || !this.#matchesClaim(this.#session, message)) return 'invalid_request';
     this.#terminate('denied');
@@ -234,6 +263,7 @@ export class PairingCoordinator {
   cancelByMac(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (this.#isActivating()) return 'activation_in_progress';
     if (this.#matchesEndedMac(message, 'cancelled', false)) return 'ok';
     if (!this.#session || this.#session.requestId !== message.requestId) return 'invalid_request';
     this.#terminate('cancelled');
@@ -246,6 +276,11 @@ export class PairingCoordinator {
         && this.#owns(this.#ended.claimant, connection, generation)) {
       return 'ok';
     }
+    if (this.#isActivating()
+        && this.#owns(this.#session.claimant, connection, generation)
+        && this.#session.claimId === message.claimId) {
+      return 'activation_in_progress';
+    }
     if (!this.#session || this.#session.claimId !== message.claimId
         || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
@@ -254,7 +289,7 @@ export class PairingCoordinator {
     return 'ok';
   }
 
-  async acknowledge(connection, generation, message, activePhoneConnection = null) {
+  async acknowledge(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (this.#completed && this.#completed.claimId === message.claimId
         && this.#completed.credentialVersion === message.credentialVersion
@@ -265,10 +300,15 @@ export class PairingCoordinator {
 
     const session = this.#session;
     if (!session || !this.#owns(session.claimant, connection, generation)) return 'ignored';
+    if (this.#expired(session)) {
+      this.#terminate('expired');
+      return 'expired';
+    }
     if (message.claimId !== session.claimId || message.credentialVersion !== session.credentialVersion
         || !session.pendingCredential) {
       return 'invalid_request';
     }
+    if (session.activationPromise) return session.activationPromise;
     const expectedProof = createHmac('sha256', Buffer.from(session.pendingCredential, 'hex'))
       .update(`${ACTIVATION_CONTEXT}:${session.claimId}:${session.credentialVersion}`, 'utf8')
       .digest('hex');
@@ -276,9 +316,8 @@ export class PairingCoordinator {
       this.#terminate('activation_failed');
       return 'activation_failed';
     }
-    if (session.activationPromise) return session.activationPromise;
-
-    session.activationPromise = this.#activate(session, activePhoneConnection);
+    this.#clearTimer(session);
+    session.activationPromise = this.#activate(session);
     return session.activationPromise;
   }
 
@@ -288,6 +327,9 @@ export class PairingCoordinator {
         && this.#owns(this.#ended.claimant, connection, generation)) {
       return 'ok';
     }
+    if (this.#isActivating() && this.#owns(this.#session.claimant, connection, generation)) {
+      return 'activation_in_progress';
+    }
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
     }
@@ -295,7 +337,7 @@ export class PairingCoordinator {
     return 'ok';
   }
 
-  async #activate(session, activePhoneConnection) {
+  async #activate(session) {
     try {
       await this.#authStore.activate({
         expectedVersion: session.expectedVersion,
@@ -303,7 +345,9 @@ export class PairingCoordinator {
         verifier: session.pendingVerifier,
       });
     } catch (error) {
-      const reason = /version conflict|next version/.test(error?.message ?? '')
+      const reason = error?.code === AUTH_STORE_ERROR_CODES.VERSION_CONFLICT
+          || error?.code === AUTH_STORE_ERROR_CODES.NEXT_VERSION_INVALID
+          || error?.code === AUTH_STORE_ERROR_CODES.INVALID_INPUT
         ? 'activation_failed'
         : 'storage_failed';
       if (this.#session === session) this.#terminate(reason);
@@ -323,15 +367,43 @@ export class PairingCoordinator {
     this.#completed = completed;
     this.#ended = null;
     this.#clearSecrets(session);
+    this.#revokeOlderPhones(completed);
     this.#sendCompleted(completed);
-    if (activePhoneConnection && activePhoneConnection !== completed.claimant.connection) {
-      this.#close(
-        activePhoneConnection,
-        CREDENTIAL_REPLACED_CLOSE_CODE,
-        CREDENTIAL_REPLACED_CLOSE_REASON,
-      );
-    }
     return 'ok';
+  }
+
+  #revokeOlderPhones(completed) {
+    let phones;
+    try {
+      phones = this.#getAuthenticatedPhones();
+    } catch {
+      this.#log('pairing_phone_resolution_failed');
+      return;
+    }
+    if (!Array.isArray(phones)) {
+      this.#log('pairing_phone_resolution_failed');
+      return;
+    }
+    const closed = new Set();
+    for (const phone of phones) {
+      if (!phone?.connection || !Number.isSafeInteger(phone.generation)
+          || !Number.isSafeInteger(phone.credentialVersion)
+          || phone.credentialVersion >= completed.credentialVersion
+          || this.#owns(completed.claimant, phone.connection, phone.generation)
+          || closed.has(phone.connection)) {
+        continue;
+      }
+      closed.add(phone.connection);
+      try {
+        this.#close(
+          phone.connection,
+          CREDENTIAL_REPLACED_CLOSE_CODE,
+          CREDENTIAL_REPLACED_CLOSE_REASON,
+        );
+      } catch {
+        this.#log('pairing_phone_revocation_failed');
+      }
+    }
   }
 
   #sendCompleted(completed) {
@@ -439,11 +511,42 @@ export class PairingCoordinator {
     session.activationPromise = null;
   }
 
+  #expired(session) {
+    return this.#now() >= session.expiresAtUnixMs;
+  }
+
+  #isActivating() {
+    return this.#session?.activationPromise != null;
+  }
+
+  observe() {
+    const session = this.#session;
+    const phase = session
+      ? (session.activationPromise ? 'activating'
+        : (session.pendingCredential ? 'awaiting_activation'
+          : (session.claimId ? 'awaiting_approval' : 'invited')))
+      : (this.#completed ? 'completed' : 'idle');
+    return Object.freeze({
+      phase,
+      requestId: session?.requestId ?? this.#completed?.requestId ?? null,
+      claimId: session?.claimId ?? this.#completed?.claimId ?? null,
+      expiresAtUnixMs: session?.expiresAtUnixMs ?? null,
+      hasInvitationVerifier: Boolean(session?.verifier),
+      hasPendingCredential: Boolean(session?.pendingCredential),
+    });
+  }
+
   #owns(owner, connection, generation) {
     return owner?.connection === connection && owner?.generation === generation;
   }
 
   #send(connection, message) {
-    return connection ? this.#emit(connection, Object.freeze(message)) : false;
+    if (!connection) return false;
+    try {
+      return this.#emit(connection, Object.freeze(message));
+    } catch {
+      this.#log('pairing_emit_failed', { type: message.type });
+      return false;
+    }
   }
 }

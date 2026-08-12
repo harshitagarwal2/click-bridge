@@ -2,11 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 
+import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
 import { PairingCoordinator } from '../src/pairing.js';
 
 const MAC = Object.freeze({ id: 'mac' });
 const PHONE = Object.freeze({ id: 'claimant' });
 const OLD_PHONE = Object.freeze({ id: 'old-phone' });
+const REPLACEMENT_PHONE = Object.freeze({ id: 'replacement-phone' });
+const NEW_ACTIVE_PHONE = Object.freeze({ id: 'new-active-phone' });
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const CLAIM_ID = '22222222-2222-4222-8222-222222222222';
 const SESSION_NONCE = '33'.repeat(32);
@@ -43,7 +46,17 @@ function createScheduler(clock) {
   };
 }
 
-function harness({ enabled = true, emitResult = true } = {}) {
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function harness({ enabled = true, emitResult = true, activationGate = null } = {}) {
   const clock = { value: 1_700_000_000_000 };
   const scheduler = createScheduler(clock);
   const events = [];
@@ -58,10 +71,12 @@ function harness({ enabled = true, emitResult = true } = {}) {
   });
   let activateCalls = 0;
   let activationError = null;
+  let authenticatedPhones = [{ connection: OLD_PHONE, generation: 4, credentialVersion: 7 }];
   const authStore = {
     snapshot: () => record,
     async activate({ expectedVersion, credentialVersion, verifier }) {
       activateCalls += 1;
+      if (activationGate) await activationGate.promise;
       if (activationError) throw activationError;
       if (expectedVersion !== record.activePhoneCredentialVersion) throw new Error('version conflict');
       record = Object.freeze({
@@ -92,6 +107,7 @@ function harness({ enabled = true, emitResult = true } = {}) {
       return typeof emitResult === 'function' ? emitResult(connection, message) : emitResult;
     },
     close: (connection, code, reason) => closes.push({ connection, code, reason }),
+    getAuthenticatedPhones: () => authenticatedPhones.map((phone) => ({ ...phone })),
     log: (...args) => logs.push(args),
   });
   return {
@@ -99,6 +115,7 @@ function harness({ enabled = true, emitResult = true } = {}) {
     record: () => record,
     activateCalls: () => activateCalls,
     failActivation(error = new Error('disk failed')) { activationError = error; },
+    setAuthenticatedPhones(phones) { authenticatedPhones = phones; },
   };
 }
 
@@ -135,11 +152,11 @@ function activationProof() {
     .digest('hex');
 }
 
-function acknowledge(h, overrides = {}, oldPhone = OLD_PHONE) {
+function acknowledge(h, overrides = {}) {
   return h.coordinator.acknowledge(PHONE, 5, {
     type: 'pair.credential.ack', v: 1, claimId: CLAIM_ID,
     credentialVersion: 8, proof: activationProof(), ...overrides,
-  }, oldPhone);
+  });
 }
 
 test('create emits a 32-byte invitation synchronously, then retains only its verifier for 300 seconds', () => {
@@ -355,7 +372,10 @@ test('activation CAS conflict is distinct from storage failure and preserves the
   connectAndCreate(h);
   claim(h);
   approve(h);
-  h.failActivation(new Error('phone auth version conflict'));
+  h.failActivation(new AuthStoreError(
+    AUTH_STORE_ERROR_CODES.VERSION_CONFLICT,
+    'wording intentionally unrelated to versions',
+  ));
 
   assert.equal(await acknowledge(h), 'activation_failed');
   assert.equal(h.record().activePhoneCredentialVersion, 7);
@@ -363,6 +383,148 @@ test('activation CAS conflict is distinct from storage failure and preserves the
   assert.deepEqual(h.events.slice(-2).map(({ message }) => message.reason), [
     'activation_failed', 'activation_failed',
   ]);
+});
+
+test('generic storage errors are never promoted to activation conflicts by message wording', async () => {
+  const h = harness();
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+  h.failActivation(new Error('version conflict next version'));
+
+  assert.equal(await acknowledge(h), 'storage_failed');
+  assert.deepEqual(h.events.slice(-2).map(({ message }) => message.reason), [
+    'storage_failed', 'storage_failed',
+  ]);
+});
+
+test('failed invitation delivery retains no session and a retry creates a fresh reference', () => {
+  let failFirstInvitation = true;
+  const h = harness({
+    emitResult: (_connection, message) => {
+      if (message.type === 'pair.created' && failFirstInvitation) {
+        failFirstInvitation = false;
+        return false;
+      }
+      return true;
+    },
+  });
+  h.randomBuffers.push(Buffer.alloc(32, 0x61));
+  h.coordinator.macConnected(MAC, 3);
+
+  assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'delivery_failed');
+  assert.deepEqual(h.coordinator.observe(), {
+    phase: 'idle', requestId: null, claimId: null, expiresAtUnixMs: null,
+    hasInvitationVerifier: false, hasPendingCredential: false,
+  });
+  assert.equal(h.coordinator.claim(PHONE, 5, claimMessage(INVITATION)), 'used');
+
+  assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'ok');
+  const created = h.events.filter(({ message }) => message.type === 'pair.created');
+  assert.equal(created.length, 2);
+  assert.notEqual(created[1].message.reference, created[0].message.reference);
+});
+
+test('absolute invitation deadline rejects duplicate claim and acknowledgement paths', async () => {
+  const duplicateClaim = harness();
+  connectAndCreate(duplicateClaim);
+  claim(duplicateClaim);
+  duplicateClaim.clock.value += 300_000;
+  assert.equal(duplicateClaim.coordinator.claim(PHONE, 5, claimMessage()), 'expired');
+  assert.equal(duplicateClaim.activateCalls(), 0);
+
+  const expiredAck = harness();
+  connectAndCreate(expiredAck);
+  claim(expiredAck);
+  approve(expiredAck);
+  expiredAck.clock.value += 300_000;
+  assert.equal(await acknowledge(expiredAck), 'expired');
+  assert.equal(expiredAck.activateCalls(), 0);
+  assert.equal(expiredAck.record().activePhoneCredentialVersion, 7);
+});
+
+test('activation linearizes before terminal races and cannot be replaced mid-commit', async () => {
+  const actions = [
+    (h) => h.coordinator.cancelByMac(MAC, 3, {
+      type: 'pair.cancel', v: 1, requestId: REQUEST_ID,
+    }),
+    (h) => h.coordinator.cancelByClaimant(PHONE, 5, {
+      type: 'pair.cancel.claim', v: 1, claimId: CLAIM_ID,
+    }),
+    (h) => h.coordinator.disconnectClaimant(PHONE, 5),
+    (h) => h.coordinator.macDisconnected(MAC, 3),
+    (h) => h.coordinator.macConnected(Object.freeze({ id: 'replacement-mac' }), 4),
+    (h) => h.coordinator.create(MAC, 3, createMessage(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    )),
+  ];
+
+  for (const action of actions) {
+    const activationGate = deferred();
+    const h = harness({ activationGate });
+    connectAndCreate(h);
+    claim(h);
+    approve(h);
+    const activation = acknowledge(h);
+    assert.equal(h.activateCalls(), 1);
+    assert.equal(action(h), 'activation_in_progress');
+    h.scheduler.advance(300_000);
+    activationGate.resolve();
+    assert.equal(await activation, 'ok');
+    assert.equal(h.record().activePhoneCredentialVersion, 8);
+    assert.equal(h.events.some(({ message }) => [
+      'cancelled', 'expired', 'mac_offline', 'replaced',
+    ].includes(message.reason)), false);
+  }
+});
+
+test('activation revokes the current old generation after persistence and excludes the new one', async () => {
+  const activationGate = deferred();
+  const h = harness({ activationGate });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  const activation = acknowledge(h);
+  h.setAuthenticatedPhones([
+    { connection: REPLACEMENT_PHONE, generation: 9, credentialVersion: 7 },
+    { connection: NEW_ACTIVE_PHONE, generation: 10, credentialVersion: 8 },
+  ]);
+  activationGate.resolve();
+  assert.equal(await activation, 'ok');
+
+  assert.deepEqual(h.closes, [{
+    connection: REPLACEMENT_PHONE, code: 4004, reason: 'credential_replaced',
+  }]);
+  assert.equal(await acknowledge(h), 'ok');
+  assert.equal(h.closes.length, 1);
+});
+
+test('terminal output failures cannot skip durable completion or old-generation revocation', async () => {
+  const h = harness({
+    emitResult: (_connection, message) => {
+      if (message.type === 'pair.active') {
+        assert.equal(h.coordinator.observe().hasPendingCredential, false);
+        throw new Error('socket closed during terminal output');
+      }
+      if (message.type === 'pair.completed') return false;
+      return true;
+    },
+  });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  assert.equal(await acknowledge(h), 'ok');
+  assert.equal(h.record().activePhoneCredentialVersion, 8);
+  assert.deepEqual(h.closes, [{
+    connection: OLD_PHONE, code: 4004, reason: 'credential_replaced',
+  }]);
+  assert.deepEqual(h.coordinator.observe(), {
+    phase: 'completed', requestId: REQUEST_ID, claimId: CLAIM_ID,
+    expiresAtUnixMs: null, hasInvitationVerifier: false, hasPendingCredential: false,
+  });
+  assert.equal(h.logs.some(([name]) => name === 'pairing_emit_failed'), true);
 });
 
 test('deny and either owner cancellation are terminal, idempotent, and preserve the active credential', () => {
