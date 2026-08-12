@@ -3,7 +3,7 @@
 Tap one button on a phone; a Mac posts one real left mouse click at wherever
 its cursor already is. Over the internet, through one relay.
 
-`PLAN-v5.md` is the authoritative plan. This README is the operator guide.
+`FINAL-PLAN.md` is the authoritative plan. This README is the operator guide.
 
 ---
 
@@ -13,15 +13,15 @@ its cursor already is. Over the internet, through one relay.
 |---|---|
 | Wire protocol + fixtures | **Done, tested** — 38 tests |
 | Relay state machine | **Done, tested** — 19 tests, fake transports |
-| Relay HTTP/WebSocket server | **Written**, 14 socket tests pending `npm install` |
+| Relay HTTP/WebSocket server | **Done, tested** |
 | Phone web app | **Done, tested** — 31 reducer tests + 10 asset/CSP tests |
 | Browser/server parity | **Done, tested** — 7 tests |
 | Mac Swift app | **Written, never compiled** — needs macOS |
 | OCI deploy config | **Written, never deployed** |
 | Physical smoke + benchmark | **Not started** — needs phone, Mac, Octo |
 
-104 Node tests pass; 14 skip until `ws` is installed. Nothing Swift has been
-built — no macOS was available where this was written.
+117 Node tests pass. Nothing Swift has been built — no macOS was available
+where this was written.
 
 ---
 
@@ -29,7 +29,7 @@ built — no macOS was available where this was written.
 
 ```bash
 cd relay
-npm install                 # first run only; creates package-lock.json
+npm ci                      # installs exactly package-lock.json
 npm run check               # syntax + full test suite
 
 PHONE_TOKEN=$(openssl rand -hex 32) \
@@ -132,7 +132,7 @@ only and never enters the relay's environment.
 contracts/fixtures/   canonical JSON — read by BOTH the Node and Swift suites
 relay/src/            protocol, relay state machine, HTTP + WebSocket server
 relay/public/         the phone web app (no inline script or style: CSP)
-relay/test/           104 passing tests
+relay/test/           117 passing tests
 mac/                  Swift menu-bar app + XcodeGen spec
 deploy/oci/           Dockerfile, compose, Caddyfile
 tests/manual/         click-target.html — the harmless counter for Octo

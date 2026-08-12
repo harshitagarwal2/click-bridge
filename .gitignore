@@ -9,3 +9,4 @@ mac/Config/Local.xcconfig
 .DS_Store
 benchmarks/*.csv
 !benchmarks/measurements.example.csv
+_to_delete/
