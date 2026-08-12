@@ -29,10 +29,12 @@ settings:
     # staying unsandboxed is a simplicity choice for a personal build, not a
     # technical requirement.
     ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_APP_SANDBOX: NO
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
 configFiles:
-  Debug: Config/Local.xcconfig
-  Release: Config/Local.xcconfig
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
 
 targets:
   ClickBridgeMac:
@@ -59,15 +61,14 @@ targets:
     platform: macOS
     sources:
       - path: ClickBridgeMacTests
+      - path: ../contracts/fixtures
+        buildPhase: resources
     dependencies:
       - target: ClickBridgeMac
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.mac.tests
-    # Canonical fixtures are shared with the Node suite — one contract, two
-    # implementations reading the same bytes.
-    resources:
-      - ../contracts/fixtures
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   ClickBridgeMac:

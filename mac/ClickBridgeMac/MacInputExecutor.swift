@@ -1,78 +1,82 @@
 import Foundation
 import CoreGraphics
 
-/// Posts one left click at wherever the cursor already is.
-///
-/// Deliberately synchronous so `ActionProcessor` cannot suspend around it.
-struct MacInputExecutor: InputPosting {
+enum ClickEventPhase: String, Sendable { case down, up }
 
-    /// Gap between mouse-down and mouse-up. Starts at 0; raise to 30–50 ms only
-    /// if a target ignores the click. Apple's forums report zero-gap synthetic
-    /// clicks being dropped on Big Sur and later, so this is a named constant
-    /// rather than something to hunt for later.
-    var clickGapMs: UInt32 = UInt32(Constants.clickGapMs)
+struct ClickEvent: @unchecked Sendable {
+    let phase: ClickEventPhase
+    fileprivate let native: CGEvent?
+    init(phase: ClickEventPhase, native: CGEvent? = nil) { self.phase = phase; self.native = native }
+}
+
+struct ClickEventPair: @unchecked Sendable {
+    let down: ClickEvent
+    let up: ClickEvent
+    static let testing = ClickEventPair(down: ClickEvent(phase: .down), up: ClickEvent(phase: .up))
+}
+
+final class MacInputExecutor: InputPosting, @unchecked Sendable {
+    typealias EventConstruction = @Sendable () -> ClickEventPair?
+    typealias EventPosting = @Sendable (ClickEvent) -> Void
+    typealias GapSleeping = @Sendable (UInt32) -> Void
+
+    private let clickGapMs: UInt32
+    private let constructEvents: EventConstruction
+    private let postEvent: EventPosting
+    private let sleepMicroseconds: GapSleeping
+    private let lock = NSLock()
+    private var counts = InputPostCounts.zero
+
+    init(
+        clickGapMs: UInt32 = UInt32(Constants.clickGapMs),
+        constructEvents: @escaping EventConstruction = { MacInputExecutor.makeNativeEvents() },
+        postEvent: @escaping EventPosting = { MacInputExecutor.postNativeEvent($0) },
+        sleepMicroseconds: @escaping GapSleeping = { usleep($0) }
+    ) {
+        self.clickGapMs = clickGapMs
+        self.constructEvents = constructEvents
+        self.postEvent = postEvent
+        self.sleepMicroseconds = sleepMicroseconds
+    }
 
     func postLeftClickAtCurrentCursor() -> InputPostOutcome {
-        // Global display coordinates, top-left origin — the same space CGEvent
-        // mouse events expect. No NSEvent.mouseLocation flip needed.
-        guard let probe = CGEvent(source: nil) else { return .creationFailed }
-        let point = probe.location
-
-        let source = CGEventSource(stateID: .hidSystemState)
-
-        // Build BOTH events before posting either: a half-posted click (down
-        // with no up) would leave the machine with a stuck mouse button.
-        guard let down = CGEvent(
-                mouseEventSource: source,
-                mouseType: .leftMouseDown,
-                mouseCursorPosition: point,
-                mouseButton: .left),
-              let up = CGEvent(
-                mouseEventSource: source,
-                mouseType: .leftMouseUp,
-                mouseCursorPosition: point,
-                mouseButton: .left)
-        else {
-            return .creationFailed
+        guard let events = constructEvents() else { return .creationFailed }
+        let mouseDownUnixMs = Date().timeIntervalSince1970 * 1_000
+        postEvent(events.down)
+        lock.withLock {
+            counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount + 1,
+                                     mouseUpPostCount: counts.mouseUpPostCount)
         }
+        if clickGapMs > 0 { sleepMicroseconds(clickGapMs * 1_000) }
+        postEvent(events.up)
+        lock.withLock {
+            counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount,
+                                     mouseUpPostCount: counts.mouseUpPostCount + 1)
+        }
+        return .posted(mouseDownUnixMs: mouseDownUnixMs)
+    }
 
-        // Synthesised events otherwise carry a click state that some apps treat
-        // as invalid and silently ignore.
+    func diagnosticPostCounts() -> InputPostCounts { lock.withLock { counts } }
+
+    private static func makeNativeEvents() -> ClickEventPair? {
+        guard let probe = CGEvent(source: nil) else { return nil }
+        let point = probe.location
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: point, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                               mouseCursorPosition: point, mouseButton: .left) else { return nil }
         down.setIntegerValueField(.mouseEventClickState, value: 1)
         up.setIntegerValueField(.mouseEventClickState, value: 1)
+        return ClickEventPair(down: ClickEvent(phase: .down, native: down),
+                              up: ClickEvent(phase: .up, native: up))
+    }
 
-        let mouseDownUnixMs = Date().timeIntervalSince1970 * 1000
-        down.post(tap: .cghidEventTap)
-
-        if clickGapMs > 0 {
-            usleep(clickGapMs * 1000)
-        }
-        up.post(tap: .cghidEventTap)
-
-        return .posted(mouseDownUnixMs: mouseDownUnixMs)
+    private static func postNativeEvent(_ event: ClickEvent) {
+        event.native?.post(tap: .cghidEventTap)
     }
 }
 
-/// PostEvent is a NARROWER TCC service than Accessibility.
-///
-/// Apple DTS confirms `PostEvent`, `ListenEvent`, and `Accessibility` are
-/// distinct services. Using `AXIsProcessTrustedWithOptions` here would request
-/// the broad Accessibility privilege when only event posting is needed.
-/// The user still grants it under Privacy & Security → Accessibility.
-struct PostEventPermissionService: PostEventPermissionChecking {
-
-    /// Checks status. Never prompts.
-    func isGranted() -> Bool {
-        CGPreflightPostEventAccess()
-    }
-
-    /// Prompts. Call ONLY from an explicit user action (the menu item).
-    @discardableResult
-    func requestFromUserAction() -> Bool {
-        CGRequestPostEventAccess()
-    }
-
-    var permissionState: PermissionState {
-        isGranted() ? .ready : .required
-    }
+private extension NSLock {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T { lock(); defer { unlock() }; return try body() }
 }

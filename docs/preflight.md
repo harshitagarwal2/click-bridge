@@ -1,0 +1,121 @@
+# Task 1 preflight record
+
+Captured on 2026-08-11 before implementation work. This document records only
+locally discoverable, non-secret facts. It deliberately contains no credential,
+token, hardware serial number, device UUID, or other unique hardware identifier.
+
+## Repository starting state
+
+| Item | Recorded value |
+|---|---|
+| Isolated worktree | `/private/tmp/clicker-codex-implementation` |
+| Branch | `codex/click-bridge-implementation` |
+| Starting status | Clean index and worktree before Task 1 edits |
+| Starting HEAD | `6c54ea2 docs: finalize click bridge implementation plan` |
+| Imported baseline | `b3d7729 chore: polish repository setup` |
+| Initial scaffold commit | `ab0fc92 Initial commit: Click Bridge application` |
+| Ancestry check | `ab0fc92` is an ancestor of `HEAD`; `b3d7729` exists in history |
+| Active plan | `FINAL-PLAN.md`, already committed at `6c54ea2` |
+
+The worktree uses a `codex/` feature branch by explicit user request. The old
+Task 1 assertion that execution must occur directly on `main` is therefore
+superseded; no baseline commit was reset or rewritten.
+
+The ignored `_to_delete/_impl.tgz` and `_to_delete/_scaffold.tgz` bundles are
+not materialized in this isolated worktree because Git does not track them.
+Both remain present in the original local checkout, and `_to_delete/` remains
+ignored. They are historical inputs only and were not opened, copied, staged,
+or modified.
+
+## Local Mac and toolchain
+
+| Item | Recorded value | Readiness |
+|---|---|---|
+| CPU architecture | `arm64` | Recorded for native build selection |
+| Mac model | MacBook Pro (`MacBookPro18,3`) | Non-unique model identifier only |
+| macOS | 27.0, build 26A5388g | Recorded |
+| Default-path Node.js | 26.7.0 | Do not use for the Node 24-pinned tasks |
+| Task Node.js | 24.19.0 at `/opt/homebrew/opt/node@24/bin/node` | Installed and ready |
+| Task npm | 11.17.0 at `/opt/homebrew/opt/node@24/bin/npm` | Installed and ready |
+| XcodeGen | 2.46.0 | Installed and ready |
+| Docker client | 29.7.2, darwin/arm64, context `colima` | Installed and connected |
+| Docker engine | 29.5.2, linux/arm64 | Running through Colima |
+| Docker Compose | Standalone `docker-compose` 5.4.0 | Installed; `docker compose` plugin discovery is unavailable |
+| Docker buildx | Standalone `docker-buildx` 0.36.1 | Installed; `docker buildx` plugin discovery is unavailable |
+
+### NODE-01 — Node 24 selection
+
+Node 24.19.0 and npm 11.17.0 are installed under
+`/opt/homebrew/opt/node@24/bin`. The default shell path still resolves Node
+26.7.0, so Task 2 and later Node-pinned commands must prepend the Node 24 bin
+directory to `PATH` or invoke those binaries explicitly. Record that task's
+fresh `node --version` and `npm --version` evidence before dependency work.
+
+Local container validation is now available through the Colima Docker context.
+Because CLI plugin discovery does not expose the space-form commands, use the
+verified standalone `docker-compose` and `docker-buildx` executables locally.
+The OCI host still requires its own Docker/Compose inspection; the local arm64
+engine does not establish the VM architecture or production readiness.
+
+## OCI SJC and public endpoint gates
+
+No OCI credential, SSH target, cloud console, DNS account, or secret file was
+available to this isolated lane. The existing VM was not mutated, and no secret
+was inspected. Later deployment must close the following gates with fresh
+read-only evidence before changing the instance.
+
+| Gate | Required recorded fact | Current value |
+|---|---|---|
+| OCI-01 | SSH user and public IPv4 supplied through the approved operator path | Not supplied |
+| OCI-02 | Region | `us-sanjose-1` (user-confirmed plan constraint) |
+| OCI-03 | Shape and `amd64`/`arm64` architecture | Pending OCI inspection |
+| OCI-04 | Operating system, Docker server, and Compose versions | Pending OCI inspection |
+| OCI-05 | Public IPv4 and ephemeral/reserved status | Pending OCI inspection |
+| OCI-06 | Public subnet, Internet Gateway, default route, VNIC, and NSG/security-list state | Pending OCI inspection |
+| OCI-07 | Existing ingress and host-firewall state | Pending OCI inspection |
+| DOMAIN-01 | Final hostname and DNS A record | Pending user-owned DNS decision |
+
+`CLICK_BRIDGE_DOMAIN` is intentionally **unset** until DOMAIN-01 closes. The
+preferred choice is a subdomain of a domain the user owns; a dedicated DuckDNS
+name is the no-cost fallback. Shared `sslip.io`/`nip.io` names and bare-IP TLS
+are not permanent choices for this deployment.
+
+## Physical target gates
+
+| Gate | Required recorded fact | Current value |
+|---|---|---|
+| MAC-01 | Mac model and OS | MacBook Pro (`MacBookPro18,3`), macOS 27.0 (26A5388g) |
+| OCTO-01 | Installed Octo Browser version | Not found in standard `/Applications` or user `Applications` locations; confirm before Task 7 |
+| PHONE-01 | Target phone model and OS | Not supplied |
+| PHONE-02 | Target carrier | Not supplied |
+| NETWORK-01 | Whether the Mac uses wired Ethernet or Wi-Fi during the benchmark | Restricted local inspection could not establish this safely |
+| TARGET-01 | Harmless physical click-counting page | `tests/manual/click-target.html` exists |
+
+Phone, carrier, and Octo details are operational inputs rather than repository
+secrets. Record them when the physical devices are available; do not infer them.
+
+## Canonical repository boundary
+
+- `FINAL-PLAN.md` is the only active plan.
+- Tasks 1 through 9 form Milestone 1.
+- Tailscale and hedging stay disabled until Milestone 1 passes.
+- Earlier plans and prototypes remain non-authoritative historical evidence
+  until the required Task 9 cleanup.
+- The imported application scaffold remains unverified until each task's
+  acceptance gate passes with fresh evidence.
+- Root Docker context excludes repository metadata, secrets, dependencies,
+  build products, archives, bundles, Mac sources, benchmarks, tests, docs, and
+  plans while retaining `relay/package*.json`, `relay/src/`, and
+  `relay/public/` as build inputs.
+
+## Task 1 handoff gates
+
+- [x] Feature branch/worktree, baseline commits, and clean starting state recorded.
+- [x] Mac architecture, model, OS, and local toolchain recorded without unique hardware identifiers.
+- [x] Canonical plan and milestone boundaries documented.
+- [x] Historical bundles preserved and ignored.
+- [x] Harmless physical click target identified.
+- [x] NODE-01: Node 24.19.0/npm 11.17.0 installed; explicitly select its bin directory for Task 2.
+- [ ] OCI-01 through OCI-07: inspect the existing VM through approved access.
+- [ ] DOMAIN-01: choose and resolve `CLICK_BRIDGE_DOMAIN`.
+- [ ] OCTO-01, PHONE-01, PHONE-02, NETWORK-01: record the physical test setup.

@@ -47,7 +47,7 @@ body{
   padding:8px;margin:-8px;border-radius:8px;cursor:pointer;
   display:flex;align-items:center;
 }
-.icon-btn:focus-visible,.click:focus-visible,.btn:focus-visible{
+.icon-btn:focus-visible,#click-button:focus-visible,.btn:focus-visible{
   outline:3px solid var(--accent);outline-offset:3px;
 }
 
@@ -56,7 +56,7 @@ body{
   align-items:center;justify-content:center;gap:18px;padding:24px 20px 40px;
 }
 
-.click{
+#click-button{
   width:min(88vw,32rem);
   min-height:45vh;
   border-radius:26px;
@@ -71,9 +71,9 @@ body{
   -webkit-tap-highlight-color:transparent;
   transition:transform .06s ease,border-color .12s ease,opacity .12s ease;
 }
-.click:enabled{border-color:var(--accent);color:var(--accent)}
-.click:enabled:active{transform:scale(.985)}
-.click:disabled{opacity:.4;cursor:not-allowed}
+#click-button:enabled{border-color:var(--accent);color:var(--accent)}
+#click-button:enabled:active{transform:scale(.985)}
+#click-button:disabled{opacity:.4;cursor:not-allowed}
 
 .hint{margin:0;color:var(--muted);font-size:14px;text-align:center}
 
@@ -86,8 +86,8 @@ body{
 .result.error{color:var(--danger)}
 
 @media (prefers-reduced-motion:reduce){
-  .click{transition:none}
-  .click:enabled:active{transform:none}
+  #click-button{transition:none}
+  #click-button:enabled:active{transform:none}
 }
 
 /* -- settings sheet ------------------------------------------------------ */
@@ -126,6 +126,10 @@ body{
 }
 .btn.primary{border-color:var(--accent);color:var(--accent)}
 .btn.danger{border-color:var(--danger);color:var(--danger)}
+.btn.retry{flex:0 0 auto;width:min(88vw,20rem)}
+
+[hidden]{display:none!important}
+.install{line-height:1.4}
 
 .check{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--muted)}
 .check input{margin-top:3px;flex:0 0 auto}

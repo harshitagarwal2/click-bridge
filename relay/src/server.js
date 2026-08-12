@@ -1,235 +1,392 @@
-// HTTP + WebSocket front end for the relay.
-//
-// Serves the phone PWA over plain HTTP (TLS is Caddy's job in production) and
-// accepts WebSocket upgrades only at /ws.
-
-import http from 'node:http';
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
-import { join, normalize, extname, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import http from 'node:http';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { WebSocketServer } from 'ws';
 
-import { RelayState } from './relay.js';
-import { CONTENT_SECURITY_POLICY, SECURITY_HEADERS } from './csp.js';
-import { parseClientMessage, encodeMessage, ProtocolError } from './protocol.js';
 import {
-  PROTOCOL_VERSION,
-  MAX_MESSAGE_BYTES,
   AUTH_TIMEOUT_MS,
+  MAX_MESSAGE_BYTES,
+  PROTOCOL_VERSION,
   SERVER_PING_INTERVAL_MS,
   SERVER_PONG_TIMEOUT_MS,
   TOKEN_HEX_LENGTH,
 } from './constants.js';
+import { createSecurityHeaders } from './csp.js';
+import { encodeMessage, parseClientMessage, ProtocolError } from './protocol.js';
+import { RelayState } from './relay.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = join(HERE, '..', 'public');
+const DEFAULT_PUBLIC_DIR = join(HERE, '..', 'public');
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.webmanifest': 'application/manifest+json; charset=utf-8',
-  '.png': 'image/png',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
+const STATIC_FILES = new Map([
+  ['/', ['index.html', 'text/html; charset=utf-8']],
+  ['/index.html', ['index.html', 'text/html; charset=utf-8']],
+  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
+  ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/state.js', ['state.js', 'text/javascript; charset=utf-8']],
+  ['/wire-protocol.js', ['wire-protocol.js', 'text/javascript; charset=utf-8']],
+  ['/runtime-constants.js', ['runtime-constants.js', 'text/javascript; charset=utf-8']],
+  ['/runtime-scheduler.js', ['runtime-scheduler.js', 'text/javascript; charset=utf-8']],
+  ['/constants-lite.js', ['constants-lite.js', 'text/javascript; charset=utf-8']],
+  ['/transport-controller.js', ['transport-controller.js', 'text/javascript; charset=utf-8']],
+  ['/relay-transport.js', ['relay-transport.js', 'text/javascript; charset=utf-8']],
+  ['/transport-coordinator.js', ['transport-coordinator.js', 'text/javascript; charset=utf-8']],
+  ['/clock-health-controller.js', ['clock-health-controller.js', 'text/javascript; charset=utf-8']],
+  ['/phone-settings-store.js', ['phone-settings-store.js', 'text/javascript; charset=utf-8']],
+  ['/wake-lock-controller.js', ['wake-lock-controller.js', 'text/javascript; charset=utf-8']],
+  ['/benchmark-session.js', ['benchmark-session.js', 'text/javascript; charset=utf-8']],
+  ['/direct-transport.js', ['direct-transport.js', 'text/javascript; charset=utf-8']],
+  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+  ['/icons/icon-192.png', ['icons/icon-192.png', 'image/png']],
+  ['/icons/icon-512.png', ['icons/icon-512.png', 'image/png']],
+  ['/icons/apple-touch-icon-180.png', ['icons/apple-touch-icon-180.png', 'image/png']],
+]);
 
-function constantTimeEquals(a, b) {
-  const ab = Buffer.from(String(a), 'utf8');
-  const bb = Buffer.from(String(b), 'utf8');
-  if (ab.length !== bb.length) {
-    // Still burn a comparison so length alone is not a fast path.
-    timingSafeEqual(ab, ab);
+function isValidToken(token) {
+  return typeof token === 'string'
+    && token.length === TOKEN_HEX_LENGTH
+    && /^[0-9a-f]{64}$/.test(token);
+}
+
+function isValidHostname(hostname) {
+  if (typeof hostname !== 'string' || hostname.length === 0 || hostname.length > 253) return false;
+  if (hostname !== hostname.trim() || hostname.endsWith('.')) return false;
+  const labels = hostname.split('.');
+  return labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
+function constantTimeEquals(left, right) {
+  const leftBytes = Buffer.from(left, 'utf8');
+  const rightBytes = Buffer.from(right, 'utf8');
+  if (leftBytes.length !== rightBytes.length) {
+    const padded = Buffer.alloc(Math.max(leftBytes.length, rightBytes.length, 1));
+    timingSafeEqual(padded, padded);
     return false;
   }
-  return timingSafeEqual(ab, bb);
+  return timingSafeEqual(leftBytes, rightBytes);
 }
 
-function isValidToken(t) {
-  return typeof t === 'string' && t.length === TOKEN_HEX_LENGTH && /^[0-9a-f]{64}$/.test(t);
+function writeResponse(res, status, headers, body = '') {
+  res.writeHead(status, headers);
+  res.end(body);
 }
 
-export { CONTENT_SECURITY_POLICY };
-
-export function createServer({ phoneToken, macToken, publicDir = PUBLIC_DIR, log = console }) {
-  if (!isValidToken(phoneToken)) throw new Error('PHONE_TOKEN must be 64 lowercase hex characters');
-  if (!isValidToken(macToken)) throw new Error('MAC_TOKEN must be 64 lowercase hex characters');
-  if (constantTimeEquals(phoneToken, macToken)) throw new Error('PHONE_TOKEN and MAC_TOKEN must differ');
-
-  const state = new RelayState({
-    log: (event, detail) => log.info?.(JSON.stringify({ event, ...detail })),
-  });
-
-  const httpServer = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const path = url.pathname;
+export function createHttpHandler({ publicDir = DEFAULT_PUBLIC_DIR, clickBridgeDomain }) {
+  const securityHeaders = createSecurityHeaders(clickBridgeDomain);
+  return async function handleHttp(req, res) {
+    let pathname;
+    try {
+      pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
+    } catch {
+      writeResponse(res, 400, securityHeaders);
+      return;
+    }
 
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(405, SECURITY_HEADERS).end();
+      writeResponse(res, 405, { ...securityHeaders, Allow: 'GET, HEAD' });
       return;
     }
-    if (path === '/healthz') {
-      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' }).end('ok');
+    if (pathname === '/healthz') {
+      const body = req.method === 'HEAD' ? '' : 'ok';
+      writeResponse(res, 200, {
+        ...securityHeaders,
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Content-Length': 2,
+        'Cache-Control': 'no-store',
+      }, body);
       return;
     }
 
-    const rel = normalize(path === '/' ? '/index.html' : path).replace(/^(\.\.[/\\])+/, '');
-    const file = join(publicDir, rel);
-    if (!file.startsWith(publicDir)) {
-      res.writeHead(403, SECURITY_HEADERS).end();
+    const staticFile = STATIC_FILES.get(pathname);
+    if (!staticFile) {
+      writeResponse(res, 404, { ...securityHeaders, 'Content-Type': 'text/plain; charset=utf-8' }, 'not found');
       return;
     }
-
+    const [relativePath, contentType] = staticFile;
     try {
-      const info = await stat(file);
-      if (!info.isFile()) throw new Error('not a file');
-      res.writeHead(200, {
-        ...SECURITY_HEADERS,
-        'Content-Type': MIME[extname(file)] ?? 'application/octet-stream',
-        'Content-Length': info.size,
+      const body = await readFile(join(publicDir, relativePath));
+      writeResponse(res, 200, {
+        ...securityHeaders,
+        'Content-Type': contentType,
+        'Content-Length': body.byteLength,
         'Cache-Control': 'no-cache',
-      });
-      if (req.method === 'HEAD') return res.end();
-      createReadStream(file).pipe(res);
-    } catch {
-      res.writeHead(404, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain' }).end('not found');
+      }, req.method === 'HEAD' ? '' : body);
+    } catch (error) {
+      const status = error?.code === 'ENOENT' ? 404 : 500;
+      writeResponse(res, status, {
+        ...securityHeaders,
+        'Content-Type': 'text/plain; charset=utf-8',
+      }, status === 404 ? 'not found' : 'internal error');
     }
-  });
+  };
+}
 
-  httpServer.on('connection', (socket) => socket.setNoDelay(true));
-
+export function attachWebSocketServer({
+  httpServer,
+  state,
+  connections,
+  phoneToken,
+  macToken,
+  log = console,
+  parseClient = parseClientMessage,
+  encode = encodeMessage,
+  authTimeoutMs = AUTH_TIMEOUT_MS,
+  pingIntervalMs = SERVER_PING_INTERVAL_MS,
+  pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
+}) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+  let nextConnectionId = 0;
 
-  httpServer.on('upgrade', (req, socket, head) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== '/ws') {
-      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+  const onUpgrade = (req, socket, head) => {
+    let pathname;
+    try {
+      pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
+    } catch {
+      pathname = '';
+    }
+    if (pathname !== '/ws') {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
+    socket.setNoDelay?.(true);
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  });
+  };
+  httpServer.on('upgrade', onUpgrade);
 
   wss.on('connection', (ws) => {
     let role = null;
-    ws.isAlive = true;
-
+    let connection = null;
+    ws.__clickBridgePongTimer = null;
     const authTimer = setTimeout(() => {
       if (role === null) {
         log.info?.(JSON.stringify({ event: 'auth_timeout' }));
         ws.close(4001, 'auth timeout');
       }
-    }, AUTH_TIMEOUT_MS);
+    }, authTimeoutMs);
     authTimer.unref?.();
 
-    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('pong', () => {
+      if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
+      ws.__clickBridgePongTimer = null;
+    });
 
     ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        if (role === null) return ws.close(4002, 'binary during auth');
-        return; // ignore after auth
-      }
-      const raw = data.toString('utf8');
-
+      const raw = isBinary ? data : data.toString('utf8');
       if (role === null) {
-        let hello;
+        let message;
         try {
-          hello = parseClientMessage(raw, null);
-        } catch (err) {
-          const code = err instanceof ProtocolError ? err.code : 'error';
-          log.info?.(JSON.stringify({ event: 'auth_rejected', code }));
-          return ws.close(4003, 'bad hello');
+          message = parseClient(raw, null);
+        } catch (error) {
+          if (error instanceof ProtocolError) {
+            log.info?.(JSON.stringify({ event: 'auth_rejected', code: error.code }));
+            ws.close(4003, 'bad hello');
+          } else {
+            log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'parser_failure' }));
+            ws.close(1011, 'internal error');
+          }
+          return;
         }
-        const expected = hello.role === 'phone' ? phoneToken : macToken;
-        if (!constantTimeEquals(hello.token, expected)) {
-          log.info?.(JSON.stringify({ event: 'auth_rejected', code: 'bad_token', role: hello.role }));
-          return ws.close(4003, 'bad token');
+        const expectedToken = message.role === 'phone' ? phoneToken : macToken;
+        if (!constantTimeEquals(message.token, expectedToken)) {
+          log.info?.(JSON.stringify({
+            event: 'auth_rejected', code: 'bad_token', role: message.role,
+          }));
+          ws.close(4003, 'bad token');
+          return;
         }
 
-        role = hello.role;
+        role = message.role;
         clearTimeout(authTimer);
-        state.replaceRole(role, ws);
-        ws.send(encodeMessage({ type: 'hello.ok', v: PROTOCOL_VERSION, role }));
+        connection = Object.freeze({ id: ++nextConnectionId, role });
+        connections.set(connection, ws);
+        state.replaceRole(role, connection);
+        ws.send(encode({ type: 'hello.ok', v: PROTOCOL_VERSION, role }));
+        state.publishState();
         log.info?.(JSON.stringify({ event: 'authenticated', role }));
-
-        if (role === 'phone') state.publishState();
-        else state.publishState(); // Mac arrival flips macOnline for the phone
         return;
       }
 
-      state.handleMessage(role, ws, raw);
+      let message;
+      try {
+        message = parseClient(raw, role);
+      } catch (error) {
+        if (error instanceof ProtocolError) {
+          log.info?.(JSON.stringify({
+            event: 'message_rejected', role, code: error.code,
+          }));
+        } else {
+          log.info?.(JSON.stringify({
+            event: 'message_internal_error', role, code: 'parser_failure',
+          }));
+          ws.close(1011, 'internal error');
+        }
+        return;
+      }
+      if (role === 'phone') state.handlePhoneMessage(connection, message);
+      else state.handleMacMessage(connection, message);
     });
 
     ws.on('close', () => {
       clearTimeout(authTimer);
-      if (role) {
-        state.detachIfCurrent(role, ws);
+      if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
+      ws.__clickBridgePongTimer = null;
+      if (connection) {
+        connections.delete(connection);
+        state.detachIfCurrent(role, connection);
         log.info?.(JSON.stringify({ event: 'disconnected', role }));
       }
     });
-
-    ws.on('error', () => { /* close handler does the cleanup */ });
+    ws.on('error', (error) => {
+      log.info?.(JSON.stringify({
+        event: 'socket_error', role: role ?? 'unauthenticated',
+        code: typeof error?.code === 'string' ? error.code : 'socket_error',
+      }));
+    });
   });
 
-  // Server-side liveness, independent of the application heartbeat.
   const pingTimer = setInterval(() => {
     for (const ws of wss.clients) {
-      if (ws.isAlive === false) {
+      if (ws.readyState !== ws.OPEN) continue;
+      if (ws.__clickBridgePongTimer) continue;
+      try {
+        ws.ping();
+        const deadline = setTimeout(() => {
+          ws.__clickBridgePongTimer = null;
+          ws.terminate();
+        }, pongTimeoutMs);
+        deadline.unref?.();
+        ws.__clickBridgePongTimer = deadline;
+      } catch {
         ws.terminate();
-        continue;
       }
-      ws.isAlive = false;
-      try { ws.ping(); } catch { /* terminating */ }
     }
-  }, SERVER_PING_INTERVAL_MS);
+  }, pingIntervalMs);
   pingTimer.unref?.();
 
-  // ws has no per-socket pong deadline; the next sweep terminates a silent
-  // socket, so the effective bound is one interval plus the timeout budget.
-  const pongBudgetMs = SERVER_PING_INTERVAL_MS + SERVER_PONG_TIMEOUT_MS;
-
   return {
-    httpServer,
     wss,
-    state,
-    pongBudgetMs,
-    listen: (port, host) => new Promise((r) => httpServer.listen(port, host, r)),
-    close: async () => {
+    async close() {
       clearInterval(pingTimer);
-      state.dispose();
-      for (const ws of wss.clients) ws.terminate();
-      await new Promise((r) => wss.close(r));
-      await new Promise((r) => httpServer.close(r));
+      httpServer.off('upgrade', onUpgrade);
+      for (const ws of wss.clients) {
+        if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
+        ws.terminate();
+      }
+      await new Promise((resolve) => wss.close(resolve));
     },
   };
 }
 
-// -- CLI ---------------------------------------------------------------------
+export function createServer({
+  phoneToken,
+  macToken,
+  clickBridgeDomain,
+  publicDir = DEFAULT_PUBLIC_DIR,
+  log = console,
+  authTimeoutMs = AUTH_TIMEOUT_MS,
+  pingIntervalMs = SERVER_PING_INTERVAL_MS,
+  pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
+  parseClient = parseClientMessage,
+  encode = encodeMessage,
+  stateOptions = {},
+  stateFactory = (options) => new RelayState(options),
+} = {}) {
+  if (!isValidToken(phoneToken)) {
+    throw new Error('PHONE_TOKEN must be 64 lowercase hex characters');
+  }
+  if (!isValidToken(macToken)) {
+    throw new Error('MAC_TOKEN must be 64 lowercase hex characters');
+  }
+  if (constantTimeEquals(phoneToken, macToken)) {
+    throw new Error('PHONE_TOKEN and MAC_TOKEN must differ');
+  }
+  if (!isValidHostname(clickBridgeDomain)) {
+    throw new Error('CLICK_BRIDGE_DOMAIN must be a bare valid hostname');
+  }
 
-const isMain = process.argv[1] &&
-  import.meta.url === `file://${process.argv[1]}`;
+  const connections = new Map();
+  const emit = (connection, event) => {
+    const ws = connections.get(connection);
+    if (!ws) return false;
+    if (event.kind === 'close') {
+      ws.close(event.code, event.reason);
+      return true;
+    }
+    if (event.kind === 'message' && ws.readyState === ws.OPEN) {
+      ws.send(encode(event.message));
+      return true;
+    }
+    return false;
+  };
+  const redactedLog = (event, detail = {}) => {
+    log.info?.(JSON.stringify({ event, ...detail }));
+  };
+  const state = stateFactory({ ...stateOptions, emit, log: redactedLog });
+  const httpServer = http.createServer(createHttpHandler({ publicDir, clickBridgeDomain }));
+  httpServer.on('connection', (socket) => socket.setNoDelay?.(true));
+  const attachment = attachWebSocketServer({
+    httpServer,
+    state,
+    connections,
+    phoneToken,
+    macToken,
+    log,
+    parseClient,
+    encode,
+    authTimeoutMs,
+    pingIntervalMs,
+    pongTimeoutMs,
+  });
 
+  return {
+    httpServer,
+    wss: attachment.wss,
+    state,
+    listen: (port, host) => new Promise((resolve, reject) => {
+      const onError = (error) => reject(error);
+      httpServer.once('error', onError);
+      httpServer.listen(port, host, () => {
+        httpServer.off('error', onError);
+        resolve();
+      });
+    }),
+    async close() {
+      state.dispose?.();
+      await attachment.close();
+      if (httpServer.listening) {
+        await new Promise((resolve) => httpServer.close(resolve));
+      }
+    },
+  };
+}
+
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const port = Number(process.env.PORT ?? 8080);
   const host = process.env.HOST ?? '0.0.0.0';
-  const phoneToken = process.env.PHONE_TOKEN ?? '';
-  const macToken = process.env.MAC_TOKEN ?? '';
-
   let server;
   try {
-    server = createServer({ phoneToken, macToken });
-  } catch (err) {
-    console.error(`startup refused: ${err.message}`);
+    server = createServer({
+      phoneToken: process.env.PHONE_TOKEN,
+      macToken: process.env.MAC_TOKEN,
+      clickBridgeDomain: process.env.CLICK_BRIDGE_DOMAIN,
+    });
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('PORT must be an integer from 1 through 65535');
+    }
+    await server.listen(port, host);
+    console.log(JSON.stringify({ event: 'listening', port, host }));
+  } catch (error) {
+    console.error(`startup refused: ${error.message}`);
     process.exit(1);
   }
-  await server.listen(port, host);
-  console.log(JSON.stringify({ event: 'listening', port, host }));
 
-  for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, async () => {
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, async () => {
       await server.close();
       process.exit(0);
     });

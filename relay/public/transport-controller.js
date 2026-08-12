@@ -1,190 +1,244 @@
-// Owns exactly one WebSocket generation, one reconnect timer, and one
-// heartbeat timer. Owns NO logical action state — that belongs to the
-// coordinator, so adding a second transport in Milestone 2 changes nothing here.
-
-import { parseServerMessage } from './protocol-lite.js';
+import { encodeMessage, parseServerMessage, PROTOCOL_VERSION } from './wire-protocol.js';
 import {
-  PROTOCOL_VERSION,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
+  KEEPWARM_INTERVAL_MS,
   PHONE_RECONNECT_BASE_MS,
   PHONE_RECONNECT_CAP_MS,
-} from './constants-lite.js';
+} from './runtime-constants.js';
+
+const defaultScheduler = Object.freeze({
+  setTimeout: (callback, delay) => setTimeout(callback, delay),
+  clearTimeout: (timer) => clearTimeout(timer),
+});
 
 export class TransportController {
-  /**
-   * @param {object} o
-   * @param {string} o.name          'oci' | 'tailscale'
-   * @param {() => string} o.url
-   * @param {() => string|null} o.token
-   * @param {(m:object)=>void} o.onMessage
-   * @param {(s:string)=>void} o.onStatus  'open' | 'closed'
-   * @param {(fn:Function,ms:number)=>any} [o.setTimeout]
-   * @param {()=>number} [o.random]
-   * @param {(url:string)=>WebSocket} [o.createSocket]
-   */
-  constructor(o) {
-    this.name = o.name;
-    this.getUrl = o.url;
-    this.getToken = o.token;
-    this.onMessage = o.onMessage ?? (() => {});
-    this.onStatus = o.onStatus ?? (() => {});
-    this.setTimeout = o.setTimeout ?? ((f, ms) => setTimeout(f, ms));
-    this.clearTimeout = o.clearTimeout ?? ((t) => clearTimeout(t));
-    this.random = o.random ?? Math.random;
-    this.createSocket = o.createSocket ?? ((url) => new WebSocket(url));
+  constructor({
+    name = 'oci',
+    url,
+    token,
+    role,
+    createSocket,
+    clock = { now: Date.now },
+    scheduler = defaultScheduler,
+    random = Math.random,
+    onMessage = () => {},
+    onStatus = () => {},
+  }) {
+    this.name = name;
+    this.getUrl = typeof url === 'function' ? url : () => url;
+    this.getToken = typeof token === 'function' ? token : () => token;
+    this.role = role;
+    this.createSocket = createSocket ?? ((socketUrl) => new WebSocket(socketUrl));
+    this.clock = clock;
+    this.scheduler = scheduler;
+    this.random = random;
+    this.onMessage = onMessage;
+    this.onStatus = onStatus;
 
-    this.generation = 0;
+    this._generation = 0;
+    this._state = 'idle';
     this.socket = null;
     this.authenticated = false;
+    this.suspended = false;
+    this.keepWarm = false;
     this.attempt = 0;
+    this.sequence = 0;
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
-    this.heartbeatDeadline = null;
-    this.sequence = 0;
-    /** Explicit gate: set BEFORE an intentional close so callbacks cannot reconnect. */
-    this.suspended = false;
+    this.livenessTimer = null;
   }
+
+  get state() { return this._state; }
+  get generation() { return this._generation; }
+  get ready() { return this.authenticated && this.socket?.readyState === 1; }
 
   connect() {
     this.suspended = false;
+    this.#clearReconnect();
     this.#open();
+  }
+
+  close(reason = 'intentional') {
+    this.suspended = true;
+    this.#clearReconnect();
+    this.#stopHeartbeat();
+    this.authenticated = false;
+    this.attempt = 0;
+    this._generation += 1;
+    this.#teardownSocket(1000, reason);
+    this.#publish('suspended', reason);
+  }
+
+  setKeepWarm(enabled) {
+    this.keepWarm = Boolean(enabled);
+    if (this.authenticated) this.#scheduleHeartbeat();
+  }
+
+  send(message) {
+    if (!this.ready) return false;
+    try {
+      this.socket.send(encodeMessage(message));
+      return true;
+    } catch {
+      this.#failGeneration('send_failed');
+      return false;
+    }
   }
 
   #open() {
     if (this.suspended) return;
     const token = this.getToken();
-    if (!token) return;
+    if (!token) {
+      this.#publish('idle', 'missing_token');
+      return;
+    }
 
-    this.#teardownSocket();
-    const generation = ++this.generation;
+    this.#stopHeartbeat();
+    this.#teardownSocket(1000, 'replaced');
+    const generation = ++this._generation;
+    this.authenticated = false;
+    this.#publish('connecting', 'connect');
+
     let socket;
     try {
       socket = this.createSocket(this.getUrl());
     } catch {
-      return this.#scheduleReconnect();
+      this.#scheduleReconnect('create_failed');
+      return;
     }
     this.socket = socket;
-    this.authenticated = false;
-
-    const stale = () => generation !== this.generation;
+    const stale = () => generation !== this._generation || socket !== this.socket;
 
     socket.onopen = () => {
       if (stale()) return;
-      this.attempt = 0;
-      socket.send(JSON.stringify({
-        type: 'hello', v: PROTOCOL_VERSION, role: 'phone', token,
-      }));
+      this.#publish('authenticating', 'socket_open');
+      try {
+        socket.send(encodeMessage({
+          type: 'hello', v: PROTOCOL_VERSION, role: this.role, token,
+        }));
+      } catch {
+        this.#failGeneration('hello_failed');
+      }
     };
 
     socket.onmessage = (event) => {
       if (stale()) return;
-      if (typeof event.data !== 'string') return;   // binary frames have no meaning here
-      let msg;
+      let message;
       try {
-        msg = parseServerMessage(event.data);
+        message = parseServerMessage(event.data, this.role);
       } catch {
-        return;                                      // invalid frame: no side effect
+        this.#failGeneration('invalid_frame');
+        return;
       }
-      if (msg.type === 'hello.ok') {
+
+      if (!this.authenticated) {
+        if (message.type !== 'hello.ok') {
+          this.#failGeneration('expected_hello_ok');
+          return;
+        }
         this.authenticated = true;
-        this.#startHeartbeat();
-        this.onStatus('open');
+        this.attempt = 0;
+        this.#publish('ready', 'authenticated');
+        this.#scheduleHeartbeat();
         return;
       }
-      if (msg.type === 'heartbeat.ack') {
-        this.clearTimeout(this.heartbeatDeadline);
-        this.heartbeatDeadline = null;
+
+      if (message.type === 'hello.ok') {
+        this.#failGeneration('duplicate_hello');
         return;
       }
-      if (!this.authenticated) return;
-      this.onMessage(msg);
+      if (message.type === 'heartbeat.ack') {
+        this.scheduler.clearTimeout(this.livenessTimer);
+        this.livenessTimer = null;
+        return;
+      }
+      this.onMessage(message, Object.freeze({ name: this.name, generation }));
     };
 
     const down = () => {
       if (stale()) return;
-      this.authenticated = false;
-      this.#stopHeartbeat();
-      this.onStatus('closed');
-      this.#scheduleReconnect();
+      this.#failGeneration('socket_closed');
     };
-    socket.onclose = down;
     socket.onerror = down;
+    socket.onclose = down;
   }
 
-  #startHeartbeat() {
+  #failGeneration(reason) {
+    if (this.suspended || this._state === 'backoff') return;
+    this.authenticated = false;
     this.#stopHeartbeat();
-    const beat = () => {
-      if (!this.authenticated || this.suspended) return;
-      this.sequence += 1;
-      this.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: this.sequence });
-      this.heartbeatDeadline = this.setTimeout(() => {
-        // No acknowledgement: treat the path as dead and cycle it.
-        this.reconnect();
-      }, HEARTBEAT_TIMEOUT_MS);
-      this.heartbeatTimer = this.setTimeout(beat, HEARTBEAT_INTERVAL_MS);
-    };
-    this.heartbeatTimer = this.setTimeout(beat, HEARTBEAT_INTERVAL_MS);
+    this._generation += 1;
+    this.#teardownSocket(1002, reason);
+    this.#scheduleReconnect(reason);
   }
 
-  #stopHeartbeat() {
-    this.clearTimeout(this.heartbeatTimer);
-    this.clearTimeout(this.heartbeatDeadline);
-    this.heartbeatTimer = null;
-    this.heartbeatDeadline = null;
-  }
-
-  #scheduleReconnect() {
+  #scheduleReconnect(reason) {
     if (this.suspended || this.reconnectTimer) return;
     this.attempt += 1;
     const ceiling = Math.min(
       PHONE_RECONNECT_CAP_MS,
-      PHONE_RECONNECT_BASE_MS * 2 ** (this.attempt - 1),
+      PHONE_RECONNECT_BASE_MS * (2 ** (this.attempt - 1)),
     );
-    const delay = this.random() * ceiling;   // full jitter
-    this.reconnectTimer = this.setTimeout(() => {
+    const delay = this.random() * ceiling;
+    this.#publish('backoff', reason);
+    this.reconnectTimer = this.scheduler.setTimeout(() => {
       this.reconnectTimer = null;
       this.#open();
     }, delay);
   }
 
-  #teardownSocket() {
-    const s = this.socket;
-    this.socket = null;
-    if (!s) return;
-    s.onopen = s.onmessage = s.onclose = s.onerror = null;
-    try { s.close(); } catch { /* already gone */ }
+  #scheduleHeartbeat() {
+    this.scheduler.clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+    const interval = this.keepWarm ? KEEPWARM_INTERVAL_MS : HEARTBEAT_INTERVAL_MS;
+    this.heartbeatTimer = this.scheduler.setTimeout(() => this.#heartbeat(), interval);
   }
 
-  /** Intentional stop. Sets the gate first so no callback can revive it. */
-  suspend() {
-    this.suspended = true;
-    this.generation += 1;
-    this.clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-    this.#stopHeartbeat();
-    this.#teardownSocket();
-    this.authenticated = false;
-    this.attempt = 0;
-  }
-
-  reconnect() {
-    const wasSuspended = this.suspended;
-    this.suspend();
-    if (!wasSuspended) this.connect();
-  }
-
-  get ready() {
-    return this.authenticated && this.socket?.readyState === 1;
-  }
-
-  send(message) {
-    if (!this.socket || this.socket.readyState !== 1) return false;
-    try {
-      this.socket.send(JSON.stringify(message));
-      return true;
-    } catch {
-      return false;
+  #heartbeat() {
+    this.heartbeatTimer = null;
+    if (!this.ready || this.suspended) return;
+    this.sequence += 1;
+    if (!this.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: this.sequence })) return;
+    if (this.livenessTimer == null) {
+      this.livenessTimer = this.scheduler.setTimeout(() => {
+        this.livenessTimer = null;
+        this.#failGeneration('heartbeat_timeout');
+      }, HEARTBEAT_TIMEOUT_MS);
     }
+    this.#scheduleHeartbeat();
+  }
+
+  #stopHeartbeat() {
+    this.scheduler.clearTimeout(this.heartbeatTimer);
+    this.scheduler.clearTimeout(this.livenessTimer);
+    this.heartbeatTimer = null;
+    this.livenessTimer = null;
+  }
+
+  #clearReconnect() {
+    this.scheduler.clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  #teardownSocket(code, reason) {
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket) return;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    try { socket.close(code, reason); } catch { /* socket is already closed */ }
+  }
+
+  #publish(state, reason) {
+    this._state = state;
+    this.onStatus(Object.freeze({
+      state,
+      reason,
+      generation: this._generation,
+      atUnixMs: this.clock.now(),
+    }));
   }
 }
