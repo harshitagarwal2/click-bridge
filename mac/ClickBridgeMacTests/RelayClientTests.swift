@@ -675,12 +675,15 @@ final class RelayClientTests: XCTestCase {
                                                            expiresAtUnixMs: 1_786_497_602_000)))
         XCTAssertTrue(poster.waitUntilStarted())
 
+        let clearStarted = DispatchSemaphore(value: 0)
         let clearFinished = DispatchSemaphore(value: 0)
         let clearing = Task {
+            clearStarted.signal()
             let result = await client.clearConfigurationAndStop(credentialRevision: 2)
             clearFinished.signal()
             return result
         }
+        XCTAssertEqual(clearStarted.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(clearFinished.wait(timeout: .now() + 0.1), .timedOut)
         poster.unblock()
 

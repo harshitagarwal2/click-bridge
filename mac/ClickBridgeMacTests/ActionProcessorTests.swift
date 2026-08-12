@@ -304,11 +304,14 @@ final class ActionProcessorTests: XCTestCase {
         let posting = Task { await subject.receive(action, via: .oci, authorization: lease) }
         XCTAssertTrue(poster.waitUntilStarted())
 
+        let revokeStarted = DispatchSemaphore(value: 0)
         let revoked = DispatchSemaphore(value: 0)
         let revoking = Task {
+            revokeStarted.signal()
             await subject.revokeAuthorizationLease(lease)
             revoked.signal()
         }
+        XCTAssertEqual(revokeStarted.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(revoked.wait(timeout: .now() + 0.1), .timedOut)
         poster.unblock()
 
@@ -397,11 +400,14 @@ final class ActionProcessorTests: XCTestCase {
         let posting = Task { await subject.receive(self.request(id: "before-disable"), via: .tailscale) }
         XCTAssertTrue(poster.waitUntilStarted())
 
+        let disableStarted = DispatchSemaphore(value: 0)
         let disabled = DispatchSemaphore(value: 0)
         let disabling = Task {
+            disableStarted.signal()
             await subject.setRemoteEnabled(false)
             disabled.signal()
         }
+        XCTAssertEqual(disableStarted.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(disabled.wait(timeout: .now() + 0.1), .timedOut)
         poster.unblock()
         let result = await posting.value
