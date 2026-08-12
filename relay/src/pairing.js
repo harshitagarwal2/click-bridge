@@ -6,7 +6,7 @@ import {
   PAIRING_TTL_MS,
   PROTOCOL_VERSION,
 } from './constants.js';
-import { AUTH_STORE_ERROR_CODES } from './auth-store.js';
+import { AUTH_STORE_ERROR_CODES, AuthStoreError } from './auth-store.js';
 
 const ACTIVATION_CONTEXT = 'clickbridge-pair-activate:v1';
 
@@ -26,7 +26,7 @@ function sameHex(left, right) {
 function invitationVerifier(reference) {
   if (typeof reference !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(reference)) return null;
   const bytes = Buffer.from(reference, 'base64url');
-  return bytes.length === 32 ? sha256(bytes) : null;
+  return bytes.length === 32 && bytes.toString('base64url') === reference ? sha256(bytes) : null;
 }
 
 function failureForMac(session, reason) {
@@ -53,7 +53,7 @@ export class PairingCoordinator {
   #authStore;
   #emit;
   #close;
-  #getAuthenticatedPhones;
+  #deauthorizeOlderPhones;
   #log;
   #mac = null;
   #session = null;
@@ -69,7 +69,7 @@ export class PairingCoordinator {
     authStore,
     emit,
     close,
-    getAuthenticatedPhones = () => [],
+    deauthorizeOlderPhones,
     log = () => {},
   }) {
     this.#enabled = enabled;
@@ -80,7 +80,10 @@ export class PairingCoordinator {
     this.#authStore = authStore;
     this.#emit = emit;
     this.#close = close;
-    this.#getAuthenticatedPhones = getAuthenticatedPhones;
+    if (enabled && typeof deauthorizeOlderPhones !== 'function') {
+      throw new TypeError('deauthorizeOlderPhones is required when pairing is enabled');
+    }
+    this.#deauthorizeOlderPhones = deauthorizeOlderPhones;
     this.#log = log;
   }
 
@@ -345,9 +348,10 @@ export class PairingCoordinator {
         verifier: session.pendingVerifier,
       });
     } catch (error) {
-      const reason = error?.code === AUTH_STORE_ERROR_CODES.VERSION_CONFLICT
-          || error?.code === AUTH_STORE_ERROR_CODES.NEXT_VERSION_INVALID
-          || error?.code === AUTH_STORE_ERROR_CODES.INVALID_INPUT
+      const reason = error instanceof AuthStoreError
+          && (error.code === AUTH_STORE_ERROR_CODES.VERSION_CONFLICT
+          || error.code === AUTH_STORE_ERROR_CODES.NEXT_VERSION_INVALID
+          || error.code === AUTH_STORE_ERROR_CODES.INVALID_INPUT)
         ? 'activation_failed'
         : 'storage_failed';
       if (this.#session === session) this.#terminate(reason);
@@ -375,10 +379,13 @@ export class PairingCoordinator {
   #revokeOlderPhones(completed) {
     let phones;
     try {
-      phones = this.#getAuthenticatedPhones();
+      phones = this.#deauthorizeOlderPhones({
+        credentialVersion: completed.credentialVersion,
+        exclude: completed.claimant,
+      });
     } catch {
       this.#log('pairing_phone_resolution_failed');
-      return;
+      throw new Error('pairing phone deauthorization failed');
     }
     if (!Array.isArray(phones)) {
       this.#log('pairing_phone_resolution_failed');
@@ -413,8 +420,9 @@ export class PairingCoordinator {
       claimId: completed.claimId,
       activePhoneCredentialVersion: completed.credentialVersion,
     });
-    if (this.#owns(this.#mac, completed.mac.connection, completed.mac.generation)) {
-      this.#send(completed.mac.connection, {
+    const completionMac = this.#mac ?? completed.mac;
+    if (completionMac?.connection) {
+      this.#send(completionMac.connection, {
         type: 'pair.completed',
         v: PROTOCOL_VERSION,
         requestId: completed.requestId,
@@ -543,7 +551,7 @@ export class PairingCoordinator {
   #send(connection, message) {
     if (!connection) return false;
     try {
-      return this.#emit(connection, Object.freeze(message));
+      return this.#emit(connection, Object.freeze(message)) !== false;
     } catch {
       this.#log('pairing_emit_failed', { type: message.type });
       return false;
