@@ -66,6 +66,12 @@ function renderedText(elements) {
   return Object.values(elements).map((element) => element.textContent).join(' ');
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 test('disabled pairing composition stays absent and does not claim an invitation', () => {
   const h = harness({ enabled: false });
   h.ui.start({ pairingVersion: 1, reference: REFERENCE });
@@ -95,6 +101,30 @@ test('paste fallback consumes clipboard data without placing the link in an inpu
   assert.deepEqual(h.starts, [REFERENCE]);
   assert.equal(renderedText(h.elements).includes(REFERENCE), false);
   assert.equal(renderedText(h.elements).includes(LINK), false);
+});
+
+test('a clipboard read cannot start pairing after the page is hidden', async () => {
+  const clipboard = deferred();
+  const h = harness({ readClipboard: () => clipboard.promise });
+
+  h.elements.paste.dispatchEvent(event('click'));
+  h.lifecycleTarget.dispatchEvent(event('pagehide'));
+  clipboard.resolve(LINK);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(h.starts, []);
+});
+
+test('a clipboard read cannot start pairing after the UI is destroyed', async () => {
+  const clipboard = deferred();
+  const h = harness({ readClipboard: () => clipboard.promise });
+
+  h.elements.paste.dispatchEvent(event('click'));
+  h.ui.destroy();
+  clipboard.resolve(LINK);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(h.starts, []);
 });
 
 test('the confirmation code is one labelled element and approval progress is polite', () => {
@@ -192,6 +222,17 @@ test('Escape and page hide cancel an in-progress claimant lifecycle', () => {
   h.lifecycleTarget.dispatchEvent(event('pagehide'));
 
   assert.equal(h.cancels(), 2);
+  assert.equal(h.elements.code.textContent, '');
+  assert.equal(h.elements.code.hidden, true);
+});
+
+test('page hide cancels startup credential recovery before it can activate', () => {
+  const h = harness();
+
+  h.ui.startRecovery();
+  h.lifecycleTarget.dispatchEvent(event('pagehide'));
+
+  assert.equal(h.cancels(), 1);
   assert.equal(h.elements.code.textContent, '');
   assert.equal(h.elements.code.hidden, true);
 });

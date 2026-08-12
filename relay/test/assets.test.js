@@ -159,6 +159,14 @@ test('pairing controls meet the minimum touch target and reduced-motion contract
   assert.match(css, /@media \(prefers-reduced-motion:reduce\)[\s\S]*\.pairing-mark/);
 });
 
+test('startup pending recovery enters a cancelable UI phase before authentication starts', () => {
+  const app = readFileSync(join(PUBLIC, 'app.js'), 'utf8');
+  assert.match(
+    app,
+    /pairingUI\.startRecovery\(\);\s*void pairingController\.recover\(\);/,
+  );
+});
+
 test('click target preserves the low-latency accessible dimensions', () => {
   const css = readFileSync(join(PUBLIC, 'styles.css'), 'utf8');
   assert.match(css, /body\s*\{[\s\S]*touch-action\s*:\s*manipulation/);

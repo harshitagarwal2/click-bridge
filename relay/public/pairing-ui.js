@@ -1,6 +1,6 @@
 import { parseAndClearPairingFragment } from './pairing-link.js';
 
-const IN_PROGRESS = new Set(['connecting', 'claiming', 'awaiting_approval', 'activating']);
+const IN_PROGRESS = new Set(['recovering', 'connecting', 'claiming', 'awaiting_approval', 'activating']);
 
 const ERROR_COPY = Object.freeze({
   expired: 'This pairing link expired.',
@@ -36,6 +36,7 @@ export function createPairingUI({
 }) {
   let activePhase = 'idle';
   let listenersActive = true;
+  let operationGeneration = 0;
 
   elements.panel.hidden = !enabled || paired;
   elements.remote.hidden = enabled && !paired;
@@ -52,6 +53,7 @@ export function createPairingUI({
 
   function showPairingHome() {
     if (!enabled) return;
+    operationGeneration += 1;
     activePhase = 'idle';
     clearSensitiveUI();
     elements.panel.hidden = false;
@@ -64,8 +66,8 @@ export function createPairingUI({
     elements.heading.focus();
   }
 
-  function begin(parsed) {
-    if (!enabled || parsed?.pairingVersion !== 1 || typeof parsed.reference !== 'string') return false;
+  function beginOwned(parsed) {
+    if (!enabled || !listenersActive || parsed?.pairingVersion !== 1 || typeof parsed.reference !== 'string') return false;
     clearSensitiveUI();
     elements.panel.hidden = false;
     elements.remote.hidden = true;
@@ -77,6 +79,27 @@ export function createPairingUI({
     elements.heading.focus();
     activePhase = 'connecting';
     startPairing(parsed.reference);
+    return true;
+  }
+
+  function begin(parsed) {
+    operationGeneration += 1;
+    return beginOwned(parsed);
+  }
+
+  function startRecovery() {
+    if (!enabled || !listenersActive) return false;
+    operationGeneration += 1;
+    clearSensitiveUI();
+    elements.panel.hidden = false;
+    elements.remote.hidden = true;
+    elements.alert.hidden = true;
+    elements.paste.hidden = true;
+    elements.cancel.hidden = false;
+    elements.heading.textContent = 'Reconnecting this browser';
+    elements.message.textContent = 'Checking the saved pairing…';
+    elements.heading.focus();
+    activePhase = 'recovering';
     return true;
   }
 
@@ -96,6 +119,10 @@ export function createPairingUI({
     if (next.phase !== 'awaiting_approval') clearSensitiveUI();
 
     switch (next.phase) {
+      case 'recovering':
+        elements.heading.textContent = 'Reconnecting this browser';
+        elements.message.textContent = 'Checking the saved pairing…';
+        break;
       case 'connecting':
       case 'claiming':
         elements.heading.textContent = 'Pair this browser';
@@ -138,18 +165,24 @@ export function createPairingUI({
   }
 
   async function consumeClipboard() {
+    const generation = ++operationGeneration;
     let raw;
-    try { raw = await readClipboard(); } catch { showFailure('invalid_link'); return; }
+    try { raw = await readClipboard(); } catch {
+      if (listenersActive && generation === operationGeneration) showFailure('invalid_link');
+      return;
+    }
+    if (!listenersActive || generation !== operationGeneration) return;
     const parsed = parsePastedLink(raw, expectedHost);
     if (!parsed) { showFailure('invalid_link'); return; }
-    begin(parsed);
+    beginOwned(parsed);
   }
 
   function onPaste(event) {
     event.preventDefault();
+    operationGeneration += 1;
     const parsed = parsePastedLink(event.clipboardData?.getData('text') ?? '', expectedHost);
     if (!parsed) { showFailure('invalid_link'); return; }
-    begin(parsed);
+    beginOwned(parsed);
   }
 
   function cancelInProgress() {
@@ -170,7 +203,10 @@ export function createPairingUI({
   const onKeyDown = (event) => {
     if (event.key === 'Escape') cancelInProgress();
   };
-  const onPageHide = () => cancelInProgress();
+  const onPageHide = () => {
+    operationGeneration += 1;
+    cancelInProgress();
+  };
   const onPairAgain = () => showPairingHome();
   const onCancel = () => { cancelInProgress(); showPairingHome(); };
   const onForget = () => { void forget(); };
@@ -188,11 +224,13 @@ export function createPairingUI({
 
   return Object.freeze({
     start: begin,
+    startRecovery,
     handleState,
     showPairingHome,
     destroy() {
       if (!listenersActive) return;
       listenersActive = false;
+      operationGeneration += 1;
       cancelInProgress();
       elements.paste.removeEventListener('click', onPasteButton);
       elements.paste.removeEventListener('paste', onPaste);

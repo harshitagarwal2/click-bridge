@@ -545,6 +545,7 @@ oci.setKeepWarm(element.keepWarm.checked);
 render();
 const pendingRecovery = pairingEnabled && settings.getPending();
 if (pendingRecovery && document.visibilityState === 'visible') {
+  pairingUI.startRecovery();
   void pairingController.recover();
 } else if (document.visibilityState === 'visible') goVisible();
 else goHidden();
