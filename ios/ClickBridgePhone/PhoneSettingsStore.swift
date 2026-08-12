@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 protocol SecretStoring: Sendable {
     func read(account: String) throws -> String?
@@ -39,7 +40,7 @@ struct UnavailablePhoneSecretStore: SecretStoring {
 }
 
 extension RelayConfiguration {
-    static func validated(urlString: String, token: String) throws -> Self {
+    static func validatedURL(_ urlString: String) throws -> URL {
         guard let components = URLComponents(string: urlString),
               components.scheme == "wss", components.host?.isEmpty == false,
               components.user == nil, components.password == nil,
@@ -47,23 +48,33 @@ extension RelayConfiguration {
               components.path == "/ws", let url = components.url else {
             throw RelayConfigurationError.invalidURL
         }
+        return url
+    }
+
+    static func validateToken(_ token: String) throws {
         guard token.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else {
             throw RelayConfigurationError.invalidToken
         }
+    }
+
+    static func validated(urlString: String, token: String) throws -> Self {
+        let url = try validatedURL(urlString)
+        try validateToken(token)
         return .init(url: url, token: token)
     }
 }
 
 @MainActor
-final class PhoneSettingsStore: ObservableObject {
+@Observable
+final class PhoneSettingsStore {
     static let relayURLKey = "relayURL"
     static let phoneTokenAccount = "phoneToken"
 
-    @Published var relayURLString: String {
+    var relayURLString: String {
         didSet { defaults.set(relayURLString, forKey: Self.relayURLKey) }
     }
-    @Published private(set) var hasToken: Bool
-    @Published private(set) var storageError: String?
+    private(set) var hasToken: Bool
+    private(set) var storageError: String?
     private let defaults: UserDefaults
     private let secrets: any SecretStoring
 
@@ -97,8 +108,7 @@ final class PhoneSettingsStore: ObservableObject {
     func phoneToken() throws -> String? { try perform { try secrets.read(account: Self.phoneTokenAccount) } }
 
     func savePhoneToken(_ token: String) throws {
-        _ = try RelayConfiguration.validated(urlString: relayURLString.isEmpty ? "wss://placeholder.invalid/ws" : relayURLString,
-                                             token: token)
+        try RelayConfiguration.validateToken(token)
         try perform { try secrets.write(token, account: Self.phoneTokenAccount) }
         hasToken = true
     }

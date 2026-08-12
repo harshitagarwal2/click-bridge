@@ -8,7 +8,7 @@ final class AVAudioSessionVolumeSource: VolumeChangeSource {
     init(session: AVAudioSession = .sharedInstance()) { self.session = session }
     var currentVolume: Float { session.outputVolume }
 
-    func start(observing handler: @escaping @MainActor (Float) -> Void) throws {
+    func start(observing handler: @escaping @MainActor @Sendable (Float) -> Void) throws {
         stop()
         try session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         try session.setActive(true)

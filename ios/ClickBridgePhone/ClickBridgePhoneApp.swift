@@ -41,7 +41,7 @@ enum PhoneComposition {
 @main
 struct ClickBridgePhoneApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var model = PhoneComposition.makeModel()
+    @State private var model = PhoneComposition.makeModel()
 
     var body: some Scene {
         WindowGroup { ContentView(model: model) }

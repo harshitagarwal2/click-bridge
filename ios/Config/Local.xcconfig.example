@@ -1,2 +1,2 @@
-// Copy this file to Local.xcconfig for local device signing.
+// Copy this file to Local.xcconfig only to override the repository's default team.
 DEVELOPMENT_TEAM = ABCDE12345

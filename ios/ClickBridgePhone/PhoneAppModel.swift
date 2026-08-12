@@ -1,3 +1,4 @@
+import Observation
 import SwiftUI
 
 @MainActor
@@ -41,8 +42,9 @@ final class PhoneClickIntentRouter {
 }
 
 @MainActor
-final class PhoneAppModel: ObservableObject {
-    @Published private(set) var state: PhoneState
+@Observable
+final class PhoneAppModel {
+    private(set) var state: PhoneState
     let settings: PhoneSettingsStore
 
     private let volumeController: VolumeDeltaController
@@ -50,9 +52,9 @@ final class PhoneAppModel: ObservableObject {
     private let clockHealth: PhoneClockHealthController
     private let actions: PhoneActionCoordinator
     private let intentRouter: PhoneClickIntentRouter
-    private var foregroundGeneration: Int?
-    private var generationCounter = 0
-    private var sceneIsActive = false
+    @ObservationIgnored private var foregroundGeneration: Int?
+    @ObservationIgnored private var generationCounter = 0
+    @ObservationIgnored private var sceneIsActive = false
 
     convenience init(settings: PhoneSettingsStore,
                      volumeController: VolumeDeltaController,
@@ -117,25 +119,38 @@ final class PhoneAppModel: ObservableObject {
     }
 
     func saveSettings(urlString: String, token: String) throws {
-        let configuration: RelayConfiguration
-        do {
-            configuration = try RelayConfiguration.validated(urlString: urlString, token: token)
-        } catch {
-            endForegroundSession(reason: "settings_invalid")
-            state.settingsError = "Relay settings are invalid."
-            throw error
+        let resolvedToken: String
+        if token.isEmpty {
+            do {
+                resolvedToken = try settings.phoneToken() ?? ""
+            } catch {
+                state.issue = .secureStorageUnavailable
+                throw PhoneAppIssue.secureStorageUnavailable
+            }
+        } else {
+            resolvedToken = token
         }
 
+        let configuration: RelayConfiguration
         do {
-            try settings.savePhoneToken(token)
+            configuration = try RelayConfiguration.validated(urlString: urlString,
+                                                              token: resolvedToken)
         } catch {
-            state.settingsError = "Secure storage is unavailable. Try again or restart the app."
-            throw error
+            throw PhoneAppIssue.invalidSettings
+        }
+
+        if !token.isEmpty {
+            do {
+                try settings.savePhoneToken(token)
+            } catch {
+                state.issue = .secureStorageUnavailable
+                throw PhoneAppIssue.secureStorageUnavailable
+            }
         }
 
         settings.relayURLString = configuration.url.absoluteString
-        state.settingsError = nil
-        state.phoneTakenOver = false
+        state.issue = nil
+        if state.phoneTakenOver { state.connection = .disconnected }
         if foregroundGeneration != nil {
             endForegroundSession(reason: "settings_changed")
             startForegroundSession()
@@ -149,7 +164,7 @@ final class PhoneAppModel: ObservableObject {
     func reconnectAfterTakeover() {
         guard state.phoneTakenOver else { return }
         endForegroundSession(reason: "takeover_reconnect")
-        state.phoneTakenOver = false
+        state.connection = .disconnected
         if sceneIsActive { startForegroundSession() }
     }
 
@@ -160,7 +175,7 @@ final class PhoneAppModel: ObservableObject {
         state.actionPhase = phase
         switch phase {
         case .posted(_, let elapsed): state.lastActionOutcome = "Posted in \(Int(elapsed.rounded())) ms"
-        case .rejected(_, let reason, _): state.lastActionOutcome = "Rejected: \(reason.rawValue)"
+        case .rejected(_, let reason, _): state.lastActionOutcome = reason.userFacingDescription
         case .unknown: state.lastActionOutcome = "Outcome unknown"
         default: break
         }
@@ -168,21 +183,38 @@ final class PhoneAppModel: ObservableObject {
 
     private func startForegroundSession() {
         guard !state.phoneTakenOver else { return }
+        let token: String
         do {
-            guard let token = try settings.phoneToken() else { return }
-            let configuration = try RelayConfiguration.validated(urlString: settings.relayURLString, token: token)
-            generationCounter += 1
-            let generation = generationCounter
-            foregroundGeneration = generation
-            state.foregroundSessionActive = true
-            state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
-            transport.connect(configuration: configuration)
+            guard let storedToken = try settings.phoneToken() else { return }
+            token = storedToken
+        } catch {
+            state.issue = .secureStorageUnavailable
+            return
+        }
+
+        let configuration: RelayConfiguration
+        do {
+            configuration = try RelayConfiguration.validated(urlString: settings.relayURLString,
+                                                              token: token)
+        } catch {
+            state.issue = .invalidSettings
+            return
+        }
+
+        generationCounter += 1
+        let generation = generationCounter
+        foregroundGeneration = generation
+        state.foregroundSessionActive = true
+        state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
+        transport.connect(configuration: configuration)
+        do {
             try volumeController.start(foregroundGeneration: generation) { [weak self] event in
                 self?.handleVolume(event, foregroundGeneration: generation)
             }
+            state.issue = nil
         } catch {
-            endForegroundSession(reason: "configuration_invalid")
-            state.settingsError = "Relay settings are invalid or unavailable."
+            endForegroundSession(reason: "volume_monitoring_unavailable")
+            state.issue = .volumeMonitoringUnavailable
         }
     }
 
@@ -194,7 +226,7 @@ final class PhoneAppModel: ObservableObject {
         clockHealth.stop()
         actions.abandonPending(reason: reason)
         transport.disconnect(reason: reason)
-        state.connection = .disconnected
+        if state.connection != .takenOver { state.connection = .disconnected }
         state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
     }
 
@@ -222,8 +254,8 @@ final class PhoneAppModel: ObservableObject {
         switch event {
         case .connection(let generation, let connection):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
+            guard !state.phoneTakenOver else { return }
             state.connection = connection
-            if connection == .takenOver { state.phoneTakenOver = true }
             if connection == .authenticated {
                 startClockCheckIfReady(socketGeneration: generation)
             } else {
@@ -232,6 +264,7 @@ final class PhoneAppModel: ObservableObject {
             }
         case .message(let generation, let message):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
+            guard !state.phoneTakenOver else { return }
             switch message {
             case .state(let relayState):
                 let wasReady = macIsReady

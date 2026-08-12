@@ -1,2 +1,3 @@
 CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM = EC3R6XQ226
 #include? "Local.xcconfig"

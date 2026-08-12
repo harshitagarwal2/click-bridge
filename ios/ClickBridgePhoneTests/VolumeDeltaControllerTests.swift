@@ -75,9 +75,9 @@ final class VolumeDeltaControllerTests: XCTestCase {
 @MainActor
 private final class TestVolumeSource: VolumeChangeSource {
     var currentVolume: Float
-    private(set) var handlers: [(@MainActor (Float) -> Void)] = []
+    private(set) var handlers: [(@MainActor @Sendable (Float) -> Void)] = []
     init(volume: Float) { currentVolume = volume }
-    func start(observing handler: @escaping @MainActor (Float) -> Void) throws {
+    func start(observing handler: @escaping @MainActor @Sendable (Float) -> Void) throws {
         handlers.append(handler)
         handler(currentVolume)
     }

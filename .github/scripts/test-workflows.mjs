@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -91,6 +92,74 @@ for (const [name, workflow, generatedPaths] of xcodegenWorkflows) {
     assertIncludes(workflow, generatedPath, `${name} must check generated drift for ${generatedPath}`);
   }
 }
+assertIncludes(
+  ci,
+  "git ls-files --others --exclude-standard --",
+  "CI must reject untracked generated project drift",
+);
+assertIncludes(ci, "Build iOS with strict Swift concurrency");
+assertIncludes(ci, "SWIFT_STRICT_CONCURRENCY=complete");
+assertIncludes(ci, "SWIFT_TREAT_WARNINGS_AS_ERRORS=YES");
+
+const xcodeCloudScriptPath = path.join(
+  repositoryRoot,
+  "ios/ci_scripts/ci_post_clone.sh",
+);
+const xcodeCloudScript = readRequired("ios/ci_scripts/ci_post_clone.sh");
+assert.notEqual(
+  statSync(xcodeCloudScriptPath).mode & 0o111,
+  0,
+  "Xcode Cloud post-clone script must be executable",
+);
+assertIncludes(xcodeCloudScript, "set -eu");
+assertIncludes(xcodeCloudScript, "xcodegen_version='2.46.0'");
+assertIncludes(xcodeCloudScript, 'mkdir -p "$install_root"');
+assert.ok(
+  !xcodeCloudScript.includes("CDPATH= cd"),
+  "Xcode Cloud post-clone script must not trigger ShellCheck SC1007",
+);
+assertIncludes(
+  xcodeCloudScript,
+  "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806",
+);
+assertIncludes(xcodeCloudScript, '"$xcodegen_binary" generate');
+
+const gitignore = readRequired(".gitignore");
+for (const signingPattern of [
+  "AuthKey_*.p8",
+  "*.p12",
+  "*.cer",
+  "*.mobileprovision",
+  "*.provisionprofile",
+  "*.certSigningRequest",
+]) {
+  assertIncludes(gitignore, signingPattern);
+}
+
+const xcodeCloudRunbook = readRequired("docs/xcode-cloud.md");
+assertIncludes(xcodeCloudRunbook, "PR - iOS checks");
+assertIncludes(xcodeCloudRunbook, "Weekly - iOS confidence");
+assertIncludes(xcodeCloudRunbook, "Release - TestFlight");
+assertIncludes(xcodeCloudRunbook, "Do not enable both TestFlight upload paths");
+
+const iosProjectSpec = readRequired("ios/project.yml");
+assertIncludes(iosProjectSpec, 'CFBundleShortVersionString: "$(MARKETING_VERSION)"');
+assertIncludes(iosProjectSpec, 'CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"');
+assertIncludes(iosProjectSpec, "fileGroups:");
+assertIncludes(iosProjectSpec, "  - TestFlight");
+
+const iosBaseConfiguration = readRequired("ios/Config/Base.xcconfig");
+assertIncludes(iosBaseConfiguration, "CODE_SIGN_STYLE = Automatic");
+assertIncludes(iosBaseConfiguration, "DEVELOPMENT_TEAM = EC3R6XQ226");
+
+const iosInfoPlist = readRequired("ios/ClickBridgePhone/Info.plist");
+assertIncludes(iosInfoPlist, "<string>$(MARKETING_VERSION)</string>");
+assertIncludes(iosInfoPlist, "<string>$(CURRENT_PROJECT_VERSION)</string>");
+
+const testFlightNotes = readRequired("ios/TestFlight/WhatToTest.en-US.txt");
+assertIncludes(testFlightNotes, "Trigger 3 Clicks");
+assertIncludes(testFlightNotes, "exactly three independent clicks");
+assertIncludes(testFlightNotes, "Accessibility");
 
 const actionReferences = [...ci.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)].map(
   (match) => match[1],
