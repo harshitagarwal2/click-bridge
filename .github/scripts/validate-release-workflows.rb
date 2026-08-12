@@ -16,14 +16,18 @@ WORKFLOWS = {
 }.freeze
 
 PINS = {
+  "actions/attest" => "1e69f48acb82d1966a394da916b4c1698aa569d6",
   "actions/checkout" => "3d3c42e5aac5ba805825da76410c181273ba90b1",
   "ruby/setup-ruby" => "95ef2b042f9d7a56d8268cba8559e2842e2ad01b",
   "actions/upload-artifact" => "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "docker/login-action" => "dbcb813823bdd20940b903addbd779551569679f",
+  "docker/setup-qemu-action" => "96fe6ef7f33517b61c61be40b68a1882f3264fb8",
   "docker/setup-buildx-action" => "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
   "docker/build-push-action" => "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
   "docker/metadata-action" => "dc802804100637a589fabce1cb79ff13a1411302"
 }.freeze
+
+QEMU_IMAGE = "docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
 
 XCODEGEN_VERSION = "2.46.0"
 XCODEGEN_SHA256 = "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
@@ -471,8 +475,18 @@ WORKFLOWS.each do |filename, expected|
   fail_contract("#{filename} checkout must use github.sha") unless checkout.dig("with", "ref") == "${{ github.sha }}"
   fail_contract("#{filename} checkout must disable persisted credentials") unless checkout.dig("with", "persist-credentials") == false
   fail_contract("#{filename} checkout must fetch tags for the v* guard") unless checkout.dig("with", "fetch-depth") == 0
-  fail_contract("#{filename} must require dispatch from its release tag") unless text.include?('test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"')
-  fail_contract("#{filename} must verify its version tag resolves to EVENT_SHA") unless text.include?("refs/tags/${RELEASE_TAG}^{commit}") && text.include?("EVENT_SHA")
+  source_guard_index = steps.index { |step| step["run"]&.include?('refs/tags/${RELEASE_TAG}^{commit}') }
+  source_guard = source_guard_index && steps.fetch(source_guard_index)
+  fail_contract("#{filename} is missing its release source guard") unless source_guard
+  fail_contract("#{filename} release source guard must run after checkout") unless checkout_index < source_guard_index
+  fail_contract("#{filename} release source guard must use the job token") unless source_guard.dig("env", "GH_TOKEN") == "${{ github.token }}"
+  source_guard_script = source_guard.fetch("run")
+  fail_contract("#{filename} must require dispatch from its release tag") unless source_guard_script.include?('test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"')
+  fail_contract("#{filename} must verify its version tag resolves to EVENT_SHA") unless source_guard_script.include?("refs/tags/${RELEASE_TAG}^{commit}") && source_guard_script.include?("EVENT_SHA")
+  fail_contract("#{filename} must require EVENT_SHA to be reachable from origin/main") unless source_guard_script.include?('git merge-base --is-ancestor "$EVENT_SHA" refs/remotes/origin/main')
+  fail_contract("#{filename} must query CI runs for the exact release SHA") unless source_guard_script.include?("actions/workflows/ci.yml/runs") && source_guard_script.include?('head_sha=${EVENT_SHA}')
+  fail_contract("#{filename} must restrict the release CI proof to main push runs") unless source_guard_script.include?('branch=main') && source_guard_script.include?('event=push')
+  fail_contract("#{filename} must require a completed successful CI run") unless source_guard_script.include?('.status == "completed"') && source_guard_script.include?('.conclusion == "success"')
 
   job.fetch("steps").filter_map { |step| step["uses"] }.each do |uses|
     action, sha = uses.split("@", 2)
@@ -737,6 +751,7 @@ fail_contract("App Store submission must require review") unless fastfile.includ
 fail_contract("App Store submission must disable automatic release") unless fastfile.include?("automatic_release: false")
 
 macos = File.read(File.join(WORKFLOW_DIR, "macos-notarized-release.yml"))
+macos_document = YAML.safe_load(macos, aliases: true)
 %w[ENABLE_HARDENED_RUNTIME=YES --timestamp "notarytool submit" "stapler staple" "spctl --assess" "--draft" "retention-days: 7"].each do |contract|
   fail_contract("macOS workflow is missing #{contract}") unless macos.include?(contract.delete_prefix('"').delete_suffix('"'))
 end
@@ -746,7 +761,10 @@ fail_contract("macOS environment writes must be grouped") if macos.match?(/echo 
 fail_contract("macOS notary log must be validated as JSON") unless macos.include?('jq empty "$notary_log"')
 fail_contract("macOS notary log must not be parsed as a plist") if macos.include?('plutil -lint "$notary_log"')
 fail_contract("macOS notarization audit artifact must retain result and log") unless macos.include?("ClickBridgeMac-notary-result.json") && macos.include?("ClickBridgeMac-notary-log.json") && macos.include?("Retain notarization audit for seven days")
-macos_steps = YAML.safe_load(macos, aliases: true).fetch("jobs").fetch("release").fetch("steps")
+%w[id-token attestations].each do |permission|
+  fail_contract("macOS workflow must grant #{permission} write permission for archive attestation") unless macos_document.dig("permissions", permission) == "write"
+end
+macos_steps = macos_document.fetch("jobs").fetch("release").fetch("steps")
 audit_step = macos_steps.find { |step| step["name"] == "Retain notarization audit for seven days" }
 fail_contract("macOS notarization audit artifact must run after failures") unless audit_step && audit_step["if"] == "${{ always() }}"
 audit_options = audit_step.fetch("with")
@@ -760,8 +778,19 @@ fail_contract("macOS notarized archive must receive MARKETING_VERSION") unless m
 fail_contract("macOS notarized archive must receive CURRENT_PROJECT_VERSION") unless macos.include?('CURRENT_PROJECT_VERSION="$BUILD_NUMBER"')
 fail_contract("macOS notarized release must verify the archived marketing version") unless macos.include?("plutil -extract CFBundleShortVersionString")
 fail_contract("macOS notarized release must verify the archived build number") unless macos.include?("plutil -extract CFBundleVersion")
+mac_attest_index = macos_steps.index { |step| step["name"] == "Attest notarized macOS archive" }
+draft_release_index = macos_steps.index { |step| step["name"] == "Create draft GitHub release only" }
+fail_contract("macOS workflow must attest the notarized archive before draft creation") unless mac_attest_index && draft_release_index && mac_attest_index < draft_release_index
+mac_attest = macos_steps.fetch(mac_attest_index)
+fail_contract("macOS archive attestation must use the pinned GitHub action") unless mac_attest["uses"] == "actions/attest@#{PINS.fetch("actions/attest")}"
+fail_contract("macOS archive attestation must target the final notarized ZIP") unless mac_attest.dig("with", "subject-path") == "${{ env.MAC_RELEASE_ARCHIVE }}"
+draft_release_script = macos_steps.fetch(draft_release_index).fetch("run")
+fail_contract("macOS draft release must generate repository release notes") unless draft_release_script.include?("--generate-notes")
+fail_contract("macOS draft release must prepend its notarization review notice") unless draft_release_script.include?("--notes") && draft_release_script.include?("notarized")
+fail_contract("macOS draft release must refuse an empty subsequent release") unless draft_release_script.include?("--fail-on-no-commits")
 
 ghcr = File.read(File.join(WORKFLOW_DIR, "ghcr-relay.yml"))
+ghcr_document = YAML.safe_load(ghcr, aliases: true)
 fail_contract("GHCR workflow must use the job token") unless ghcr.include?("password: ${{ github.token }}")
 fail_contract("GHCR workflow must preserve the private-package approval gate") unless ghcr.include?("visibility is Private") && ghcr.include?("never changes package visibility")
 fail_contract("GHCR workflow must suppress latest") unless ghcr.include?("latest=false")
@@ -773,12 +802,45 @@ fail_contract("GHCR summary writes must be grouped") if ghcr.match?(/^\s+echo .*
 fail_contract("GHCR workflow must check both immutable tags before pushing") unless ghcr.include?('assert_tag_absent "$RELEASE_VERSION"') && ghcr.include?('assert_tag_absent "sha-$EVENT_SHA"')
 fail_contract("GHCR workflow must fail when either tag already exists") unless ghcr.include?('200)') && ghcr.include?("already exists; refusing to overwrite")
 fail_contract("GHCR workflow must distinguish an absent tag from registry errors") unless ghcr.include?('404)') && ghcr.include?("registry returned HTTP")
-ghcr_steps = YAML.safe_load(ghcr, aliases: true).fetch("jobs").fetch("publish").fetch("steps")
+%w[id-token attestations].each do |permission|
+  fail_contract("GHCR workflow must grant #{permission} write permission for image attestation") unless ghcr_document.dig("permissions", permission) == "write"
+end
+ghcr_steps = ghcr_document.fetch("jobs").fetch("publish").fetch("steps")
 tag_guard_index = ghcr_steps.index { |step| step["name"] == "Refuse to overwrite immutable image tags" }
+qemu_index = ghcr_steps.index { |step| step["name"] == "Set up QEMU for Arm64" }
+buildx_index = ghcr_steps.index { |step| step["name"] == "Set up Buildx" }
+metadata_index = ghcr_steps.index { |step| step["name"] == "Define version and SHA tags" }
 push_index = ghcr_steps.index { |step| step["name"] == "Build and push the relay image" }
+attest_index = ghcr_steps.index { |step| step["name"] == "Attest the published image digest" }
 digest_guard_index = ghcr_steps.index { |step| step["name"] == "Verify published tags resolve to the pushed digest" }
 fail_contract("GHCR immutable-tag guard must run before the push step") unless tag_guard_index && push_index && tag_guard_index < push_index
-fail_contract("GHCR release step must push the validated tags") unless ghcr_steps.fetch(push_index).dig("with", "push") == true
+fail_contract("GHCR workflow must set up QEMU before Buildx and image publication") unless qemu_index && buildx_index && push_index && qemu_index < buildx_index && buildx_index < push_index
+qemu_step = ghcr_steps.fetch(qemu_index)
+fail_contract("GHCR workflow must use the pinned QEMU action") unless qemu_step["uses"] == "docker/setup-qemu-action@#{PINS.fetch("docker/setup-qemu-action")}"
+fail_contract("GHCR workflow must pin the QEMU binary image by digest") unless qemu_step.dig("with", "image") == QEMU_IMAGE
+fail_contract("GHCR workflow must install only the required Arm64 emulator") unless qemu_step.dig("with", "platforms") == "arm64"
+metadata_step = ghcr_steps.fetch(metadata_index)
+metadata_options = metadata_step.fetch("with")
+source_annotation = 'org.opencontainers.image.source=https://github.com/${{ github.repository }}'
+description_annotation = "org.opencontainers.image.description=Private Click Bridge relay and PWA runtime"
+fail_contract("GHCR metadata must link the package to its source repository") unless metadata_options.fetch("labels").include?(source_annotation) && metadata_options.fetch("annotations").include?(source_annotation)
+fail_contract("GHCR metadata must describe the relay package") unless metadata_options.fetch("labels").include?(description_annotation) && metadata_options.fetch("annotations").include?(description_annotation)
+fail_contract("GHCR metadata must annotate both manifests and the multi-architecture index") unless metadata_step.dig("env", "DOCKER_METADATA_ANNOTATIONS_LEVELS") == "manifest,index"
+push_options = ghcr_steps.fetch(push_index).fetch("with")
+fail_contract("GHCR release step must push the validated tags") unless push_options["push"] == true
+fail_contract("GHCR workflow must publish the supported AMD64 and Arm64 images") unless push_options["platforms"] == "linux/amd64,linux/arm64"
+fail_contract("GHCR workflow must apply manifest and index annotations") unless push_options["annotations"] == "${{ steps.metadata.outputs.annotations }}"
+fail_contract("GHCR workflow must preserve BuildKit provenance") unless push_options["provenance"] == true
+fail_contract("GHCR workflow must preserve the image SBOM") unless push_options["sbom"] == true
+fail_contract("GHCR workflow must attest the pushed digest before post-push verification") unless attest_index && push_index < attest_index && attest_index < digest_guard_index
+attest_step = ghcr_steps.fetch(attest_index)
+attest_options = attest_step.fetch("with")
+fail_contract("GHCR image attestation must use the pinned GitHub action") unless attest_step["uses"] == "actions/attest@#{PINS.fetch("actions/attest")}"
+fail_contract("GHCR image attestation must name the canonical image") unless attest_options["subject-name"] == "${{ env.RELAY_IMAGE }}"
+fail_contract("GHCR image attestation must bind the pushed digest") unless attest_options["subject-digest"] == "${{ steps.build.outputs.digest }}"
+fail_contract("GHCR image attestation must record the release version") unless attest_options["subject-version"] == "${{ env.RELEASE_VERSION }}"
+fail_contract("GHCR image attestation must be published with the OCI image") unless attest_options["push-to-registry"] == true
+fail_contract("GHCR image attestation must not request an organization-only storage record") unless attest_options["create-storage-record"] == false
 fail_contract("GHCR must verify both published tags after the push") unless digest_guard_index && push_index < digest_guard_index
 digest_guard = ghcr_steps.fetch(digest_guard_index).fetch("run")
 fail_contract("GHCR post-push verification must compare with the action digest") unless digest_guard.include?('"$actual_digest" != "$IMAGE_DIGEST"')
