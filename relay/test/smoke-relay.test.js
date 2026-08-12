@@ -14,11 +14,11 @@ test('unrelated state traffic after completion is not mistaken for action replay
   assert.equal(noCompletedActionReplay(inbox, actionId), true);
 });
 
-test('another terminal result for the completed action is detected as replay', () => {
+test('another request for the completed action is detected as replay', () => {
   const inbox = [
     { type: 'action.result', actionId, status: 'posted' },
   ];
-  inbox.push({ type: 'action.result', actionId, status: 'posted' });
+  inbox.push({ type: 'action.request', actionId });
 
   assert.equal(noCompletedActionReplay(inbox, actionId), false);
 });
