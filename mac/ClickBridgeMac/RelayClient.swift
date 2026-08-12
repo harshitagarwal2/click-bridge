@@ -101,6 +101,7 @@ actor RelayClient {
     private var statusCredentialRevision: UInt64 = 0
     private var statusHandler: (@Sendable (StatusEvent) -> Void)?
     private var resultHandler: (@Sendable (ActionResult) -> Void)?
+    private var pairingHandler: (@Sendable (WireMessage) async -> Void)?
 
     init(
         actionSink: any ActionRequestSink,
@@ -120,7 +121,16 @@ actor RelayClient {
 
     func setStatusHandler(_ handler: (@Sendable (StatusEvent) -> Void)?) { statusHandler = handler }
     func setResultHandler(_ handler: (@Sendable (ActionResult) -> Void)?) { resultHandler = handler }
+    func setPairingHandler(_ handler: (@Sendable (WireMessage) async -> Void)?) { pairingHandler = handler }
     func currentStatus() -> Status { status }
+
+    func sendPairing(_ message: WireMessage) async throws {
+        guard isPairingRequest(message), status == .connected,
+              authenticatedGeneration == generation, let socket = transport else {
+            throw WebSocketTransportError.notConnected
+        }
+        try await send(message, socket: socket, generation: generation, requireAuthentication: true)
+    }
 
     @discardableResult
     func configure(
@@ -332,6 +342,9 @@ actor RelayClient {
                                                mouseDownPostCount: counts.mouseDownPostCount,
                                                mouseUpPostCount: counts.mouseUpPostCount),
                            socket: socket, generation: expected, requireAuthentication: true)
+        case .pairStatus, .pairCreated, .pairClaimedMac, .pairCompleted, .pairFailed:
+            guard let pairingHandler else { return }
+            await pairingHandler(message)
         default:
             throw WireError.messageNotAllowed
         }
@@ -443,6 +456,17 @@ actor RelayClient {
     }
 }
 
+extension RelayClient: PairingTransport {}
+
 private extension WireMessage {
     var isHelloOK: Bool { if case .helloOK = self { return true }; return false }
+}
+
+private func isPairingRequest(_ message: WireMessage) -> Bool {
+    switch message {
+    case .pairStatusRequest, .pairCreate, .pairCancel, .pairApprove, .pairDeny:
+        true
+    default:
+        false
+    }
 }

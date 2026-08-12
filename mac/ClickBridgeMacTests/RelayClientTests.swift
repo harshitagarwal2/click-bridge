@@ -250,6 +250,13 @@ private struct FixedCounters: DiagnosticCounterReading {
     func diagnosticPostCounts() async -> InputPostCounts { value }
 }
 
+private actor PairingMessageRecorder {
+    private var values: [WireMessage] = []
+
+    func append(_ value: WireMessage) { values.append(value) }
+    func messages() -> [WireMessage] { values }
+}
+
 final class RelayClientTests: XCTestCase {
     private let actionID = "018f63f5-6f3d-7d21-88bc-9ef561f030de"
     private let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030ab"
@@ -329,6 +336,58 @@ final class RelayClientTests: XCTestCase {
             }
         }
         XCTAssertTrue(stateSent)
+        await client.stop()
+    }
+
+    func testAuthenticatedMacOptsIntoPairingAndRoutesOnlyStrictPairingEvents() async throws {
+        let transport = FakeWebSocketTransport()
+        let recorder = PairingMessageRecorder()
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        await client.setPairingHandler { message in await recorder.append(message) }
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let connected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(connected)
+
+        let beforeOptIn = await transport.sentMessages().compactMap { try? StrictWireDecoder().decodeText($0) }
+        XCTAssertFalse(beforeOptIn.contains { if case .pairStatusRequest = $0 { true } else { false } })
+
+        try await client.sendPairing(.pairStatusRequest(PairStatusRequest(requestId: requestID)))
+        let statusRequestSent = await eventually {
+            await transport.sentMessages().contains {
+                guard case .pairStatusRequest(let request) = try? StrictWireDecoder().decodeText($0) else { return false }
+                return request.requestId == self.requestID
+            }
+        }
+        XCTAssertTrue(statusRequestSent)
+
+        let claimID = "018f63f5-6f3d-7d21-88bc-9ef561f030ac"
+        let events: [WireMessage] = [
+            .pairStatus(PairStatus(requestId: requestID, enrollmentState: .legacy,
+                                   activePhoneCredentialVersion: 0)),
+            .pairCreated(PairCreated(requestId: requestID,
+                                     reference: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                     expiresAtUnixMs: 1_786_497_900_000)),
+            .pairClaimedMac(PairClaimedMac(requestId: requestID, claimId: claimID,
+                                           confirmationCode: "482 917",
+                                           expiresAtUnixMs: 1_786_497_900_000, clientKind: .ios)),
+            .pairCompleted(PairCompleted(requestId: requestID, claimId: claimID,
+                                         activePhoneCredentialVersion: 1)),
+            .pairFailed(PairFailed(requestId: requestID, claimId: claimID, reason: .denied)),
+        ]
+        for event in events { await transport.push(try Wire.encode(event)) }
+        let allEventsRouted = await eventually { await recorder.messages().count == events.count }
+        XCTAssertTrue(allEventsRouted)
+
+        await transport.push(try Wire.encode(HeartbeatAck(sequence: 9)))
+        try? await Task.sleep(for: .milliseconds(25))
+        let routed = await recorder.messages()
+        XCTAssertEqual(routed, events)
         await client.stop()
     }
 

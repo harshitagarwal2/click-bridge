@@ -1,12 +1,25 @@
 import Foundation
 import AppKit
 
+struct PairingActionPresentation: Equatable {
+    let title: String
+    let requiresReplacementConfirmation: Bool
+
+    init(status: PairStatus?) {
+        let replacing = status?.requiresReplacementConfirmation == true
+        title = replacing ? "Replace Phone" : "Pair Phone"
+        requiresReplacementConfirmation = replacing
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published private(set) var connection: RelayClient.Status = .disconnected
     @Published private(set) var permission: PermissionState = .unknown
     @Published private(set) var lastResult = "—"
     @Published var notice: String?
+    @Published private(set) var pairing: PairingController?
+    @Published private(set) var pairingAction = PairingActionPresentation(status: nil)
 
     let settings: SettingsStore
     private let client: RelayClient
@@ -46,6 +59,8 @@ final class AppState: ObservableObject {
                           event.sequence > self.lastStatusSequence else { return }
                     self.lastStatusSequence = event.sequence
                     self.connection = event.status
+                    guard let pairing = self.pairing else { return }
+                    Task { await pairing.refreshStatus(capabilityAvailable: event.status == .connected) }
                 }
             }
             await client.setResultHandler { [weak self] result in
@@ -53,6 +68,9 @@ final class AppState: ObservableObject {
                     self?.lastResult = "\(result.status.rawValue): \(result.reason.rawValue)"
                     self?.refreshPermission()
                 }
+            }
+            await client.setPairingHandler { [weak self] message in
+                await self?.receivePairing(message)
             }
             await processor.setRemoteEnabled(settings.remoteEnabled)
             guard let self, initialCredentialRevision == self.credentialRevision,
@@ -98,6 +116,19 @@ final class AppState: ObservableObject {
         refreshPermission()
     }
 
+    func beginPairing() {
+        guard let pairing else { return }
+        Task { await pairing.beginPairing() }
+    }
+
+    func confirmReplacement() {
+        guard let pairing else { return }
+        Task {
+            await pairing.beginPairing()
+            await pairing.confirmReplacement()
+        }
+    }
+
     @discardableResult
     func saveToken(_ token: String) -> Task<Void, Never> {
         let revision = beginCredentialOperation()
@@ -140,6 +171,16 @@ final class AppState: ObservableObject {
         return credentialRevision
     }
 
+    private func receivePairing(_ message: WireMessage) async {
+        guard let pairing else { return }
+        let previousState = pairing.state
+        await pairing.receive(message)
+        if case .pairStatus(let status) = message,
+           previousState == .checkingStatus, pairing.state == .ready {
+            pairingAction = PairingActionPresentation(status: status)
+        }
+    }
+
     @discardableResult
     private func connect(credentialRevision revision: UInt64) -> Task<Void, Never> {
         let task = Task {
@@ -168,6 +209,10 @@ final class AppState: ObservableObject {
             }
             guard revision == credentialRevision, credentialEligible else { return }
             do {
+                let relayURL = try RelayEndpoint.validated(settings.relayURLString, allowLocalSimulator: false)
+                let pairing = PairingController(transport: client, relayURL: relayURL)
+                self.pairing = pairing
+                self.pairingAction = PairingActionPresentation(status: nil)
                 let configured = try await client.configure(urlString: settings.relayURLString,
                                                             token: token,
                                                             allowLocalSimulator: false,

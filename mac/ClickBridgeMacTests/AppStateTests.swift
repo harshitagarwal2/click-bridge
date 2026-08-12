@@ -211,6 +211,45 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.permission, .ready)
     }
 
+    func testAuthenticatedConnectionExplicitlyRequestsPairingStatusAndPublishesReplacementAction() async throws {
+        let suite = "AppStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("wss://relay.example/ws", forKey: SettingsStore.relayURLKey)
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let permission = PostEventPermissionService(preflight: { false }, request: { false })
+        let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
+        let transport = AppStateTransport(gateClose: false)
+        let client = RelayClient(actionSink: processor, diagnostics: processor, makeTransport: { transport })
+        let state = AppState(settings: settings, client: client, processor: processor,
+                             permissionService: permission, activationNotifications: NotificationCenter())
+
+        await transport.waitForHello(token: "stored-token")
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let requestedStatus = await eventually {
+            await transport.sentMessages().contains {
+                if case .pairStatusRequest = try? StrictWireDecoder().decodeText($0) { return true }
+                return false
+            }
+        }
+        XCTAssertTrue(requestedStatus)
+        let sentMessages = await transport.sentMessages()
+        let statusRequestIDs: [String] = sentMessages.compactMap {
+            guard case .pairStatusRequest(let request) = try? StrictWireDecoder().decodeText($0) else { return nil }
+            return request.requestId
+        }
+        let requestID = try XCTUnwrap(statusRequestIDs.first)
+
+        await transport.push(try Wire.encode(PairStatus(requestId: requestID,
+                                                        enrollmentState: .legacy,
+                                                        activePhoneCredentialVersion: 0)))
+        let pairingReady = await eventually { state.pairing?.state == .ready }
+        XCTAssertTrue(pairingReady)
+        XCTAssertEqual(state.pairingAction.title, "Replace Phone")
+        XCTAssertTrue(state.pairingAction.requiresReplacementConfirmation)
+        await client.stop()
+    }
+
     func testInvalidRelayURLDoesNotRequireResavingPersistedTokenBeforeReconnect() async throws {
         let suite = "AppStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
