@@ -2,11 +2,16 @@ node_modules/
 build/
 DerivedData/
 .env
+.env.*
+!.env.example
+!**/.env.example
 deploy/oci/.env
 deploy/oci/.env.previous
 mac/Config/Local.xcconfig
 *.dmg
 .DS_Store
 benchmarks/*.csv
+!benchmarks/measurements.csv
+!benchmarks/run-evidence.csv
 !benchmarks/measurements.example.csv
 _to_delete/

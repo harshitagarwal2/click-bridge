@@ -1,145 +1,80 @@
 # Click Bridge
 
-Tap one button on a phone; a Mac posts one real left mouse click at wherever
-its cursor already is. Over the internet, through one relay.
+Click Bridge is intended to let one foreground phone page send one action over
+the internet so a macOS menu-bar app posts one real left mouse click at the
+Mac's current pointer location.
 
-`FINAL-PLAN.md` is the authoritative plan. This README is the operator guide.
+The repository currently contains an **imported, unverified scaffold**. No
+component is considered complete, deployable, or physically accepted until its
+corresponding gate in [`FINAL-PLAN.md`](FINAL-PLAN.md) has been run and passed
+with fresh evidence. Historical test counts and earlier "done" claims are not
+carried forward.
 
----
+## Canonical scope
 
-## What is built
+- `FINAL-PLAN.md` is the only active implementation plan.
+- Tasks 1 through 9 are **Milestone 1** and produce the first complete working
+  application.
+- Tailscale (Task 10) and hedged delivery (Task 11) are latency experiments and
+  must not be enabled before the Milestone 1 acceptance gate passes.
+- Earlier plans and prototypes remain historical evidence until the mandatory
+  cleanup inside Task 9. They are non-authoritative even while preserved.
 
-| Piece | State |
+The implementation branch is `codex/click-bridge-implementation`. The isolated
+worktree and locally discoverable preflight facts are recorded in
+[`docs/preflight.md`](docs/preflight.md).
+
+## Milestone 1 acceptance path
+
+| Task | Gate |
 |---|---|
-| Wire protocol + fixtures | **Done, tested** — 38 tests |
-| Relay state machine | **Done, tested** — 19 tests, fake transports |
-| Relay HTTP/WebSocket server | **Done, tested** |
-| Phone web app | **Done, tested** — 31 reducer tests + 10 asset/CSP tests |
-| Browser/server parity | **Done, tested** — 7 tests |
-| Mac Swift app | **Written, never compiled** — needs macOS |
-| OCI deploy config | **Written, never deployed** |
-| Physical smoke + benchmark | **Not started** — needs phone, Mac, Octo |
+| 1 | Repository boundaries and preflight facts are recorded |
+| 2 | One canonical wire contract passes Node and Swift fixture tests |
+| 3 | Relay behavior passes unit, socket, and lifecycle tests |
+| 4 | The foreground phone PWA passes state, asset, CSP, and browser checks |
+| 5 | The macOS shell and relay client build and pass tests |
+| 6 | Permission, at-most-once action processing, and `CGEvent` click tests pass |
+| 7 | A local phone-to-relay-to-Mac click works on the harmless counter page |
+| 8 | The relay is deployed to the selected OCI SJC VM behind public HTTPS/WSS |
+| 9 | Physical Octo Browser acceptance and latency benchmarking pass; canonical cleanup finishes |
 
-117 Node tests pass. Nothing Swift has been built — no macOS was available
-where this was written.
+Task 12 is the final repository verification pass. Tasks 10 and 11 remain
+optional after Milestone 1 and are retained only if measured latency improves.
 
----
+## Intended architecture
 
-## Run the relay locally
-
-```bash
-cd relay
-npm ci                      # installs exactly package-lock.json
-npm run check               # syntax + full test suite
-
-PHONE_TOKEN=$(openssl rand -hex 32) \
-MAC_TOKEN=$(openssl rand -hex 32) \
-npm start
+```text
+Phone foreground PWA
+        |
+        | HTTPS + persistent WSS
+        v
+OCI SJC: Caddy -> Node relay
+                       |
+                       | persistent WSS
+                       v
+              macOS menu-bar app
+                       |
+                       v
+                 CGEvent click
 ```
 
-Open <http://127.0.0.1:8080>, paste the `PHONE_TOKEN`, and the page connects.
-It will sit at "Mac offline" until the Swift app is running.
+Milestone 1 uses no database. The relay keeps only live connection and routing
+state; the Mac process owns action deduplication and native click execution.
 
-Prove the whole path without a Mac:
+## Repository layout
 
-```bash
-cd relay
-PHONE_TOKEN=<hex> MAC_TOKEN=<hex> node scripts/smoke-relay.mjs ws://127.0.0.1:8080/ws
+```text
+contracts/fixtures/   Canonical wire-protocol fixtures
+relay/src/            Node relay implementation
+relay/public/         Foreground phone web app
+relay/test/           Relay and web-app tests
+mac/                  Swift macOS app and tests
+deploy/oci/           OCI Docker, Compose, and Caddy configuration
+tests/manual/         Harmless physical click counter
+docs/                 Preflight, deployment, smoke-test, and benchmark notes
+archive/              Non-authoritative historical material
 ```
 
----
-
-## Build the Mac app
-
-Requires macOS 13+, Xcode, and XcodeGen (`brew install xcodegen`).
-
-```bash
-cd mac
-xcodegen generate
-xcodebuild -project ClickBridgeMac.xcodeproj -scheme ClickBridgeMac \
-  -destination 'platform=macOS' test
-
-xcodebuild -project ClickBridgeMac.xcodeproj -scheme ClickBridgeMac \
-  -configuration Release -derivedDataPath build build
-codesign --verify --strict build/Build/Products/Release/ClickBridgeMac.app
-codesign -d --entitlements :- build/Build/Products/Release/ClickBridgeMac.app
-```
-
-The entitlements dump should be **empty** — no App Sandbox.
-
-Copy the Release build to `/Applications/ClickBridgeMac.app` **before** granting
-permission. Then: open it, choose **Grant Input Permission**, and allow it under
-System Settings → Privacy & Security → Accessibility.
-
-> Every ad-hoc rebuild changes the binary's cdhash, so macOS treats it as a new
-> app and the permission must be granted again. Copy
-> `mac/Config/Local.xcconfig.example` to `Local.xcconfig` and set a real Apple
-> Development identity to stop this.
-
----
-
-## Deploy
-
-Full steps in `docs/oci-deployment.md`. Short version:
-
-1. Point a hostname at the OCI instance. **A domain you own is best**;
-   DuckDNS is the free fallback. Do not use sslip.io or nip.io — their
-   Let's Encrypt quota is shared across every user and runs out.
-2. Open 80/443 in the VCN security list **and** the instance firewall — Oracle's
-   images drop them regardless of the security list.
-3. `rsync` the repo to the VM, write `deploy/oci/.env` (mode 0600), build there.
-4. `docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml up -d`
-
----
-
-## Using it
-
-1. Open `https://<your-domain>` on the phone
-2. Gear → paste `PHONE_TOKEN` → Save
-3. Share → **Add to Home Screen**
-4. On the Mac: enter the relay URL and `MAC_TOKEN`, then flip **Remote control
-   enabled** on
-
-The button turns green when the Mac is online, remote is on, permission is
-granted, and the clocks agree. Any phone with a current browser works — the
-token is the only per-device setup.
-
----
-
-## Things worth knowing
-
-**One phone at a time.** A second phone authenticating replaces the first.
-
-**The page must stay open and in front.** Sockets close when it is hidden;
-returning reconnects but sends nothing. No clicks from the background.
-
-**"Unknown" is an answer, not a bug.** If the reply is lost, the phone cannot
-know whether the click landed, so it says so and stops. It never re-sends —
-that is the one behaviour that could produce two clicks from one tap.
-
-**Guarantee.** At-most-once per action while the Mac process is alive.
-Exactly-once across a Mac crash is not claimed.
-
-**Tokens.** Three, all independent. `PHONE_TOKEN` and `MAC_TOKEN` live in
-`deploy/oci/.env` on the VM and in their clients. `DIRECT_TOKEN` is Milestone 2
-only and never enters the relay's environment.
-
----
-
-## Layout
-
-```
-contracts/fixtures/   canonical JSON — read by BOTH the Node and Swift suites
-relay/src/            protocol, relay state machine, HTTP + WebSocket server
-relay/public/         the phone web app (no inline script or style: CSP)
-relay/test/           117 passing tests
-mac/                  Swift menu-bar app + XcodeGen spec
-deploy/oci/           Dockerfile, compose, Caddyfile
-tests/manual/         click-target.html — the harmless counter for Octo
-docs/                 deployment, install, smoke test, benchmark method
-```
-
-The relay serves `public/` with a Content-Security-Policy that forbids inline
-script and style, and Caddy passes that header through unchanged. `relay/test/
-assets.test.js` fails the build if anything inline creeps into the page — so
-the breakage happens where it is caused, not in production four tasks later.
+Use the dependency-ordered commands and acceptance criteria in
+`FINAL-PLAN.md`; do not treat the imported scaffold itself as proof that any
+step works.
