@@ -30,8 +30,8 @@ export async function runNegativeMatrix({ harness, octoObservations = {},
       && conflict.mouseDownIncrement === 0 && conflict.mouseUpIncrement === 0],
     ['expired', expired, 0, expired.reason === 'expired'
       && expired.mouseDownIncrement === 0 && expired.mouseUpIncrement === 0],
-    ['result_drop', dropped, 0, !dropped.lateDelivery
-      && dropped.replayDownIncrement === 0 && dropped.replayUpIncrement === 0],
+    ['result_drop', dropped, 1, !dropped.lateDelivery
+      && dropped.totalDownIncrement === 1 && dropped.totalUpIncrement === 1],
   ];
   return cases.map(([scenario, detail, expectedOctoIncrement, protocolPassed]) => {
     const octoIncrement = observedIncrement(octoObservations[scenario]);
@@ -134,21 +134,21 @@ class LiveNegativeHarness {
   async resultDrop(action) {
     const first = new PhoneConnection(this.url, this.token);
     await first.connect();
+    const before = await first.counters();
     first.send(action);
     await first.next((message) => message.type === 'relay.ack' && message.actionId === action.actionId && message.status === 'forwarded');
     await first.close();
     await new Promise((resolve) => setTimeout(resolve, 500));
     const replacement = new PhoneConnection(this.url, this.token);
     await replacement.connect();
-    const afterOriginal = await replacement.counters();
     let lateDelivery = false;
     try { await replacement.next((message) => message.type === 'action.result' && message.actionId === action.actionId, 750); lateDelivery = true; }
     catch (error) { if (!/timed out/.test(error.message)) throw error; }
-    const afterReconnect = await replacement.counters();
+    const after = await replacement.counters();
     await replacement.close();
     return { lateDelivery,
-      replayDownIncrement: afterReconnect.mouseDownPostCount - afterOriginal.mouseDownPostCount,
-      replayUpIncrement: afterReconnect.mouseUpPostCount - afterOriginal.mouseUpPostCount };
+      totalDownIncrement: after.mouseDownPostCount - before.mouseDownPostCount,
+      totalUpIncrement: after.mouseUpPostCount - before.mouseUpPostCount };
   }
 }
 

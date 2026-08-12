@@ -37,13 +37,14 @@ without shell history exposure, run:
 ```sh
 export CLICK_BRIDGE_URL=wss://your-host/ws
 read -rs PHONE_TOKEN; export PHONE_TOKEN
-export NEGATIVE_MATRIX_OCTO_OBSERVATIONS='{"exact_duplicate":{"before":10,"after":11},"id_conflict":{"before":11,"after":11},"expired":{"before":11,"after":11},"result_drop":{"before":12,"after":12}}'
+export NEGATIVE_MATRIX_OCTO_OBSERVATIONS='{"exact_duplicate":{"before":10,"after":11},"id_conflict":{"before":11,"after":11},"expired":{"before":11,"after":11},"result_drop":{"before":12,"after":13}}'
 node relay/scripts/run-negative-matrix.mjs
 ```
 
 The harness covers exact duplicate, changed-payload ID conflict, expired request, and result
 route drop. It checks both Mac mouse-down and mouse-up counter deltas. For result drop it takes
-a new baseline after the original action, then proves reconnect causes zero additional down/up
-posts. Replace every Octo example value with the operator-observed counters for that exact
+the baseline before the original request and the final snapshot after reconnect, requiring exactly
+one original down/up post, no result delivery to the replacement socket, and an observed Octo
+delta of one. Replace every Octo example value with the operator-observed counters for that exact
 scenario; a missing or mismatched observation makes the row fail. Capacity remains a
 deterministic injected Swift `ActionProcessor` test and must not be induced publicly.
