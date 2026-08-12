@@ -9,9 +9,12 @@ import { WebSocketServer } from 'ws';
 import {
   AUTH_TIMEOUT_MS,
   MAX_MESSAGE_BYTES,
+  MAX_TOTAL_WEBSOCKET_CONNECTIONS,
+  MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
   PROTOCOL_VERSION,
   SERVER_PING_INTERVAL_MS,
   SERVER_PONG_TIMEOUT_MS,
+  TERMINAL_CLOSE_DEADLINE_MS,
   TOKEN_HEX_LENGTH,
 } from './constants.js';
 import { createSecurityHeaders } from './csp.js';
@@ -20,6 +23,103 @@ import { RelayState } from './relay.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = join(HERE, '..', 'public');
+
+function validateAdmissionLimits(maxTotal, maxUnauthenticated) {
+  if (!Number.isInteger(maxTotal) || maxTotal < 1
+      || maxTotal > MAX_TOTAL_WEBSOCKET_CONNECTIONS) {
+    throw new Error(
+      `maxTotalWebSocketConnections must be an integer from 1 through ${MAX_TOTAL_WEBSOCKET_CONNECTIONS}`,
+    );
+  }
+  if (!Number.isInteger(maxUnauthenticated) || maxUnauthenticated < 1
+      || maxUnauthenticated > MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS
+      || maxUnauthenticated > maxTotal) {
+    throw new Error(
+      'maxUnauthenticatedWebSocketConnections must be a positive integer no greater than '
+      + `both ${MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS} and maxTotalWebSocketConnections`,
+    );
+  }
+}
+
+function createAdmissionController(maxTotal, maxUnauthenticated) {
+  let total = 0;
+  let unauthenticated = 0;
+
+  return {
+    reserve() {
+      if (total >= maxTotal || unauthenticated >= maxUnauthenticated) return null;
+      total += 1;
+      unauthenticated += 1;
+      let holdsTotal = true;
+      let holdsUnauthenticated = true;
+      let callbackAccepted = false;
+
+      const releaseUnauthenticated = () => {
+        if (!holdsUnauthenticated) return;
+        holdsUnauthenticated = false;
+        unauthenticated -= 1;
+      };
+      return Object.freeze({
+        acceptCallback() {
+          if (!holdsTotal || callbackAccepted) return false;
+          callbackAccepted = true;
+          return true;
+        },
+        releaseUnauthenticated,
+        releaseAll() {
+          releaseUnauthenticated();
+          if (!holdsTotal) return;
+          holdsTotal = false;
+          total -= 1;
+        },
+      });
+    },
+  };
+}
+
+function rejectUpgradeForCapacity(socket) {
+  let fallback;
+  const destroy = () => {
+    if (fallback) clearTimeout(fallback);
+    if (!socket.destroyed) socket.destroy();
+  };
+  socket.once('close', () => {
+    if (fallback) clearTimeout(fallback);
+  });
+  socket.once('error', destroy);
+  socket.end(
+    'HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+    destroy,
+  );
+  fallback = setTimeout(destroy, 100);
+  fallback.unref?.();
+}
+
+function destroyRejectedWebSocket(ws) {
+  try {
+    if (typeof ws?.terminate === 'function') ws.terminate();
+    else if (typeof ws?.close === 'function') ws.close();
+  } catch {
+    // Admission is already revoked; disposal is best-effort.
+  }
+}
+
+function closeWithDeadline(ws, code, reason, deadlineMs) {
+  if (ws.__clickBridgeCloseTimer || ws.readyState === ws.CLOSED) return;
+  try {
+    ws.close(code, reason);
+  } catch {
+    ws.terminate();
+    return;
+  }
+  if (ws.readyState === ws.CLOSED) return;
+  const timer = setTimeout(() => {
+    ws.__clickBridgeCloseTimer = null;
+    if (ws.readyState !== ws.CLOSED) ws.terminate();
+  }, deadlineMs);
+  timer.unref?.();
+  ws.__clickBridgeCloseTimer = timer;
+}
 
 const STATIC_FILES = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -135,8 +235,26 @@ export function attachWebSocketServer({
   authTimeoutMs = AUTH_TIMEOUT_MS,
   pingIntervalMs = SERVER_PING_INTERVAL_MS,
   pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
+  terminalCloseDeadlineMs = TERMINAL_CLOSE_DEADLINE_MS,
+  maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
+  maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
+  performWebSocketUpgrade,
 }) {
+  validateAdmissionLimits(
+    maxTotalWebSocketConnections,
+    maxUnauthenticatedWebSocketConnections,
+  );
+  if (!Number.isInteger(terminalCloseDeadlineMs) || terminalCloseDeadlineMs < 1
+      || terminalCloseDeadlineMs > AUTH_TIMEOUT_MS) {
+    throw new Error(`terminalCloseDeadlineMs must be an integer from 1 through ${AUTH_TIMEOUT_MS}`);
+  }
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+  const admissionController = createAdmissionController(
+    maxTotalWebSocketConnections,
+    maxUnauthenticatedWebSocketConnections,
+  );
+  const upgrade = performWebSocketUpgrade
+    ?? ((req, socket, head, done) => wss.handleUpgrade(req, socket, head, done));
   let nextConnectionId = 0;
 
   const onUpgrade = (req, socket, head) => {
@@ -151,19 +269,48 @@ export function attachWebSocketServer({
       socket.destroy();
       return;
     }
+    const admission = admissionController.reserve();
+    if (!admission) {
+      rejectUpgradeForCapacity(socket);
+      return;
+    }
+    socket.once('close', () => admission.releaseAll());
+    socket.once('error', () => admission.releaseAll());
     socket.setNoDelay?.(true);
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+    try {
+      upgrade(req, socket, head, (ws) => {
+        if (!admission.acceptCallback()) {
+          destroyRejectedWebSocket(ws);
+          return;
+        }
+        try {
+          ws.__clickBridgeAdmission = admission;
+          wss.emit('connection', ws, req);
+        } catch {
+          admission.releaseAll();
+          socket.destroy();
+          log.info?.(JSON.stringify({
+            event: 'upgrade_internal_error', code: 'connection_callback_failure',
+          }));
+        }
+      });
+    } catch {
+      admission.releaseAll();
+      socket.destroy();
+      log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code: 'upgrade_throw' }));
+    }
   };
   httpServer.on('upgrade', onUpgrade);
 
   wss.on('connection', (ws) => {
+    const admission = ws.__clickBridgeAdmission;
     let role = null;
     let connection = null;
     ws.__clickBridgePongTimer = null;
     const authTimer = setTimeout(() => {
       if (role === null) {
         log.info?.(JSON.stringify({ event: 'auth_timeout' }));
-        ws.close(4001, 'auth timeout');
+        closeWithDeadline(ws, 4001, 'auth timeout', terminalCloseDeadlineMs);
       }
     }, authTimeoutMs);
     authTimer.unref?.();
@@ -182,10 +329,10 @@ export function attachWebSocketServer({
         } catch (error) {
           if (error instanceof ProtocolError) {
             log.info?.(JSON.stringify({ event: 'auth_rejected', code: error.code }));
-            ws.close(4003, 'bad hello');
+            closeWithDeadline(ws, 4003, 'bad hello', terminalCloseDeadlineMs);
           } else {
             log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'parser_failure' }));
-            ws.close(1011, 'internal error');
+            closeWithDeadline(ws, 1011, 'internal error', terminalCloseDeadlineMs);
           }
           return;
         }
@@ -194,12 +341,13 @@ export function attachWebSocketServer({
           log.info?.(JSON.stringify({
             event: 'auth_rejected', code: 'bad_token', role: message.role,
           }));
-          ws.close(4003, 'bad token');
+          closeWithDeadline(ws, 4003, 'bad token', terminalCloseDeadlineMs);
           return;
         }
 
         role = message.role;
         clearTimeout(authTimer);
+        admission.releaseUnauthenticated();
         connection = Object.freeze({ id: ++nextConnectionId, role });
         connections.set(connection, ws);
         state.replaceRole(role, connection);
@@ -221,7 +369,7 @@ export function attachWebSocketServer({
           log.info?.(JSON.stringify({
             event: 'message_internal_error', role, code: 'parser_failure',
           }));
-          ws.close(1011, 'internal error');
+          closeWithDeadline(ws, 1011, 'internal error', terminalCloseDeadlineMs);
         }
         return;
       }
@@ -230,7 +378,10 @@ export function attachWebSocketServer({
     });
 
     ws.on('close', () => {
+      admission.releaseAll();
       clearTimeout(authTimer);
+      if (ws.__clickBridgeCloseTimer) clearTimeout(ws.__clickBridgeCloseTimer);
+      ws.__clickBridgeCloseTimer = null;
       if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
       ws.__clickBridgePongTimer = null;
       if (connection) {
@@ -240,10 +391,12 @@ export function attachWebSocketServer({
       }
     });
     ws.on('error', (error) => {
+      admission.releaseAll();
       log.info?.(JSON.stringify({
         event: 'socket_error', role: role ?? 'unauthenticated',
         code: typeof error?.code === 'string' ? error.code : 'socket_error',
       }));
+      if (ws.readyState !== ws.CLOSED) ws.terminate();
     });
   });
 
@@ -289,6 +442,10 @@ export function createServer({
   authTimeoutMs = AUTH_TIMEOUT_MS,
   pingIntervalMs = SERVER_PING_INTERVAL_MS,
   pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
+  terminalCloseDeadlineMs = TERMINAL_CLOSE_DEADLINE_MS,
+  maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
+  maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
+  performWebSocketUpgrade,
   parseClient = parseClientMessage,
   encode = encodeMessage,
   stateOptions = {},
@@ -312,7 +469,7 @@ export function createServer({
     const ws = connections.get(connection);
     if (!ws) return false;
     if (event.kind === 'close') {
-      ws.close(event.code, event.reason);
+      closeWithDeadline(ws, event.code, event.reason, terminalCloseDeadlineMs);
       return true;
     }
     if (event.kind === 'message' && ws.readyState === ws.OPEN) {
@@ -339,6 +496,10 @@ export function createServer({
     authTimeoutMs,
     pingIntervalMs,
     pongTimeoutMs,
+    terminalCloseDeadlineMs,
+    maxTotalWebSocketConnections,
+    maxUnauthenticatedWebSocketConnections,
+    performWebSocketUpgrade,
   });
 
   return {
