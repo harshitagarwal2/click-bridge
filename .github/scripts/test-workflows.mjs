@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -60,6 +61,17 @@ assertIncludes(
 );
 
 readRequired(".github/scripts/verify-workflows.mjs");
+
+const releaseValidation = spawnSync(
+  "ruby",
+  [".github/scripts/validate-release-workflows.rb"],
+  { cwd: repositoryRoot, encoding: "utf8" },
+);
+assert.equal(
+  releaseValidation.status,
+  0,
+  `release workflow validation failed:\n${releaseValidation.stdout}${releaseValidation.stderr}`,
+);
 
 const deploy = readRequired(".github/workflows/deploy-oci.yml");
 assertIncludes(deploy, "name: Deploy OCI");
