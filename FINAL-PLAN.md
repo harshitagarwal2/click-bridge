@@ -1,21 +1,21 @@
 # Click Bridge — Final OCI-First, Low-Latency Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use the xcodebuildmcp-cli skill for the macOS build, test, run, and diagnostic steps. Steps use checkbox syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use the xcodebuildmcp-cli skill for the macOS and iOS build, test, run, and diagnostic steps. Steps use checkbox syntax for tracking.
 
 **Canonical file:** `FINAL-PLAN.md`. `PLAN-v5.md` and earlier plans are preserved as historical inputs only; implementation status and future edits belong here.
 
-**Goal:** While a foreground phone PWA is open, one physical press produces at most one native left mouse click at the Mac's current cursor position within the running-process reliability boundary, initially through the existing OCI San Jose relay and later through an optional measured Tailscale path.
+**Goal:** While either foreground phone client is active, one accepted user input produces at most one native left mouse click at the Mac's current cursor position within the running-process reliability boundary. The PWA remains the tap fallback; the native iOS client additionally maps each real output-volume delta to one action through the same OCI relay and unchanged phone protocol. An optional measured Tailscale path follows only after both OCI clients pass.
 
-**Architecture:** Milestone 1 uses one persistent WebSocket from the phone to a stateless Node.js relay on the existing OCI us-sanjose-1 VM and one persistent WebSocket from that relay to a native Swift menu-bar application. Milestone 2 adds a Tailscale Serve-backed WebSocket directly into the same Mac action processor; optional hedging sends one immutable action ID over both paths and lets the Mac's serialized processor accept the first arrival.
+**Architecture:** Milestone 1 uses the foreground PWA, one persistent WebSocket to a stateless Node.js relay on the existing OCI us-sanjose-1 VM, and one persistent WebSocket from that relay to a native Swift menu-bar application. The native iOS extension uses one authenticated WSS connection to that same relay and reuses the exact phone wire protocol, action-ID/expiry rules, heartbeat, reconnect, clock-health, and terminal-result handling. Milestone 2 then adds a Tailscale Serve-backed WebSocket directly into the same Mac action processor; optional hedging sends one immutable action ID over both paths and lets the Mac's serialized processor accept the first arrival.
 
-**Tech Stack:** Foreground HTML/CSS/JavaScript PWA, Node.js 24 LTS, ws 8.21.3, Node's built-in test runner, Swift and SwiftUI, URLSessionWebSocketTask, Network.framework, Core Graphics CGEvent, Docker Compose, Caddy, OCI Compute in us-sanjose-1, and optional Tailscale Serve.
+**Tech Stack:** Foreground HTML/CSS/JavaScript PWA, native iOS SwiftUI, AVAudioSession output-volume KVO, Node.js 24 LTS, ws 8.21.3, Node's built-in test runner, Swift and SwiftUI, URLSessionWebSocketTask, Network.framework, Core Graphics CGEvent, XcodeGen, Docker Compose, Caddy, OCI Compute in us-sanjose-1, and optional Tailscale Serve.
 
 ## Global Constraints
 
 - macOS 13 or newer only.
 - One phone, one Mac, one user, one OCI relay process.
-- The phone application is a foreground installable PWA, not a native mobile app.
-- The OCI relay serves that PWA at one public HTTPS origin; there is no App Store submission, mobile signing, or native phone build.
+- The foreground installable PWA remains unchanged and supported as the fallback phone client.
+- The native iOS SwiftUI client is an additional foreground-only client. It requires a normal signed iPhone build for physical acceptance but no App Store submission.
 - Production uses a stable public hostname. Prefer a domain you own; DuckDNS is the no-cost fallback. Do not depend on sslip.io or nip.io for the permanent installation.
 - The only action is one left click at the Mac's current cursor position.
 - Octo Browser is the required physical target for final click verification; the application is not restricted to Octo.
@@ -53,7 +53,9 @@ Required patterns and owners:
 | Composition root | Node `server.js`, browser `app.js`, Swift `ClickBridgeApp` | Construct concrete dependencies in one place; domain types do not locate globals |
 | Ports and adapters | WebSocket, Keychain, permission, clock/timer, CGEvent boundaries | Deterministic tests and replaceable external mechanisms |
 | Pure state machine | PWA `state.js` reducer | One explicit source for user-visible states and legal transitions |
+| Native phone ports | iOS `VolumeChangeSource`, `PhoneActionTransport`, `Clock`, `Scheduler`, and `Haptics` | Keep AVAudioSession, URLSession, time, lifecycle races, and feedback outside deterministic domain tests |
 | Coordinator | PWA `TransportCoordinator` | One logical action, selected delivery ports, ack/result timeout; no clock or benchmark ownership |
+| Volume coordinator | iOS foreground session coordinator | Accept one real output-volume delta only while ready; keep one action in flight and no queue |
 | Serialized command handler | Swift `ActionProcessor` actor | Reserve action ID, gate, post synchronously, and cache result atomically |
 | Strategy | Small injected transport-selection function | OCI-only, direct-only, or hedged selection without branching inside transports |
 | Observer | Narrow callbacks and `@Published` presentation state | Report state changes without a global event bus |
@@ -61,7 +63,8 @@ Required patterns and owners:
 The latency-critical flow stays direct:
 
 ~~~text
-pointer event -> TransportCoordinator -> selected socket send
+PWA pointer event -> TransportCoordinator -> selected socket send
+iOS output-volume delta -> foreground coordinator -> PhoneActionTransport send
 validated Mac ingress -> ActionProcessor actor -> synchronous InputPosting
 ~~~
 
@@ -113,7 +116,7 @@ Native Swift menu-bar app
 Octo Browser at the current cursor
 ~~~
 
-Milestone 1 is independently usable and is the first stop condition. It requires no Tailscale installation on the phone.
+Milestone 1 is independently usable and remains the PWA/core OCI acceptance gate. It requires no native iOS build or Tailscale installation, but it is no longer the final plan stop: Task 10 must add and physically accept the native iPhone client before final handoff.
 
 ### Milestone 2 — Measured lowest-latency path
 
@@ -125,7 +128,7 @@ Phone PWA -- one action -|                                |--> one Mac ActionPro
 
 The phone keeps both sockets connected while visible. After the Tailscale path proves faster and the concurrency gate proves at-most-once execution, one press may send the same action ID on both transports. The Mac executes whichever reaches the shared actor first and returns the exact cached result to the later copy.
 
-Milestone 2 improves latency and path resilience while the PWA is already loaded. Because OCI still hosts the PWA, it is not complete page-load failover when OCI is unavailable.
+Milestone 2 improves latency and path resilience after both OCI phone clients pass. Because OCI still hosts the PWA, it is not complete page-load failover when OCI is unavailable.
 
 ---
 
@@ -148,7 +151,7 @@ Milestone 2 improves latency and path resilience while the PWA is already loaded
 +----------------------------------+
 ~~~
 
-The page:
+The PWA:
 
 - asks for the phone token on first use;
 - stays usable only while visible and unlocked;
@@ -166,16 +169,18 @@ The page:
 - installs to the Home Screen with a manifest and icons;
 - contains no offline action behavior.
 
-Phone setup is deliberately small:
+PWA setup is deliberately small:
 
 1. Open https://CLICK_BRIDGE_DOMAIN in a current mobile browser.
 2. Open Settings and enter PHONE_TOKEN once.
 3. Add the site to the Home Screen.
 4. Launch it from the Home Screen and keep it visible while sending clicks.
 
-The token is the only per-phone setup. A second authenticated phone replaces the first because the product deliberately supports one live phone.
+The PWA token is its only saved setup. The native client stores the relay WSS URL plus `PHONE_TOKEN`; the token belongs in Keychain and must never enter a URL or log. A second authenticated phone client replaces the first because the product deliberately supports one live phone, so the PWA and native client are fallbacks rather than simultaneous relay sessions.
 
 Production HTTPS is part of the working architecture, not a hardening project. Installable PWAs and Screen Wake Lock rely on a secure context, and an HTTPS page must use WSS. Wake Lock is best-effort: it prevents dimming while granted but does not guarantee foreground scheduling or keep the radio warm. For an installed iPhone Home Screen web app, require iOS/iPadOS 18.4 or newer before offering the Wake Lock toggle; older versions continue without it.
+
+The native iOS client observes `AVAudioSession.sharedInstance().outputVolume` through its supported KVO surface only while the app is foreground-active. Any real upward or downward delta is one click input. Duplicate callback noise, an unchanged value, a held-button repeat while an action is in flight, lifecycle races, and callbacks from stale observer or socket generations send nothing; there is no queue. The UI shows Ready, Not connected, Mac offline, Clock mismatch, and At volume boundary. At 0% or 100%, it explains that the outward direction cannot create another observable delta. Because the API observes output-volume changes rather than the physical source, changes from Control Center, wired or Bluetooth headsets, and AirPods can also trigger. Haptics occur only after the Mac terminal result, never after `relay.ack`.
 
 ### Mac experience
 
@@ -286,7 +291,7 @@ Successful endpoint response:
 {"type":"hello.ok","v":1,"role":"phone"}
 ~~~
 
-Generate each token independently with openssl rand -hex 32 when its milestone begins: PHONE_TOKEN and MAC_TOKEN in Task 8, DIRECT_TOKEN only in Task 10. The phone receives PHONE_TOKEN and, only for Milestone 2, DIRECT_TOKEN. The Mac receives MAC_TOKEN and, only for Milestone 2, DIRECT_TOKEN. Tokens are first-message data, never URL query parameters.
+Generate each token independently with openssl rand -hex 32 when its milestone begins: PHONE_TOKEN and MAC_TOKEN in Task 8, DIRECT_TOKEN only in Task 11. The phone receives PHONE_TOKEN and, only for Milestone 2, DIRECT_TOKEN. The Mac receives MAC_TOKEN and, only for Milestone 2, DIRECT_TOKEN. Tokens are first-message data, never URL query parameters.
 
 ### Heartbeat
 
@@ -434,6 +439,11 @@ clicker/
 |   +-- Config/
 |   +-- ClickBridgeMac/
 |   +-- ClickBridgeMacTests/
++-- ios/
+|   +-- project.yml
+|   +-- ClickBridgePhone.xcodeproj/
+|   +-- ClickBridgePhone/
+|   +-- ClickBridgePhoneTests/
 +-- deploy/
 |   +-- oci/
 |       +-- Dockerfile
@@ -456,6 +466,7 @@ clicker/
     +-- oci-deployment.md
     +-- oci-recovery.md
     +-- physical-smoke-test.md
+    +-- ios-acceptance.md
     +-- latency-report.md
     +-- phase-2-tailscale.md
 ~~~
@@ -523,6 +534,21 @@ mac/ClickBridgeMacTests/MacInputExecutorTests.swift
 mac/ClickBridgeMacTests/SettingsStoreTests.swift
 ~~~
 
+Core iOS files (Task 10; the generated shared scheme is `ClickBridgePhone`):
+
+~~~text
+ios/project.yml
+ios/ClickBridgePhone/ClickBridgePhoneApp.swift
+ios/ClickBridgePhone/PhoneSessionCoordinator.swift
+ios/ClickBridgePhone/AVAudioSessionVolumeChangeSource.swift
+ios/ClickBridgePhone/RelayPhoneActionTransport.swift
+ios/ClickBridgePhone/PhoneSettingsStore.swift
+ios/ClickBridgePhone/KeychainStore.swift
+ios/ClickBridgePhone/ContentView.swift
+ios/ClickBridgePhoneTests/PhoneSessionCoordinatorTests.swift
+ios/ClickBridgePhoneTests/RelayPhoneActionTransportTests.swift
+~~~
+
 Milestone 2 adds:
 
 ~~~text
@@ -549,7 +575,7 @@ benchmarks/*.csv
 _to_delete/
 ~~~
 
-The root .dockerignore excludes at least .git, every .env except .env.example, node_modules, build, DerivedData, archive, `_to_delete`, benchmarks, mac, docs, tests, plan files, and *.dmg. The root build context must never transmit deploy/oci/.env or historical/bundled content to Docker.
+The root .dockerignore excludes at least .git, every .env except .env.example, node_modules, build, DerivedData, archive, `_to_delete`, benchmarks, mac, ios, docs, tests, plan files, and *.dmg. The root build context must never transmit deploy/oci/.env or historical/bundled content to Docker.
 
 ---
 
@@ -565,13 +591,14 @@ Task 1 preflight and repository
             -> Task 7 local Octo vertical slice
               -> Task 8 OCI Docker/Caddy deployment
                 -> Task 9 physical benchmark, canonical cleanup, and Milestone 1 acceptance
-                  +-> stop with complete OCI application
-                  +-> Task 10 Tailscale ingress
-                        -> optional Task 11 hedging and comparison
-                  -> Task 12 final verification and handoff
+                  -> Task 10 native iOS foreground volume client and physical acceptance
+                    +-> stop with both OCI phone clients complete
+                    +-> Task 11 Tailscale ingress
+                          -> optional Task 12 hedging and comparison
+                    -> Task 13 final verification and handoff
 ~~~
 
-Tasks 1 through 9 produce the complete application. Tasks 10 and 11 are latency upgrades, not prerequisites for a usable clicker.
+Tasks 1 through 9 produce the complete PWA/core OCI application. Task 10 adds the required native iOS client without changing that fallback. Tasks 11 and 12 are optional latency upgrades, not prerequisites for the two-client OCI clicker.
 
 ---
 
@@ -677,7 +704,7 @@ git check-ignore -q _to_delete/_impl.tgz
 git check-ignore -q _to_delete/_scaffold.tgz
 ~~~
 
-Do not run `git rm --cached`, reset the index, or rewrite the initial commit. Reconcile `.gitignore` with Section 7. Create a root `.dockerignore` that excludes at least `.git`, `.env` files, `node_modules`, build products, `archive/`, `_to_delete/`, `mac/`, `benchmarks/`, tests, docs, and plan files while leaving the required `relay/package*.json`, `relay/src/`, and `relay/public/` build inputs visible.
+Do not run `git rm --cached`, reset the index, or rewrite the initial commit. Reconcile `.gitignore` with Section 7. Create a root `.dockerignore` that excludes at least `.git`, `.env` files, `node_modules`, build products, `archive/`, `_to_delete/`, `mac/`, `ios/`, `benchmarks/`, tests, docs, and plan files while leaving the required `relay/package*.json`, `relay/src/`, and `relay/public/` build inputs visible.
 
 Stage only the Task 1 boundary files:
 
@@ -689,11 +716,12 @@ git diff --cached --name-only
 
 Expected: every staged name is a member of the six-file Task 1 allowlist above; unchanged allowlisted files may be absent. No generated file, secret, implementation scaffold, archive payload, or `_to_delete/` bundle is newly staged. Previously committed files remain untouched unless listed for this task. Staging the reviewed `FINAL-PLAN.md` resolves the one expected handoff modification.
 
-- [ ] **Step 5: Document the two milestone boundaries**
+- [ ] **Step 5: Document the delivery boundaries**
 
 README.md must state:
 
 - Tasks 1 through 9 are Milestone 1;
+- Task 10 adds the required native iOS foreground client while preserving the PWA fallback and phone wire protocol;
 - Tailscale and hedging are not enabled before Milestone 1 passes;
 - FINAL-PLAN.md is the only active plan;
 - all earlier files are preserved until the mandatory cleanup inside Task 9.
@@ -1892,7 +1920,7 @@ scp /private/tmp/click-bridge-secrets.env "$OCI_SSH_TARGET:/tmp/click-bridge-sec
 ssh "$OCI_SSH_TARGET" 'sudo install -d -m 0700 -o "$USER" -g "$(id -gn)" /opt/click-bridge/shared && install -m 0600 /tmp/click-bridge-secrets.env /opt/click-bridge/shared/secrets.env && rm -f /tmp/click-bridge-secrets.env && test "$(stat -c %a /opt/click-bridge/shared/secrets.env)" = 600'
 ~~~
 
-Every OCI Compose command selects `/opt/click-bridge/shared/secrets.env` directly with `--env-file`; never copy it into a release directory. Keep `/private/tmp/click-bridge-secrets.env` at mode 0600 only until the Step 12 rollback/reboot checks and client setup finish. Configure the phone with `PHONE_TOKEN` and the Mac Keychain with `MAC_TOKEN`; after every Step 12 recovery smoke passes, remove that exact temporary file and unset the two shell variables. Never place either token in a URL, tracked file, shell transcript, or deployment log. Generate `DIRECT_TOKEN` only if Task 10 begins.
+Every OCI Compose command selects `/opt/click-bridge/shared/secrets.env` directly with `--env-file`; never copy it into a release directory. Keep `/private/tmp/click-bridge-secrets.env` at mode 0600 only until the Step 12 rollback/reboot checks and client setup finish. Configure the phone with `PHONE_TOKEN` and the Mac Keychain with `MAC_TOKEN`; after every Step 12 recovery smoke passes, remove that exact temporary file and unset the two shell variables. Never place either token in a URL, tracked file, shell transcript, or deployment log. Generate `DIRECT_TOKEN` only if Task 11 begins.
 
 - [ ] **Step 9: Transfer an immutable release**
 
@@ -2386,11 +2414,99 @@ git commit -m "test: accept oci milestone with real latency data"
 - [ ] No provider estimate is presented as measured data.
 - [ ] FINAL-PLAN.md is the only active plan and the archive is non-authoritative.
 
-Stop here if a simple, working personal application is sufficient.
+This is the PWA/core OCI checkpoint. Continue through Task 10 before final handoff; stop before Task 11 if optional transport experiments are unnecessary.
 
 ---
 
-### Task 10: Optional Tailscale Ingress and Direct-Route Measurement
+### Task 10: Native iOS Foreground Volume Client
+
+This task is required before final handoff. It adds a native SwiftUI iPhone client while leaving `relay/public/` unchanged as the fallback and making no wire-protocol change.
+
+**Files:**
+
+- Create: `ios/project.yml`
+- Generate: `ios/ClickBridgePhone.xcodeproj/`
+- Create: `ios/ClickBridgePhone/`
+- Create: `ios/ClickBridgePhoneTests/`
+- Create: `docs/ios-acceptance.md`
+
+**Project and SOLID boundaries:**
+
+- `ios/project.yml` is the project source and defines a shared scheme named exactly `ClickBridgePhone`.
+- `VolumeChangeSource` emits old/new output-volume samples plus an observer generation. Its production adapter observes `AVAudioSession.sharedInstance().outputVolume` through supported KVO. It does not use `AVCaptureEventInteraction`, create a capture session, request camera permission, or activate the camera.
+- `PhoneActionTransport` owns one authenticated WSS generation, strict frame parsing, heartbeat, reconnect, clock-health, and result routing. It reuses the existing phone messages and fixtures byte-for-byte; iOS adds no message type, field, acknowledgement, retry, or protocol exception.
+- Inject `Clock`, `Scheduler`, and `Haptics` ports. Production adapters wrap wall/monotonic time, cancellable scheduling, and UIKit haptics; deterministic fakes control every race in tests.
+- `PhoneSessionCoordinator` owns foreground generation, readiness, the one-in-flight action, and presentation state. Platform adapters never create action IDs or decide whether a delta is accepted.
+
+- [ ] **Step 1: Create the iOS target and configuration storage**
+
+Generate a SwiftUI iOS application and unit-test target from `ios/project.yml`. Store the relay WSS URL in app settings and `PHONE_TOKEN` in Keychain. Reject non-WSS public URLs, never place the token in a URL or log, and keep exactly one authenticated phone socket. A native client connection may replace the PWA connection under the relay's existing one-phone rule; it must not change that rule.
+
+- [ ] **Step 2: Implement foreground volume-delta semantics**
+
+Start a fresh session generation on foreground activation, reconnect, rerun the same five-sample clock-health gate, and permit actions only after relay, Mac, and clock state are ready. On background transition, disable sending first, stop KVO observation, cancel timers, and close/invalidate the socket generation. A callback from any earlier observer or socket generation sends nothing.
+
+For each KVO callback, compare the prior accepted system volume with the new value:
+
+- an upward or downward nonzero delta is eligible;
+- an unchanged value or duplicate callback for the same value is noise;
+- while one action is in flight, further deltas are ignored and never queued;
+- after a terminal result, a distinct later delta may create a new action immediately; do not use a blanket debounce that merges separate presses;
+- each accepted delta creates exactly one immutable action ID, with `issuedAtUnixMs`, `expiresAtUnixMs`, expiry validation, Unknown handling, and no-retry behavior identical to the PWA.
+
+- [ ] **Step 3: Present complete readiness and result state**
+
+Show `Ready`, `Not connected`, `Mac offline`, `Clock mismatch`, and `At volume boundary` explicitly. At 0%, explain that Volume Down cannot create another observable change; at 100%, explain the same for Volume Up. Do not simulate a delta or modify system volume to escape a boundary.
+
+Document in the UI/help that Control Center, wired or Bluetooth headsets, and AirPods can also trigger because the supported API observes output-volume changes, not the physical button source. Produce haptic feedback only after the matching Mac `action.result`; `relay.ack` changes forwarding state but never produces haptics.
+
+- [ ] **Step 4: Prove the coordinator and transport with deterministic tests**
+
+Tests must cover:
+
+- upward and downward deltas;
+- duplicate KVO callbacks and unchanged values;
+- rapid separate changes after terminal completion, plus held/autorepeat changes while one action is pending;
+- foreground/background races and callbacks after observation stops;
+- stale observer and socket generations after reconnect;
+- relay/Mac/clock readiness loss and expired actions;
+- 0% and 100% boundary presentation and the still-detectable inward direction;
+- no haptic on send or `relay.ack`, and one haptic after the matching Mac terminal result;
+- exact one action ID per accepted delta, one action in flight, no queue, no retry, and no second send from callback noise;
+- the existing canonical phone fixtures, heartbeat, clock-health, reconnect, result, strict-frame, and 4 KiB rules.
+
+- [ ] **Step 5: Build, test, and record physical acceptance**
+
+~~~bash
+cd /Users/harshitagarwal/Desktop/clicker/ios
+xcodegen generate --spec project.yml
+xcodebuild -project ClickBridgePhone.xcodeproj -scheme ClickBridgePhone -showdestinations
+~~~
+
+Run the `ClickBridgePhone` unit tests on an installed iOS Simulator destination, then build the same shared scheme for a generic iOS device. Record the Xcode, Swift, simulator, SDK, and command results in `docs/ios-acceptance.md`. Simulator tests can prove coordinator, lifecycle, protocol, and UI logic, but simulator volume controls do not prove hardware-volume behavior.
+
+On a physical signed iPhone, with the app foreground-active and the OCI relay/Mac/clock ready, prove Volume Up and Volume Down separately, duplicate/noise suppression, rapid separate presses, a held press while an action is pending, background/foreground revalidation, both volume boundaries, external volume-source disclosure, terminal-result-only haptics, and exactly one harmless Octo counter increment per accepted delta. This physical iPhone gate is mandatory.
+
+- [ ] **Step 6: Commit the native client after all gates pass**
+
+~~~bash
+git add ios docs/ios-acceptance.md FINAL-PLAN.md README.md
+git diff --cached --check
+git commit -m "feat: add foreground ios volume client"
+~~~
+
+### Native iOS acceptance gate
+
+- [ ] `ios/project.yml` generates the shared `ClickBridgePhone` scheme.
+- [ ] Simulator unit tests and generic iOS device build pass.
+- [ ] The PWA remains unchanged and passes its existing checks.
+- [ ] The native client uses the existing OCI relay and exact phone wire protocol.
+- [ ] Foreground/background, readiness, generation, expiry, boundary, one-in-flight, no-queue, and result-only haptic tests pass.
+- [ ] Physical iPhone Volume Up and Volume Down each produce exactly one action and exactly one Octo counter increment per accepted delta.
+
+---
+
+### Task 11: Optional Tailscale Ingress and Direct-Route Measurement
 
 **Files:**
 
@@ -2411,7 +2527,7 @@ Stop here if a simple, working personal application is sufficient.
 - DirectWebSocketServer listens only on 127.0.0.1:8787.
 - Tailscale Serve terminates trusted WSS and proxies to the loopback server.
 - Direct ingress uses independent DIRECT_TOKEN and the existing ActionProcessor.
-- The phone can select OCI-only or Tailscale-only; it does not hedge until Task 11.
+- The PWA can select OCI-only or Tailscale-only; it does not hedge until Task 12. The native iOS client remains on the required OCI phone protocol unless a later separately tested change explicitly extends it.
 - The UI says Tailscale until route evidence proves the connection is direct.
 - DirectWebSocketServer receives immutable advertised-state updates from AppState through `updateAdvertisedState(_:)`, mirroring RelayClient; it never reads MainActor settings or permission services.
 
@@ -2531,7 +2647,7 @@ git commit -m "feat: add measured tailscale ingress"
 
 ---
 
-### Task 11: Optional Same-Action Dual-Path Hedging
+### Task 12: Optional Same-Action Dual-Path Hedging
 
 **Files:**
 
@@ -2626,9 +2742,9 @@ git commit -m "feat: add verified dual-path action racing"
 
 ---
 
-### Task 12: Final Verification and Handoff
+### Task 13: Final Verification and Handoff
 
-Run this task immediately after the chosen stopping point: after Task 9 for OCI-only, after Task 10 for selectable Tailscale, or after Task 11 for retained hedging.
+Run this task immediately after the chosen stopping point: after Task 10 for both OCI phone clients, after Task 11 for selectable PWA Tailscale, or after Task 12 for retained PWA hedging.
 
 **Files:**
 
@@ -2652,6 +2768,14 @@ codesign --verify --strict build/Build/Products/Release/ClickBridgeMac.app
 codesign -d --entitlements :- build/Build/Products/Release/ClickBridgeMac.app
 ~~~
 
+~~~bash
+cd /Users/harshitagarwal/Desktop/clicker/ios
+xcodegen generate --spec project.yml
+xcodebuild -project ClickBridgePhone.xcodeproj -scheme ClickBridgePhone -showdestinations
+~~~
+
+Run the `ClickBridgePhone` tests on the recorded installed simulator destination and build the shared scheme for `generic/platform=iOS`.
+
 Because local Docker is optional, perform the final Compose-model verification on the active OCI release:
 
 ~~~bash
@@ -2659,7 +2783,7 @@ export OCI_SSH_TARGET='opc@146.235.216.172'
 ssh "$OCI_SSH_TARGET" 'set -eu; ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"; export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"; cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --quiet; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --services; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --images'
 ~~~
 
-Expected: tests pass, the Release app verifies, App Sandbox is absent, Compose contains no database, and only one relay replica is configured. This gate is required whether or not the optional Mac container smoke ran.
+Expected: relay, Mac, and iOS tests pass; both native builds verify at their available gate; App Sandbox is absent from the Mac app; Compose contains no database; and only one relay replica is configured. This gate is required whether or not the optional Mac container smoke ran.
 
 - [ ] **Step 2: Re-run the final physical and public smoke**
 
@@ -2671,17 +2795,21 @@ Using the exact Release build and physical phone:
 - duplicate produces no second click;
 - hidden/visible produces no replay;
 - selected transport mode matches the UI label;
-- diagnostics export contains no secret.
+- diagnostics export contains no secret;
+- the signed native iPhone build separately passes both volume directions, lifecycle revalidation, boundary disclosure, one-in-flight/no-queue behavior, result-only haptics, and exactly one action ID and Octo increment per accepted delta.
 
 - [ ] **Step 3: Complete the operator README**
 
 README.md contains:
 
 - one-screen install/start sequence;
-- exact phone URL;
+- exact PWA URL plus native iOS relay-URL and `PHONE_TOKEN` setup;
+- the PWA fallback and the relay's one-live-phone replacement behavior;
 - how to enable and disable remote control;
 - where tokens are stored and how to replace them;
 - how Checking clock, Clock mismatch, and Clock check unavailable differ, plus how to retry the check;
+- native Ready, Not connected, Mac offline, Clock mismatch, and At volume boundary meanings;
+- Control Center, headset, and AirPods volume-source behavior, plus the physical-iPhone-only acceptance limitation;
 - normal 20-second heartbeat and optional keep-warm decision;
 - selected transport based on measured data;
 - recovery and rollback links;
@@ -2705,6 +2833,9 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 
 - [ ] A physical phone on cellular loads the OCI-hosted HTTPS PWA.
 - [ ] The PWA installs to the Home Screen and works while foregrounded.
+- [ ] The signed native iOS app connects to the same OCI relay with the same phone protocol while foreground-active.
+- [ ] Physical iPhone Volume Up and Volume Down each create exactly one logical action ID per accepted delta.
+- [ ] The native app shows Ready, Not connected, Mac offline, Clock mismatch, and At volume boundary accurately.
 - [ ] The native Swift menu-bar app connects through WSS.
 - [ ] The button enables only after connected, remote enabled, permission ready, and five valid clock-health responses pass.
 - [ ] A missing time-sync response becomes Clock check unavailable within 3.5 seconds, shows Retry clock check, and sends no action.
@@ -2719,7 +2850,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - [ ] Unknown warns that the click may have occurred and tells the user to check the Mac.
 - [ ] Long holds, pointer cancellation, and accessible activation cannot create a second action ID.
 
-### Native
+### Native clients
 
 - [ ] CGPreflightPostEventAccess checks permission.
 - [ ] CGRequestPostEventAccess is invoked only from a user action.
@@ -2729,12 +2860,19 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - [ ] The smallest empirically reliable Octo down/up gap is recorded.
 - [ ] No libnut, command process, AppleScript, or third-party input injector exists.
 - [ ] Swift and PWA reject oversized, binary, unknown-field, wrong-version, and wrong-role inbound frames.
+- [ ] `ios/project.yml` defines the shared `ClickBridgePhone` scheme; simulator tests and generic-device build pass.
+- [ ] iOS observes only `AVAudioSession.sharedInstance().outputVolume` KVO and uses no camera or `AVCaptureEventInteraction` path.
+- [ ] iOS accepts upward and downward deltas only while foreground-active, ready, and idle; background, stale-generation, duplicate, expired, and pending-action callbacks send nothing.
+- [ ] iOS keeps one action in flight with no queue or retry and produces haptics only after the matching Mac terminal result.
+- [ ] Physical iPhone acceptance proves hardware-volume behavior; simulator evidence is not presented as that proof.
 
 ### Design boundaries
 
 - [ ] Node server parses/authenticates raw frames exactly once; RelayState receives validated objects and has no `ws`, parser, encoding, or environment dependency.
 - [ ] PWA TransportController is the only socket-generation/reconnect/heartbeat owner.
 - [ ] PWA TransportCoordinator owns actions only; ClockHealthController owns sync timers and BenchmarkSession owns diagnostic scheduling/data.
+- [ ] iOS `PhoneSessionCoordinator` owns foreground/readiness/action state and depends only on injected `VolumeChangeSource`, `PhoneActionTransport`, `Clock`, `Scheduler`, and `Haptics` ports with deterministic fakes.
+- [ ] iOS transport reuses the exact current phone fixtures, action-ID/expiry semantics, heartbeat, reconnect, clock-health, and result handling without relay changes.
 - [ ] app.js and ClickBridgeApp are composition roots, not domain-logic or service-locator containers.
 - [ ] RelayClient depends on separate ActionRequestSink, DiagnosticCounterReading, and WebSocketTransport ports, not concrete ActionProcessor or URLSession types.
 - [ ] Binary WebSocket frames throw/close and are never converted into empty text.
@@ -2776,7 +2914,8 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 ### Scope
 
 - [ ] No database, persistent action state, queue, or offline action delivery exists.
-- [ ] No Windows or native mobile application exists.
+- [ ] No Windows client or native mobile client other than the scoped foreground iOS app exists.
+- [ ] The PWA remains available and behaviorally unchanged as the phone fallback.
 - [ ] No Cloudflare Durable Object or Fly deployment exists.
 - [ ] No security-hardening features beyond the minimum working boundary were added.
 - [ ] FINAL-PLAN.md is the single active plan.
@@ -2785,8 +2924,10 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 
 ## 10. Known Limits
 
-- The phone page must remain visible and unlocked for dependable operation.
-- Browser and iOS background scheduling are intentionally not used.
+- The active phone client must remain foreground-active and the phone unlocked for dependable operation.
+- Browser and native iOS background sending are intentionally not used; activation reconnects and revalidates before sending.
+- Native iOS observes output-volume changes, not their physical source, so Control Center, wired or Bluetooth headsets, and AirPods can trigger while the app is ready.
+- At 0% or 100%, the outward volume direction cannot create another delta and therefore cannot be detected; the inward direction remains available.
 - Ready after every fresh Mac connection depends on five successful time-sync round trips; a missing response is surfaced as Clock check unavailable rather than leaving an unexplained disabled button.
 - The Mac must be awake, unlocked, logged in, online, and running ClickBridgeMac.
 - This simple version does not detect the lock screen as a separate readiness state; do not press the phone button while the Mac is locked.
@@ -2812,7 +2953,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 | Public edge | VNIC NSG plus Caddy on 80/443 | Public relay port 8080 | Only the TLS edge is host-published; relay stays Compose-private |
 | Relay runtime | Node 24 LTS, exact tested patches | Node 26 Current during Milestone 1 | Prefer the stable LTS line; reconsider after Node 26 enters LTS |
 | Alternative relay | None initially | Cloudflare Durable Object | Cannot pin to SJC and wake/placement latency must be measured |
-| Phone client | Foreground PWA | Native phone app | One button and WebSocket need no native mobile capability |
+| Phone clients | Foreground native iOS volume client plus unchanged PWA fallback | Replacing the PWA or changing the relay protocol for iOS | Native KVO supplies the requested volume input while both clients share one proven action contract |
 | Mac receiver | Native Swift | Node, Electron, Tauri | Direct Core Graphics APIs and native lifecycle |
 | Input API | Core Graphics CGEvent | libnut, cliclick, AppleScript | No process spawn or stale native add-on |
 | Permission API | CGPreflight/CGRequestPostEventAccess | AXIsProcessTrustedWithOptions | Exact permission surface for posting events |
@@ -2849,6 +2990,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - Public Suffix List, including duckdns.org: https://publicsuffix.org/list/public_suffix_list.dat
 - sslip.io shared certificate-limit incident: https://github.com/cunnie/sslip.io/issues/108
 - Apple URLSessionWebSocketTask: https://developer.apple.com/documentation/foundation/urlsessionwebsockettask
+- Apple AVAudioSession outputVolume: https://developer.apple.com/documentation/avfaudio/avaudiosession/outputvolume
 - Apple NWProtocolWebSocket: https://developer.apple.com/documentation/network/nwprotocolwebsocket
 - Apple NWListener: https://developer.apple.com/documentation/network/nwlistener
 - Apple WebSocket server handshake handler: https://developer.apple.com/documentation/network/nwprotocolwebsocket/options/setclientrequesthandler(_:handler:)
@@ -2872,4 +3014,8 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 
 **Milestone 1 stop condition:** A physical phone on cellular opens the OCI-hosted foreground PWA, sees the Mac ready, sends one action, and the installed native Mac app posts exactly one left click into the harmless Octo Browser counter at the current cursor. Every specified protocol, permission, and remote-toggle rejection produces no native input; sleep, lock, restart, and visibility transitions produce no queued replay; and the OCI latency baseline is recorded.
 
-**Milestone 2 stop condition:** The same physical flow operates through the measured best path. If hedging is retained, 1,000 physical actions and 10,000 randomized actor trials produce zero double clicks, and two cellular benchmark runs show the required p95 improvement over the better single path.
+**Native iOS stop condition:** The signed `ClickBridgePhone` build on a physical iPhone uses the same OCI relay and phone wire contract; foreground Volume Up and Volume Down each produce exactly one action ID and one harmless Octo increment per accepted delta; duplicate, autorepeat-while-pending, background, stale-generation, expiry, and boundary cases send no unintended action; and haptics occur only after the Mac terminal result. The unchanged PWA still passes as the fallback.
+
+**Milestone 2 stop condition:** The PWA physical flow operates through the measured best optional path. If hedging is retained, 1,000 physical actions and 10,000 randomized actor trials produce zero double clicks, and two cellular benchmark runs show the required p95 improvement over the better single path.
+
+**Final handoff stop condition:** Task 13 reruns relay, macOS, iOS simulator/build, OCI, PWA physical, and native physical-iPhone gates from clean inputs; records every limitation and selected optional transport; and leaves `FINAL-PLAN.md` as the only active plan with no unverified completion claim.
