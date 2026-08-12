@@ -11,7 +11,7 @@ name: ClickBridgeMac
 options:
   bundleIdPrefix: com.clickbridge
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "14.0"
   createIntermediateGroups: true
 
 settings:
@@ -48,7 +48,7 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         # Menu-bar only: no Dock icon, no main window.
         LSUIElement: true
-        LSMinimumSystemVersion: "13.0"
+        LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: ""
     settings:
       base:
