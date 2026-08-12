@@ -71,7 +71,7 @@ Certificates, profiles, API keys, archives, `.ipa` files, and `.pkg` files remai
 
 After the Account Holder accepts the updated agreement, create two separate app records named `Click Bridge` with platform-specific SKUs:
 
-- iOS SKU: `clickbridge-ios-2026`
+- iOS SKU: `clickbridge-phone-20260812`
 - macOS SKU: `clickbridge-macos-2026`
 
 The records use English (U.S.) as the primary language and their existing explicit bundle IDs. No testers are added by the upload workflow; internal or external distribution is a later explicit action.

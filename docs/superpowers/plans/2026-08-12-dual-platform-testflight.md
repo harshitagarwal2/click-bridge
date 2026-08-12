@@ -226,7 +226,7 @@ Use `gh pr checks --watch` and add focused commits for any real failures.
 
 - [ ] **Step 3: Create the App Store Connect records after agreement acceptance**
 
-Create separate iOS and macOS `Click Bridge` records using bundle IDs `com.clickbridge.phone` and `com.clickbridge.mac`, English (U.S.), and SKUs `clickbridge-ios-2026` and `clickbridge-macos-2026`.
+Create separate iOS and macOS `Click Bridge` records using bundle IDs `com.clickbridge.phone` and `com.clickbridge.mac`, English (U.S.), and SKUs `clickbridge-phone-20260812` and `clickbridge-macos-2026`.
 
 - [ ] **Step 4: Configure protected release signing inputs**
 

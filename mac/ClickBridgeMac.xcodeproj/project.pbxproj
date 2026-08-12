@@ -87,6 +87,7 @@
 		344B7FEAC4D9A52A0F98365D /* relay.ack.rejected-invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-invalid-request.json"; sourceTree = "<group>"; };
 		377F3F4444E5F151769CB04B /* malformed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = malformed.json; sourceTree = "<group>"; };
 		42F56CF837ED2862327D252E /* ActionProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionProcessorTests.swift; sourceTree = "<group>"; };
+		45057D654AB297444B145C63 /* ClickBridgeMac-AppStore.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ClickBridgeMac-AppStore.entitlements"; sourceTree = "<group>"; };
 		516FF0124E9165A938858B42 /* unknown-field.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "unknown-field.json"; sourceTree = "<group>"; };
 		540A03DF89931A32C0E0A284 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
 		57B814959E4DF0737242AFD7 /* heartbeat.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.ack.json; sourceTree = "<group>"; };
@@ -143,6 +144,7 @@
 				D37C3338DFA31BE1969FC671 /* AppState.swift */,
 				161E2ADDD69F551099B917E8 /* Assets.xcassets */,
 				EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */,
+				45057D654AB297444B145C63 /* ClickBridgeMac-AppStore.entitlements */,
 				C9EE92FD9E6234B00DBBB0FA /* Info.plist */,
 				BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */,
 				5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */,
