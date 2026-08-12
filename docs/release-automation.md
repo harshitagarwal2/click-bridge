@@ -21,7 +21,7 @@ The iOS and macOS workflows install XcodeGen 2.46.0 directly from the official `
 2. Merge and verify CI, create a protected `vX.Y.Z` tag on the exact release commit, then dispatch from that tag.
 3. Run TestFlight first. It uploads the IPA to App Store Connect but deliberately creates no GitHub IPA artifact and distributes to no testers.
 4. After App Store Connect reports that exact version/build as processed, dispatch App Store submission. Fastlane skips binary upload, submits for review, and sets `automatic_release: false`.
-5. The macOS workflow creates only a draft GitHub release and retains the notarized ZIP/checksum workflow artifact for seven days. Publishing the draft is a separate human decision.
+5. The macOS workflow creates only a draft GitHub release and retains the notarized ZIP/checksum plus the notary submission result and JSON log for seven days. The notary audit artifact runs even after failure when either audit file exists. Publishing the draft is a separate human decision.
 6. The GHCR workflow never emits `latest` and never modifies package visibility. Confirm the protected-environment warning before approval. Before building, it queries GHCR and fails closed unless both the version tag and commit-SHA tag are absent, so a rerun cannot overwrite either immutable release name. Record the pushed artifact digest from the job summary; that digest is the canonical deployment identity.
 
 The relay Dockerfile pins the official `node:24-alpine` multi-platform OCI index at `sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43`. Update the readable tag and digest together in a reviewed change; never float the base image inside an immutable release commit.

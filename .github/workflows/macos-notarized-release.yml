@@ -161,7 +161,7 @@ jobs:
             --key "$APP_STORE_CONNECT_KEY_PATH" \
             --key-id "$APP_STORE_CONNECT_KEY_ID" \
             --issuer "$APP_STORE_CONNECT_ISSUER_ID"
-          plutil -lint "$notary_log"
+          jq empty "$notary_log"
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
@@ -171,6 +171,17 @@ jobs:
           archive_name="$(basename "$archive")"
           (cd "$output" && shasum -a 256 "$archive_name" > "$archive_name.sha256")
           echo "MAC_RELEASE_ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Retain notarization audit for seven days
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ClickBridgeMac-${{ inputs.release_tag }}-notarization
+          path: |
+            ${{ runner.temp }}/ClickBridgeMac-notary-result.json
+            ${{ runner.temp }}/ClickBridgeMac-notary-log.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Retain verified notarized artifact for seven days
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

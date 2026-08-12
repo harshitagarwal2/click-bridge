@@ -92,6 +92,15 @@ end
 fail_contract("macOS release-existence guard must use an explicit conditional") if macos.include?('! gh release view "$RELEASE_TAG"')
 fail_contract("macOS release-existence guard is missing") unless macos.include?('if gh release view "$RELEASE_TAG"')
 fail_contract("macOS environment writes must be grouped") if macos.match?(/echo .* >> "\$GITHUB_ENV"\n\s+echo .* >> "\$GITHUB_ENV"/)
+fail_contract("macOS notary log must be validated as JSON") unless macos.include?('jq empty "$notary_log"')
+fail_contract("macOS notary log must not be parsed as a plist") if macos.include?('plutil -lint "$notary_log"')
+fail_contract("macOS notarization audit artifact must retain result and log") unless macos.include?("ClickBridgeMac-notary-result.json") && macos.include?("ClickBridgeMac-notary-log.json") && macos.include?("Retain notarization audit for seven days")
+macos_steps = YAML.safe_load(macos, aliases: true).fetch("jobs").fetch("release").fetch("steps")
+audit_step = macos_steps.find { |step| step["name"] == "Retain notarization audit for seven days" }
+fail_contract("macOS notarization audit artifact must run after failures") unless audit_step && audit_step["if"] == "${{ always() }}"
+audit_options = audit_step.fetch("with")
+fail_contract("macOS notarization audit artifact has incomplete paths") unless audit_options.fetch("path").include?("ClickBridgeMac-notary-result.json") && audit_options.fetch("path").include?("ClickBridgeMac-notary-log.json")
+fail_contract("macOS notarization audit artifact must retain seven days") unless audit_options["retention-days"] == 7
 fail_contract("macOS checksum must contain only the archive basename") unless macos.include?('shasum -a 256 "$archive_name" > "$archive_name.sha256"')
 fail_contract("macOS checksum must not contain the runner's absolute archive path") if macos.include?('shasum -a 256 "$archive"')
 
