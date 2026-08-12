@@ -210,6 +210,20 @@ case "${1:-}" in
   compose)
     compose_file="$CLICK_BRIDGE_ROOT/releases/$CLICK_BRIDGE_RELEASE/deploy/oci/compose.yaml"
     if args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" config relay; then
+      if grep -Fq 'x-test-rendered-relay-compatible: true' "$compose_file"; then
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind'
+      else
+        printf '%s\n' '    image: example.invalid/relay'
+      fi
+    elif args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
         -f "$compose_file" config --quiet ||
       args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
         -f "$compose_file" build --pull relay ||
@@ -311,6 +325,7 @@ add_release() {
   printf '%s\n' \
     'services:' \
     '  relay:' \
+    '    x-test-rendered-relay-compatible: true' \
     '    env_file:' \
     '      - ${CLICK_BRIDGE_SECRETS_FILE}' \
     '    environment:' \
@@ -568,6 +583,29 @@ if run_deploy "$root" "$SHA_A"; then
   fail 'non-binary PAIRING_ENABLED unexpectedly succeeded'
 fi
 
+root="$(new_case_root unexpected-secret-key)"
+add_release "$root" "$SHA_A"
+printf '%s\n' 'DIRECT_TOKEN=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' \
+  >> "$root/shared/secrets.env"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'unexpected secret key unexpectedly succeeded'
+fi
+
+root="$(new_case_root duplicate-secret-key)"
+add_release "$root" "$SHA_A"
+printf '%s\n' 'MAC_TOKEN=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' \
+  >> "$root/shared/secrets.env"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'duplicate recognized secret key unexpectedly succeeded'
+fi
+
+root="$(new_case_root disabled-team-id)"
+add_release "$root" "$SHA_A"
+printf '%s\n' 'APPLE_TEAM_ID=ABCDEFGHIJ' >> "$root/shared/secrets.env"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'APPLE_TEAM_ID unexpectedly succeeded while pairing was disabled'
+fi
+
 root="$(new_case_root pairing-without-team)"
 add_release "$root" "$SHA_A"
 sed -i.bak 's/PAIRING_ENABLED=0/PAIRING_ENABLED=1/' "$root/shared/secrets.env"
@@ -575,6 +613,13 @@ rm -f "$root/shared/secrets.env.bak"
 if run_deploy "$root" "$SHA_A"; then
   fail 'enabled pairing without APPLE_TEAM_ID unexpectedly succeeded'
 fi
+
+root="$(new_case_root pairing-with-team)"
+add_release "$root" "$SHA_A"
+sed -i.bak 's/PAIRING_ENABLED=0/PAIRING_ENABLED=1/' "$root/shared/secrets.env"
+rm -f "$root/shared/secrets.env.bak"
+printf '%s\n' 'APPLE_TEAM_ID=ABCDEFGHIJ' >> "$root/shared/secrets.env"
+run_deploy "$root" "$SHA_A"
 
 root="$(new_case_root unsafe-auth-directory)"
 add_release "$root" "$SHA_A"
@@ -605,7 +650,42 @@ case "$output" in
   *dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd*)
     fail 'auth verifier leaked in deployment error output' ;;
 esac
-assert_log_not_contains 'docker compose'
+assert_log_not_contains 'config --quiet'
+assert_log_not_contains ' build --pull relay'
+assert_log_not_contains ' up -d '
+
+root="$(new_case_root comment-spoofed-compatibility)"
+add_release "$root" "$SHA_A"
+printf '%s\n' \
+  'services:' \
+  '  relay:' \
+  '    image: example.invalid/relay' \
+  '    # CLICK_BRIDGE_SECRETS_FILE' \
+  '    # /opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
+  > "$root/releases/$SHA_A/deploy/oci/compose.yaml"
+printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":1,"activePhoneVerifier":"abababababababababababababababababababababababababababababababab"}' > "$root/shared/auth/phone-auth.json"
+chmod 600 "$root/shared/auth/phone-auth.json"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'comment-spoofed pairing compatibility unexpectedly succeeded'
+fi
+
+root="$(new_case_root unrelated-service-spoofed-compatibility)"
+add_release "$root" "$SHA_A"
+printf '%s\n' \
+  'services:' \
+  '  relay:' \
+  '    image: example.invalid/relay' \
+  '  decoy:' \
+  '    env_file:' \
+  '      - ${CLICK_BRIDGE_SECRETS_FILE}' \
+  '    volumes:' \
+  '      - /opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
+  > "$root/releases/$SHA_A/deploy/oci/compose.yaml"
+printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":1,"activePhoneVerifier":"acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac"}' > "$root/shared/auth/phone-auth.json"
+chmod 600 "$root/shared/auth/phone-auth.json"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'unrelated-service pairing compatibility unexpectedly succeeded'
+fi
 
 root="$(new_case_root rollback-refused-after-rotation)"
 add_release "$root" "$SHA_A"
@@ -622,7 +702,7 @@ case "$output" in
   *'automatic rollback refused: prior release is pairing-incompatible'*) ;;
   *) fail 'rollback incompatibility was not reported' ;;
 esac
-assert_log_not_contains "release=$SHA_A docker compose"
+assert_log_not_contains "release=$SHA_A docker compose -p oci --env-file $root/shared/secrets.env -f $root/releases/$SHA_A/deploy/oci/compose.yaml up"
 case "$output" in
   *eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee*)
     fail 'auth verifier leaked while refusing rollback' ;;

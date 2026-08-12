@@ -33,10 +33,62 @@ path_mode() {
 
 release_supports_phone_auth_record() {
   local directory
+  local rendered
   directory="$(release_directory "$1")"
-  grep -Fq 'CLICK_BRIDGE_SECRETS_FILE' "$directory/deploy/oci/compose.yaml" &&
-    grep -Fq '/opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
-      "$directory/deploy/oci/compose.yaml"
+  rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
+    -p "${COMPOSE_PROJECT_NAME}-compat-check" \
+    --env-file "$SHARED_ENV" \
+    -f "$directory/deploy/oci/compose.yaml" \
+    config relay 2>/dev/null)" || return 1
+  [[ "$(grep -Ec '^[[:space:]]+x-click-bridge-pairing-auth-contract: 1$' <<< "$rendered")" = 1 ]] &&
+    [[ "$(grep -Ec '^[[:space:]]+PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json$' <<< "$rendered")" = 1 ]] &&
+    [[ "$(grep -Fc "source: $AUTH_DIRECTORY" <<< "$rendered")" = 1 ]] &&
+    [[ "$(grep -Fc 'target: /var/lib/click-bridge/auth' <<< "$rendered")" = 1 ]] &&
+    [[ "$(grep -Fc 'type: bind' <<< "$rendered")" = 1 ]]
+}
+
+validate_secret_schema() {
+  local pairing_enabled=''
+  local key
+  local line
+  local line_number=0
+  local phone_token_count=0
+  local mac_token_count=0
+  local domain_count=0
+  local pairing_count=0
+  local record_count=0
+  local team_count=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ((line_number += 1))
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=([^[:space:]]*)$ ]] ||
+      die "$SHARED_ENV has an invalid line at $line_number"
+    key="${BASH_REMATCH[1]}"
+    case "$key" in
+      PHONE_TOKEN) ((phone_token_count += 1)); ((phone_token_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      MAC_TOKEN) ((mac_token_count += 1)); ((mac_token_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      CLICK_BRIDGE_DOMAIN) ((domain_count += 1)); ((domain_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      PAIRING_ENABLED) ((pairing_count += 1)); ((pairing_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      PHONE_AUTH_RECORD) ((record_count += 1)); ((record_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      APPLE_TEAM_ID) ((team_count += 1)); ((team_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      *) die "$SHARED_ENV contains an unexpected key" ;;
+    esac
+    [[ "$key" != PAIRING_ENABLED ]] || pairing_enabled="${BASH_REMATCH[2]}"
+  done < "$SHARED_ENV"
+  [[ "$phone_token_count" = 1 ]] || die "$SHARED_ENV must define PHONE_TOKEN exactly once"
+  [[ "$mac_token_count" = 1 ]] || die "$SHARED_ENV must define MAC_TOKEN exactly once"
+  [[ "$domain_count" = 1 ]] || die "$SHARED_ENV must define CLICK_BRIDGE_DOMAIN exactly once"
+  [[ "$pairing_count" = 1 ]] || die "$SHARED_ENV must define PAIRING_ENABLED exactly once"
+  [[ "$record_count" = 1 ]] || die "$SHARED_ENV must define PHONE_AUTH_RECORD exactly once"
+  [[ "$pairing_enabled" = 0 || "$pairing_enabled" = 1 ]] ||
+    die 'PAIRING_ENABLED must be exactly 0 or 1'
+  if [[ "$pairing_enabled" = 1 ]]; then
+    [[ "$team_count" = 1 ]] ||
+      die "$SHARED_ENV must define APPLE_TEAM_ID exactly once when pairing is enabled"
+  else
+    [[ "$team_count" = 0 ]] ||
+      die 'APPLE_TEAM_ID is only allowed when pairing is enabled'
+  fi
 }
 
 phone_auth_record_is_rotated_or_uncertain() {
@@ -184,10 +236,7 @@ PHONE_AUTH_RECORD_HOST="$AUTH_DIRECTORY/phone-auth.json"
 [[ -f "$SHARED_ENV" ]] || die "missing $SHARED_ENV"
 [[ ! -L "$SHARED_ENV" ]] || die 'shared secrets file cannot be a symlink'
 [[ "$(secret_file_mode)" = 600 ]] || die "$SHARED_ENV must have mode 0600"
-for required_key in PHONE_TOKEN MAC_TOKEN CLICK_BRIDGE_DOMAIN PAIRING_ENABLED PHONE_AUTH_RECORD; do
-  [[ "$(grep -c "^${required_key}=" "$SHARED_ENV")" = 1 ]] ||
-    die "$SHARED_ENV must define $required_key exactly once"
-done
+validate_secret_schema
 CLICK_BRIDGE_DOMAIN="$(sed -n 's/^CLICK_BRIDGE_DOMAIN=//p' "$SHARED_ENV")"
 PHONE_TOKEN="$(sed -n 's/^PHONE_TOKEN=//p' "$SHARED_ENV")"
 MAC_TOKEN="$(sed -n 's/^MAC_TOKEN=//p' "$SHARED_ENV")"
@@ -201,8 +250,6 @@ PHONE_AUTH_RECORD_CONTAINER="$(sed -n 's/^PHONE_AUTH_RECORD=//p' "$SHARED_ENV")"
 [[ "$PHONE_AUTH_RECORD_CONTAINER" = /var/lib/click-bridge/auth/phone-auth.json ]] ||
   die 'PHONE_AUTH_RECORD must use the persistent container path'
 if [[ "$PAIRING_ENABLED" = 1 ]]; then
-  [[ "$(grep -c '^APPLE_TEAM_ID=' "$SHARED_ENV")" = 1 ]] ||
-    die "$SHARED_ENV must define APPLE_TEAM_ID exactly once when pairing is enabled"
   APPLE_TEAM_ID="$(sed -n 's/^APPLE_TEAM_ID=//p' "$SHARED_ENV")"
   [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'APPLE_TEAM_ID is invalid'
 fi
