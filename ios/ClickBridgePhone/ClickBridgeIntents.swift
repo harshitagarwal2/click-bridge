@@ -2,7 +2,7 @@ import AppIntents
 
 struct TriggerClickIntent: AppIntent {
     static let title: LocalizedStringResource = "Trigger 3 Clicks"
-    static let description = IntentDescription("Open Click Bridge and send three ordinary clicks to the connected Mac.")
+    static let description = IntentDescription("Open Click Bridge and send three ordinary clicks to the connected computer.")
     static var openAppWhenRun: Bool { true }
 
     @MainActor

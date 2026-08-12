@@ -1,0 +1,20 @@
+{
+  "_comment": "Canonical cross-language runtime values. The JS relay/PWA read these from public/runtime-constants.js and public/wire-protocol.js; the Swift client hand-mirrors them in PhoneWireProtocol.swift. Both sides assert against this file so a one-sided edit fails a build instead of silently changing one client's behaviour. Durations are milliseconds; the Swift mirror stores some as seconds and its test converts.",
+  "heartbeatIntervalMs": 20000,
+  "heartbeatTimeoutMs": 10000,
+  "clockSkewToleranceMs": 1000,
+  "clockHealthSamples": 5,
+  "clockHealthExchangeTimeoutMs": 3500,
+  "clockHealthRefreshMs": 300000,
+  "phoneResultTimeoutMs": 4000,
+  "phoneReconnectBaseMs": 250,
+  "phoneReconnectCapMs": 8000,
+  "actionLifetimeMs": 2000,
+  "maxMessageBytes": 4096,
+  "protocolVersion": 1,
+  "pairingVersion": 1,
+  "pairingTtlMs": 300000,
+  "phoneTakenOverCloseCode": 4004,
+  "authenticationRejectedCloseCode": 4005,
+  "credentialReplacedCloseCode": 4006
+}

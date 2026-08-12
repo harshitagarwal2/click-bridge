@@ -38,6 +38,20 @@ final class PhonePendingAuthenticatorTests: XCTestCase {
         XCTAssertEqual(transport.disconnectReasons, ["pending_authentication_rejected"])
     }
 
+    func testCredentialReplacementIsAnAuthoritativeRejection() async {
+        let transport = FakePhoneActionTransport()
+        let subject = PhonePendingAuthenticator(transport: transport)
+
+        let task = Task { await subject.authenticate(configuration) }
+        await Task.yield()
+        transport.emit(.connection(generation: transport.generation, state: .credentialReplaced))
+
+        let result = await task.value
+        XCTAssertEqual(result, .rejected)
+        XCTAssertTrue(transport.sendAttempts.isEmpty)
+        XCTAssertEqual(transport.disconnectReasons, ["pending_authentication_rejected"])
+    }
+
     func testInternalErrorBackoffIsUnavailableRatherThanCredentialRejection() async {
         let transport = FakePhoneActionTransport()
         let subject = PhonePendingAuthenticator(transport: transport)

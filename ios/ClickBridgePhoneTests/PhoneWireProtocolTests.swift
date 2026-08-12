@@ -48,6 +48,54 @@ final class PhoneWireProtocolTests: XCTestCase {
         }
     }
 
+    /// PhoneWireProtocol.swift is a hand-written mirror of the JavaScript
+    /// runtime constants — Swift cannot import them. Message *shapes* were
+    /// already protected by the shared fixture corpus, but the *values* were
+    /// not, so editing a timeout on the JS side and forgetting Swift would
+    /// silently leave this client on a different schedule with every test green.
+    ///
+    /// The JS side asserts against the same file in
+    /// relay/test/runtime-constants-parity.test.js.
+    func testRuntimeConstantsMatchSharedFixture() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: Self.self).url(forResource: "runtime-constants", withExtension: "json"))
+        let data = try Data(contentsOf: url)
+        let canonical = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        func expect(_ key: String) throws -> Double {
+            let value = try XCTUnwrap(canonical[key] as? NSNumber, "missing \(key)")
+            return value.doubleValue
+        }
+
+        // Stored in Swift as seconds; the fixture is canonical milliseconds.
+        XCTAssertEqual(PhoneProtocolV1.heartbeatInterval, try expect("heartbeatIntervalMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.heartbeatTimeout, try expect("heartbeatTimeoutMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.resultTimeout, try expect("phoneResultTimeoutMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.reconnectBase, try expect("phoneReconnectBaseMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.reconnectCap, try expect("phoneReconnectCapMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.clockExchangeTimeout,
+                       try expect("clockHealthExchangeTimeoutMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.clockRefreshInterval,
+                       try expect("clockHealthRefreshMs") / 1000)
+        XCTAssertEqual(PhoneProtocolV1.pairingTTL, try expect("pairingTtlMs") / 1000)
+
+        // Stored in the same unit as the fixture.
+        XCTAssertEqual(PhoneProtocolV1.clockSkewToleranceMilliseconds,
+                       try expect("clockSkewToleranceMs"))
+        XCTAssertEqual(PhoneProtocolV1.actionLifetimeMilliseconds, try expect("actionLifetimeMs"))
+        XCTAssertEqual(Double(PhoneProtocolV1.clockSampleCount), try expect("clockHealthSamples"))
+        XCTAssertEqual(Double(PhoneProtocolV1.maximumMessageBytes), try expect("maxMessageBytes"))
+        XCTAssertEqual(Double(PhoneProtocolV1.version), try expect("protocolVersion"))
+        XCTAssertEqual(Double(PhoneProtocolV1.pairingVersion), try expect("pairingVersion"))
+        XCTAssertEqual(Double(PhoneProtocolV1.phoneTakenOverCloseCode),
+                       try expect("phoneTakenOverCloseCode"))
+        XCTAssertEqual(Double(PhoneProtocolV1.authenticationRejectedCloseCode),
+                       try expect("authenticationRejectedCloseCode"))
+        XCTAssertEqual(Double(PhoneProtocolV1.credentialReplacedCloseCode),
+                       try expect("credentialReplacedCloseCode"))
+    }
+
     func testCanonicalServerToPhoneFixturesDecode() throws {
         let fixtureNames = [
             "hello.ok", "heartbeat.ack", "state", "relay.ack", "relay.ack.mac-offline",

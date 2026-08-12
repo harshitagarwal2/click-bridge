@@ -64,11 +64,16 @@ Apple retires an image; do not silently follow the newest image during a release
 
 ## Version and TestFlight ownership
 
-Xcode Cloud supplies an increasing integer build number. The generated
-Info.plist now reads `$(CURRENT_PROJECT_VERSION)`, so that number reaches the
-archive. Before creating a release tag, update `MARKETING_VERSION` in
-`ios/project.yml` and regenerate the project; the Info.plist reads
-`$(MARKETING_VERSION)`.
+`Config/Version.xcconfig` owns the default marketing version and baseline build
+for both Apple apps. Update it once before creating the matching `vX.Y` or
+`vX.Y.Z` release tag. The generated Info.plist reads
+`$(MARKETING_VERSION)` and `$(CURRENT_PROJECT_VERSION)`.
+
+Xcode Cloud supplies its own increasing build number at higher build-setting
+precedence, so Cloud archives retain the shared marketing version while using
+the Cloud build identity. Record that processed build when dispatching App
+Store submission. The GitHub TestFlight fallback instead takes an explicit new
+build string and verifies each archive before upload.
 
 `ios/TestFlight/WhatToTest.en-US.txt` supplies the internal tester notes. Keep
 the filename and locale next to the selected Xcode project.
@@ -103,7 +108,7 @@ migrated.
 2. Confirm the GitHub commit shows the Xcode Cloud check and inspect the Cloud
    log for the XcodeGen version and checksum success.
 3. Run `Weekly - iOS confidence` manually once, then enable its schedule.
-4. Create an internal TestFlight group, bump the marketing version, and run
+4. Create an internal TestFlight group, bump the shared marketing version, and run
    `Release - TestFlight` manually before enabling the `v*` trigger.
 5. If the post-clone hook fails, reproduce with
    `ios/ci_scripts/ci_post_clone.sh` from a clean checkout. If an Xcode image

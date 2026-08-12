@@ -1,4 +1,5 @@
 require "shellwords"
+require "plist"
 
 default_platform(:ios)
 
@@ -12,6 +13,25 @@ private_lane :connect_api_key do
   )
 end
 
+private_lane :verify_archive_version do |options|
+  archive_path = options.fetch(:archive_path)
+  expected_version = options.fetch(:release_version)
+  expected_build = options.fetch(:build_number)
+  archive_plist_path = File.join(archive_path, "Info.plist")
+  archive_plist = Plist.parse_xml(archive_plist_path)
+  application = archive_plist&.fetch("ApplicationProperties", nil)
+  UI.user_error!("Archive metadata is missing from #{archive_plist_path}") unless application
+
+  actual_version = application["CFBundleShortVersionString"]&.to_s
+  actual_build = application["CFBundleVersion"]&.to_s
+  UI.user_error!(
+    "Archive version #{actual_version.inspect} does not match #{expected_version.inspect}"
+  ) unless actual_version == expected_version
+  UI.user_error!(
+    "Archive build #{actual_build.inspect} does not match #{expected_build.inspect}"
+  ) unless actual_build == expected_build
+end
+
 platform :ios do
   desc "Build and upload one signed build to TestFlight without distributing it"
   lane :upload_testflight do |options|
@@ -23,15 +43,6 @@ platform :ios do
     output_directory = ENV.fetch("RUNNER_TEMP")
     archive_path = File.join(output_directory, "ClickBridgePhone.xcarchive")
     output_path = File.join(output_directory, "ClickBridgePhone.ipa")
-
-    increment_version_number(
-      version_number: release_version,
-      xcodeproj: "ios/ClickBridgePhone.xcodeproj"
-    )
-    increment_build_number(
-      build_number: build_number,
-      xcodeproj: "ios/ClickBridgePhone.xcodeproj"
-    )
 
     build_app(
       project: "ios/ClickBridgePhone.xcodeproj",
@@ -51,11 +62,19 @@ platform :ios do
         }
       },
       xcargs: [
+        "MARKETING_VERSION=#{Shellwords.escape(release_version)}",
+        "CURRENT_PROJECT_VERSION=#{Shellwords.escape(build_number)}",
         "DEVELOPMENT_TEAM=#{Shellwords.escape(team_id)}",
         "CODE_SIGN_STYLE=Manual",
         "CODE_SIGN_IDENTITY=#{Shellwords.escape("Apple Distribution")}",
         "PROVISIONING_PROFILE_SPECIFIER=#{Shellwords.escape(profile_name)}"
       ].join(" ")
+    )
+
+    verify_archive_version(
+      archive_path: archive_path,
+      release_version: release_version,
+      build_number: build_number
     )
 
     upload_to_testflight(
@@ -105,15 +124,6 @@ platform :mac do
     output_directory = ENV.fetch("RUNNER_TEMP")
     archive_path = File.join(output_directory, "ClickBridgeMac.xcarchive")
 
-    increment_version_number(
-      version_number: release_version,
-      xcodeproj: "mac/ClickBridgeMac.xcodeproj"
-    )
-    increment_build_number(
-      build_number: build_number,
-      xcodeproj: "mac/ClickBridgeMac.xcodeproj"
-    )
-
     output_path = build_mac_app(
       project: "mac/ClickBridgeMac.xcodeproj",
       scheme: "ClickBridgeMac",
@@ -135,6 +145,8 @@ platform :mac do
         }
       },
       xcargs: [
+        "MARKETING_VERSION=#{Shellwords.escape(release_version)}",
+        "CURRENT_PROJECT_VERSION=#{Shellwords.escape(build_number)}",
         "DEVELOPMENT_TEAM=#{Shellwords.escape(team_id)}",
         "CODE_SIGN_STYLE=Manual",
         "CODE_SIGN_IDENTITY=#{Shellwords.escape("Apple Distribution")}",
@@ -143,6 +155,12 @@ platform :mac do
         "ENABLE_APP_SANDBOX=YES",
         "ENABLE_HARDENED_RUNTIME=YES"
       ].join(" ")
+    )
+
+    verify_archive_version(
+      archive_path: archive_path,
+      release_version: release_version,
+      build_number: build_number
     )
 
     upload_to_testflight(
@@ -156,6 +174,27 @@ platform :mac do
       distribute_external: false,
       notify_external_testers: false,
       uses_non_exempt_encryption: false
+    )
+  end
+
+  desc "Submit an already processed Mac App Store build for review"
+  lane :submit_app_store do |options|
+    release_version = options.fetch(:release_version)
+    build_number = options.fetch(:build_number)
+
+    deliver(
+      api_key: connect_api_key,
+      app_identifier: ENV.fetch("CLICK_BRIDGE_MAC_BUNDLE_ID", "com.clickbridge.mac"),
+      platform: "osx",
+      app_version: release_version,
+      build_number: build_number,
+      metadata_path: "fastlane/metadata",
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      submit_for_review: true,
+      automatic_release: false,
+      force: true,
+      precheck_include_in_app_purchases: false
     )
   end
 end

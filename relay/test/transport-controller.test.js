@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { TransportController } from '../public/transport-controller.js';
+import { CREDENTIAL_REPLACED_CLOSE_CODE } from '../public/wire-protocol.js';
 import { FakeScheduler, FakeSocket, VALID_TOKEN } from './pwa-test-helpers.js';
 
 const helloOk = JSON.stringify({ type: 'hello.ok', v: 1, role: 'phone' });
@@ -109,6 +110,24 @@ test('the close frame owns takeover semantics even when an error event arrives f
   assert.equal(controller.state, 'taken_over');
   scheduler.advance(60_000);
   assert.equal(sockets.length, 1);
+});
+
+test('credential replacement stays terminal and distinct across automatic reconnect attempts', () => {
+  const { controller, scheduler, sockets, statuses, authenticate } = harness();
+  authenticate();
+
+  sockets[0].serverClose(CREDENTIAL_REPLACED_CLOSE_CODE, 'credential_replaced');
+
+  assert.equal(controller.ready, false);
+  assert.equal(controller.state, 'credential_replaced');
+  assert.equal(statuses.at(-1).reason, 'credential_replaced');
+  scheduler.advance(60_000);
+  assert.equal(sockets.length, 1, 'a dead credential never auto-reconnects');
+
+  controller.connect();
+  assert.equal(sockets.length, 1, 'automatic lifecycle connect cannot revive a dead credential');
+  assert.equal(controller.state, 'credential_replaced',
+    'automatic lifecycle connect must not reclassify credential replacement as takeover');
 });
 
 test('the dedicated unauthenticated close is an exact terminal authentication rejection', () => {

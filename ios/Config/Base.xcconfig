@@ -1,3 +1,7 @@
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = EC3R6XQ226
 #include? "Local.xcconfig"
+
+// Version ownership is shared across both apps and cannot be shadowed by a
+// local signing override.
+#include "../../Config/Version.xcconfig"

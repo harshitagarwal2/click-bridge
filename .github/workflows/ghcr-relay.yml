@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing vX.Y.Z tag that must point at the dispatched commit
+        description: Existing vX.Y or vX.Y.Z tag that must point at the dispatched commit
         required: true
         type: string
 
@@ -96,7 +96,7 @@ jobs:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -Eeuo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]
           test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "$EVENT_SHA"
           owner="$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"

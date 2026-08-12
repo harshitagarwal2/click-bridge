@@ -282,6 +282,10 @@ export function createHttpHandler({
   clickBridgeDomain,
   pairingEnabled = false,
   appleTeamId,
+  // Injected because the auth store lives in createServer's scope, not here.
+  // Returns a closed status value; the HTTP boundary owns all response text so
+  // auth-store errors (which can include record paths) are never reflected.
+  probePairingReadiness = () => 'unavailable',
 }) {
   const securityHeaders = createSecurityHeaders(clickBridgeDomain);
   return async function handleHttp(req, res) {
@@ -298,6 +302,11 @@ export function createHttpHandler({
       return;
     }
     if (pathname === '/healthz') {
+      // Liveness ONLY, and deliberately so. The container healthcheck uses this
+      // and Caddy gates on `condition: service_healthy`, so making it depend on
+      // a subsystem would turn a partial failure into a total outage — a
+      // poisoned auth store breaks pairing while clicking still works fine.
+      // Subsystem status lives at /readyz instead.
       const body = req.method === 'HEAD' ? '' : 'ok';
       writeResponse(res, 200, {
         ...securityHeaders,
@@ -305,6 +314,40 @@ export function createHttpHandler({
         'Content-Length': 2,
         'Cache-Control': 'no-store',
       }, body);
+      return;
+    }
+    if (pathname === '/readyz') {
+      // Diagnostic surface, NOT wired to the container healthcheck (see above).
+      // Exists because a poisoned auth store wedges pairing permanently while
+      // every other signal stays green, which previously left no way to tell
+      // that apart from "pairing is being flaky".
+      let pairingReady = true;
+      let pairingDetail = 'disabled';
+      if (pairingEnabled) {
+        let pairingStatus;
+        try {
+          pairingStatus = probePairingReadiness();
+        } catch {
+          pairingStatus = 'unavailable';
+        }
+        if (!['ok', 'persistence_failed', 'unavailable'].includes(pairingStatus)) {
+          pairingStatus = 'unavailable';
+        }
+        pairingReady = pairingStatus === 'ok';
+        pairingDetail = pairingStatus === 'persistence_failed'
+          ? 'persistence_failed: restart the relay container'
+          : pairingStatus;
+      }
+      const payload = Buffer.from(JSON.stringify({
+        live: true,
+        pairing: { ready: pairingReady, detail: pairingDetail },
+      }));
+      writeResponse(res, pairingReady ? 200 : 503, {
+        ...securityHeaders,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': payload.byteLength,
+        'Cache-Control': 'no-store',
+      }, req.method === 'HEAD' ? '' : payload);
       return;
     }
     if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web')) {
@@ -694,6 +737,9 @@ export function attachWebSocketServer({
         clearTimeout(authTimer);
         admission.releaseUnauthenticated();
         generation += 1;
+        // Frozen connection identity. `role`, `generation`, and
+        // `credentialVersion` are read by pairing.js via phoneSnapshot();
+        // renaming them there silently fails reconciliation closed.
         connection = Object.freeze({
           id: ++nextConnectionId,
           role,
@@ -961,6 +1007,13 @@ export function createServer({
     log.info?.(JSON.stringify({ event, ...detail }));
   };
   let state;
+  /**
+   * Revoke every phone still holding a superseded credential version.
+   * The returned objects keep the `{connection, generation,
+   * credentialVersion}` consumer contract validated by pairing.js's
+   * phoneSnapshot().
+   * @returns {Array<{connection: object, generation: number, credentialVersion: number}>}
+   */
   const deauthorizeOlderPhones = ({ credentialVersion, exclude }) => {
     const older = [];
     for (const connection of [...authorizedPhones]) {
@@ -1005,6 +1058,14 @@ export function createServer({
     clickBridgeDomain,
     pairingEnabled: pairingIsEnabled,
     appleTeamId,
+    probePairingReadiness: () => {
+      try {
+        credentialStore.snapshot();
+        return 'ok';
+      } catch (error) {
+        return error?.code === 'persistence_failed' ? 'persistence_failed' : 'unavailable';
+      }
+    },
   }));
   httpServer.on('connection', (socket) => socket.setNoDelay?.(true));
   const attachment = attachWebSocketServer({

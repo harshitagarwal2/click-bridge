@@ -17,7 +17,10 @@ enum PhoneProtocolV1 {
     static let clockSkewToleranceMilliseconds: Double = 1_000
     static let pairingVersion = 1
     static let pairingTTL: TimeInterval = 300
-    static let credentialReplacedCloseCode = 4_004
+    // Deliberately NOT phoneTakenOverCloseCode: a takeover is reclaimable by
+    // reconnecting, a replaced credential is not. Sharing one value made the UI
+    // offer a reclaim button that could only fail authentication.
+    static let credentialReplacedCloseCode = 4_006
     static let credentialReplacedCloseReason = "credential_replaced"
 }
 

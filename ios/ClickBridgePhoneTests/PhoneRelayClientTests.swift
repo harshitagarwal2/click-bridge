@@ -145,6 +145,45 @@ final class PhoneRelayClientTests: XCTestCase {
         XCTAssertEqual(factory.sockets.count, 2)
     }
 
+    /// A takeover is reclaimable; a replaced credential is not. While both used
+    /// close code 4004 the UI could not tell them apart, and offered the
+    /// displaced-phone reclaim button to a phone whose credential was dead —
+    /// a button that could only ever fail authentication.
+    func testCredentialReplacedCloseIsTerminalAndDistinctFromTakeover() {
+        XCTAssertNotEqual(PhoneProtocolV1.credentialReplacedCloseCode,
+                          PhoneProtocolV1.phoneTakenOverCloseCode,
+                          "the two terminal causes must be distinguishable on the wire")
+
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(factory: factory, scheduler: scheduler, randomUnit: { 0.5 })
+        var events: [PhoneTransportEvent] = []
+        subject.onEvent = { events.append($0) }
+        subject.connect(configuration: configuration)
+
+        factory.sockets[0].emitClose(code: PhoneProtocolV1.credentialReplacedCloseCode)
+
+        XCTAssertTrue(scheduler.entries.isEmpty, "a dead credential must not schedule a reconnect")
+        XCTAssertEqual(factory.sockets.count, 1)
+        XCTAssertEqual(events.last,
+                       .connection(generation: subject.generation, state: .credentialReplaced))
+    }
+
+    /// The reclaim affordance is gated on `phoneTakenOver`, so a replaced
+    /// credential must not satisfy it.
+    func testReplacedCredentialDoesNotOfferTheTakeoverReclaim() {
+        var state = PhoneState()
+
+        state.connection = .takenOver
+        XCTAssertTrue(state.phoneTakenOver)
+        XCTAssertEqual(state.primaryStatus, .anotherPhoneTookOver)
+
+        state.connection = .credentialReplaced
+        XCTAssertFalse(state.phoneTakenOver, "would render an impossible reclaim button")
+        XCTAssertTrue(state.credentialReplaced)
+        XCTAssertEqual(state.primaryStatus, .credentialReplaced)
+    }
+
     func testAuthenticationRejectedCloseIsTerminalAndDistinctFromInternalBackoff() {
         let rejectedFactory = FakePhoneWebSocketFactory()
         let rejectedScheduler = FakePhoneScheduler()

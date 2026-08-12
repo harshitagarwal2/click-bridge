@@ -104,11 +104,13 @@
 		E782BEC5296864887608EB05 /* hello.phone.json in Resources */ = {isa = PBXBuildFile; fileRef = 85254040287679459F0BB3FE /* hello.phone.json */; };
 		E7DFE1A7B3FCDAD2852F574E /* pair.status.request.json in Resources */ = {isa = PBXBuildFile; fileRef = E986F309E9743D931BBBA198 /* pair.status.request.json */; };
 		E8A5F6FAC6B4AD0B57DF1613 /* pair.credential.json in Resources */ = {isa = PBXBuildFile; fileRef = 456234DCD65A7AC3095D8DF8 /* pair.credential.json */; };
+		E8FEEA7B3BD5311F08E2F18C /* runtime-constants.json in Resources */ = {isa = PBXBuildFile; fileRef = C0817A6D22EB57F260F83894 /* runtime-constants.json */; };
 		E94CA166F787E72B23FAA29E /* relay.ack.mac-offline.json in Resources */ = {isa = PBXBuildFile; fileRef = CEBF6F30A4C9A76B8E3AA455 /* relay.ack.mac-offline.json */; };
 		EA819009053B7A02386083A7 /* pair.deny.json in Resources */ = {isa = PBXBuildFile; fileRef = 3981B3583FA4C2E9BE4D1937 /* pair.deny.json */; };
 		ED9DA4936B6A1AE8CB46AEF0 /* pair-status-legacy-version-mismatch.json in Resources */ = {isa = PBXBuildFile; fileRef = 305EE87B90D2918B1F2D4F1A /* pair-status-legacy-version-mismatch.json */; };
 		EF5B6A6A4D425DD4010CB142 /* pair-bad-nonce.json in Resources */ = {isa = PBXBuildFile; fileRef = 58245E1F0524FE1EBA7634E9 /* pair-bad-nonce.json */; };
 		F2CBED067392EA876634C027 /* diagnostics.request.json in Resources */ = {isa = PBXBuildFile; fileRef = B946FCA4D59F52C0616A44A2 /* diagnostics.request.json */; };
+		F68273FED8483E13950A8F1A /* deployment.json in Resources */ = {isa = PBXBuildFile; fileRef = E0E09F53D643BB4385F0C93F /* deployment.json */; };
 		FC908E1F6B80FCFFA54896B9 /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = 751FF4BD78E51CB183F13C80 /* unknown-field.json */; };
 		FDCCFE8684EE3A2FD7D990E9 /* PhonePairingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49020C69B60D737CD8002906 /* PhonePairingClient.swift */; };
 		FE0FEEEA8FDF119CE0478AAB /* SettingsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169735BA84EA671F01741E8A /* SettingsPresentationTests.swift */; };
@@ -208,6 +210,7 @@
 		BF07268125B159D52DFE9FB0 /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
 		BFFF82FB37CD389C962FD8F0 /* mac.state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mac.state.json; sourceTree = "<group>"; };
 		C05DFA96B235B723E6BA1476 /* diagnostics.counters.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.counters.json; sourceTree = "<group>"; };
+		C0817A6D22EB57F260F83894 /* runtime-constants.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "runtime-constants.json"; sourceTree = "<group>"; };
 		C0DAB7B7A3B85BFF793CCE7D /* ProductionWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionWiringTests.swift; sourceTree = "<group>"; };
 		C0E9717BF1CD2631C085B786 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		C15E535E885EE67A070ADC46 /* ClickBridgePhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ClickBridgePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -222,6 +225,7 @@
 		D8E538BA6E6926E8854D2845 /* hello.ok.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.mac.json; sourceTree = "<group>"; };
 		DB2B3B08EFF39083A3A2BB5D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		DE0A11477A2D44D30BB14D66 /* time.sync.response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.response.json; sourceTree = "<group>"; };
+		E0E09F53D643BB4385F0C93F /* deployment.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = deployment.json; sourceTree = "<group>"; };
 		E24E6ECB379D94CEAE69CC0C /* StrictPhoneWireDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictPhoneWireDecoder.swift; sourceTree = "<group>"; };
 		E27D9D36416B5A1D8FC4332E /* relay.ack.rejected-expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-expired.json"; sourceTree = "<group>"; };
 		E2828D53B5D1942DBF5C84B3 /* PairingLinkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLinkTests.swift; sourceTree = "<group>"; };
@@ -355,6 +359,7 @@
 		9826F3614056D3C23786CDAC /* contracts */ = {
 			isa = PBXGroup;
 			children = (
+				E4435DD1A06BA84FF136DEC7 /* config */,
 				44C2BB635DB5EF19C7D38055 /* fixtures */,
 			);
 			name = contracts;
@@ -411,6 +416,16 @@
 				2995194A5DDCFFBE8D7CF01B /* VolumeDeltaControllerTests.swift */,
 			);
 			path = ClickBridgePhoneTests;
+			sourceTree = "<group>";
+		};
+		E4435DD1A06BA84FF136DEC7 /* config */ = {
+			isa = PBXGroup;
+			children = (
+				E0E09F53D643BB4385F0C93F /* deployment.json */,
+				C0817A6D22EB57F260F83894 /* runtime-constants.json */,
+			);
+			name = config;
+			path = ../contracts/config;
 			sourceTree = "<group>";
 		};
 		FA295FE26BFB877572240796 /* TestFlight */ = {
@@ -524,6 +539,7 @@
 				4CBED6C7197F50D2BF98CB92 /* action.result.rejected.json in Resources */,
 				E584582F8DB28E27F007400E /* action.result.rejected.permission-required.json in Resources */,
 				6DDFF552CBCB6AB8E94447A8 /* binary-descriptor.json in Resources */,
+				F68273FED8483E13950A8F1A /* deployment.json in Resources */,
 				73063C94241699EE3C6F4DAE /* diagnostics.counters.json in Resources */,
 				F2CBED067392EA876634C027 /* diagnostics.request.json in Resources */,
 				5D403F9B78978E0378868028 /* heartbeat.ack.json in Resources */,
@@ -574,6 +590,7 @@
 				E94CA166F787E72B23FAA29E /* relay.ack.mac-offline.json in Resources */,
 				654C418AC03B36B6C44C25BE /* relay.ack.rejected-expired.json in Resources */,
 				0FBF3EAC572CE4CCBAFE6CCD /* relay.ack.rejected-invalid-request.json in Resources */,
+				E8FEEA7B3BD5311F08E2F18C /* runtime-constants.json in Resources */,
 				0B0A468E6F044773E1F8A718 /* state.json in Resources */,
 				B5E3EC7E4794784C7862097F /* time.sync.request.json in Resources */,
 				520E5D8A70E1E7413CCD929F /* time.sync.response.json in Resources */,
@@ -717,7 +734,6 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -730,7 +746,6 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -810,7 +825,6 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -829,7 +843,6 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

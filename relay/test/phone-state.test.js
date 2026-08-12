@@ -47,7 +47,8 @@ test('phone takeover is terminal across lifecycle reconnects until the token is 
   );
   assert.equal(phaseOf(s), PHASE.TAKEN_OVER);
   assert.equal(view(s).enabled, false);
-  assert.equal(view(s).status, 'This browser was replaced. Pair again to reconnect.');
+  // A takeover IS reclaimable, so the copy must not send the user to pairing.
+  assert.equal(view(s).status, 'Another device took over. Reload this page to take control back.');
 
   s = reduce(s, { type: 'visibility', visible: false });
   s = reduce(s, { type: 'visibility', visible: true });
@@ -55,6 +56,39 @@ test('phone takeover is terminal across lifecycle reconnects until the token is 
 
   s = reduce(s, { type: 'token.set', token: '1'.repeat(64) });
   assert.equal(phaseOf(s), PHASE.CONNECTING, 'saving the token is an explicit takeover action');
+});
+
+test('a replaced credential is a distinct terminal state from a takeover', () => {
+  const base = apply(initialState(),
+    { type: 'token.set', token: '1'.repeat(64) },
+    { type: 'transport.open' },
+  );
+
+  const replaced = reduce(base, { type: 'transport.credential_replaced' });
+  const takenOver = reduce(base, { type: 'transport.taken_over' });
+
+  assert.equal(phaseOf(replaced), PHASE.CREDENTIAL_REPLACED);
+  assert.equal(phaseOf(takenOver), PHASE.TAKEN_OVER);
+  assert.notEqual(phaseOf(replaced), phaseOf(takenOver),
+    'sharing one phase is what made the UI offer an impossible reclaim');
+  assert.equal(view(replaced).enabled, false);
+
+  // Only the replaced credential tells the user to pair again — reconnecting
+  // with a dead credential would just fail authentication.
+  assert.equal(view(replaced).status, 'This browser was un-paired. Pair again to reconnect.');
+
+  // Terminal across the lifecycle, exactly like takeover.
+  let s = reduce(replaced, { type: 'visibility', visible: false });
+  s = reduce(s, { type: 'visibility', visible: true });
+  assert.equal(phaseOf(s), PHASE.CREDENTIAL_REPLACED, 'visibility does not revive a dead credential');
+
+  // An in-flight action is resolved as unknown with its own reason.
+  const inFlight = apply(base,
+    { type: 'action.sent', actionId: ID },
+    { type: 'transport.credential_replaced' },
+  );
+  assert.equal(inFlight.action, null);
+  assert.equal(inFlight.last.reason, 'credential_replaced');
 });
 
 test('mac offline', () => {

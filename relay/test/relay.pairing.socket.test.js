@@ -1,10 +1,13 @@
 import { createHmac } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
 import { WebSocket } from 'ws';
 
-import { PROTOCOL_VERSION } from '../src/constants.js';
+import { CREDENTIAL_REPLACED_CLOSE_CODE, PROTOCOL_VERSION } from '../src/constants.js';
 import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
 import { parseClientMessage } from '../src/protocol.js';
 import { createServer } from '../src/server.js';
@@ -21,6 +24,10 @@ const STATUS_ID = '018f63f5-6f3d-7d21-88bc-9ef561f030e0';
 const CLAIM_ID = '018f63f5-6f3d-7d21-88bc-9ef561f030e2';
 const NONCE = 'b'.repeat(64);
 const silent = { info() {} };
+const deployment = JSON.parse(readFileSync(join(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../contracts/config/deployment.json',
+), 'utf8'));
 
 function authStore() {
   let version = 0;
@@ -238,7 +245,7 @@ test('enabled PWA routes expose pairing without duplicating the canonical index'
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.deepEqual(await response.json(), {
       applinks: { details: [{
-        appIDs: [`${TEAM_ID}.com.clickbridge.phone`],
+        appIDs: [`${TEAM_ID}.${deployment.bundleId}`],
         components: [{ '/': '/pair/web', exclude: true }, { '/': '/pair' }],
       }] },
     });
@@ -473,7 +480,7 @@ test('full pairing uses a dedicated claimant socket and rotates only after ackno
     });
     await claimant.wait((message) => message.type === 'pair.active');
     await mac.wait((message) => message.type === 'pair.completed');
-    assert.equal(await beforeAck.closed(), 4004);
+    assert.equal(await beforeAck.closed(), CREDENTIAL_REPLACED_CLOSE_CODE);
 
     const oldRejected = peer(url);
     await oldRejected.open();
@@ -531,8 +538,70 @@ test('a phone authenticated while activation is pending is revoked before queued
 
     await claimant.wait((message) => message.type === 'pair.active');
     await mac.wait((message) => message.type === 'pair.completed');
-    assert.equal(await lateOldPhone.closed(), 4004);
+    assert.equal(await lateOldPhone.closed(), CREDENTIAL_REPLACED_CLOSE_CODE);
     assert.equal(claimant.inbox.some((message) => message.type === 'pair.failed'), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('readyz reports a poisoned auth store that healthz cannot see', async () => {
+  // The container healthcheck uses /healthz and Caddy gates on
+  // `condition: service_healthy`, so /healthz must stay pure liveness — a
+  // poisoned auth store breaks pairing while clicking still works, and failing
+  // liveness would escalate that into a total outage. /readyz is the surface
+  // that can tell the two apart.
+  let poisoned = false;
+  const store = authStore();
+  const base = store.snapshot.bind(store);
+  store.snapshot = () => {
+    if (poisoned) {
+      const error = new Error('phone auth store unavailable');
+      error.code = 'persistence_failed';
+      throw error;
+    }
+    return base();
+  };
+
+  const { server, base: origin } = await boot({ authStore: store });
+  try {
+    const healthy = await fetch(`${origin}/readyz`);
+    assert.equal(healthy.status, 200);
+    assert.deepEqual(await healthy.json(), {
+      live: true, pairing: { ready: true, detail: 'ok' },
+    });
+
+    poisoned = true;
+
+    const live = await fetch(`${origin}/healthz`);
+    assert.equal(live.status, 200, 'liveness must survive a pairing-only failure');
+    assert.equal(await live.text(), 'ok');
+
+    const ready = await fetch(`${origin}/readyz`);
+    assert.equal(ready.status, 503);
+    const body = await ready.json();
+    assert.equal(body.pairing.ready, false);
+    assert.match(body.pairing.detail, /restart the relay container/);
+    assert.equal(body.pairing.detail.includes('phone auth store unavailable'), false,
+      'must not echo internal error text, which can carry record paths');
+  } finally {
+    await server.close();
+  }
+});
+
+test('readyz fails closed when the configured auth store cannot be probed', async () => {
+  const store = authStore();
+  delete store.snapshot;
+  const { server, base: origin } = await boot({ authStore: store });
+  try {
+    const ready = await fetch(`${origin}/readyz`);
+    assert.equal(ready.status, 503);
+    assert.deepEqual(await ready.json(), {
+      live: true, pairing: { ready: false, detail: 'unavailable' },
+    });
+
+    const live = await fetch(`${origin}/healthz`);
+    assert.equal(live.status, 200, 'an invalid readiness probe must not change liveness');
   } finally {
     await server.close();
   }

@@ -268,7 +268,7 @@ final class PhoneAppModel {
 
         settings.relayURLString = configuration.url.absoluteString
         state.issue = nil
-        if state.phoneTakenOver { state.connection = .disconnected }
+        if state.blocksAutomaticReconnect { state.connection = .disconnected }
         if foregroundGeneration != nil {
             endForegroundSession(reason: "settings_changed")
             startForegroundSession()
@@ -303,7 +303,7 @@ final class PhoneAppModel {
         connectTransport: Bool = true,
         configurationOverride: RelayConfiguration? = nil
     ) {
-        guard !state.phoneTakenOver else { return }
+        guard !state.blocksAutomaticReconnect else { return }
         let configuration: RelayConfiguration
         if let configurationOverride {
             configuration = configurationOverride
@@ -366,6 +366,7 @@ final class PhoneAppModel {
         switch newState.phase {
         case .active:
             pairingAttempt = nil
+            clearTerminalConnectionForPromotedCredential()
             guard sceneIsActive, pairingRecoveryTask == nil else { return }
             startForegroundSession(connectTransport: false)
         case .cancelled, .failed, .replaced:
@@ -407,6 +408,7 @@ final class PhoneAppModel {
             if result == .recovered {
                 pairingAttempt = nil
                 pairingState = .init(phase: .active)
+                clearTerminalConnectionForPromotedCredential()
                 startForegroundSession(connectTransport: false)
             } else if result == .noPending || result == .superseded {
                 if let attempt = pairingAttempt {
@@ -418,6 +420,12 @@ final class PhoneAppModel {
             } else {
                 pairingDidChange(.init(phase: .failed, failure: "pending_recovery_failed"))
             }
+        }
+    }
+
+    private func clearTerminalConnectionForPromotedCredential() {
+        if state.blocksAutomaticReconnect {
+            state.connection = .disconnected
         }
     }
 
@@ -443,7 +451,7 @@ final class PhoneAppModel {
         clockHealth.stop()
         actions.abandonPending(reason: reason)
         transport.disconnect(reason: reason)
-        if state.connection != .takenOver { state.connection = .disconnected }
+        if !state.blocksAutomaticReconnect { state.connection = .disconnected }
         state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
     }
 
@@ -471,7 +479,7 @@ final class PhoneAppModel {
         switch event {
         case .connection(let generation, let connection):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
-            guard !state.phoneTakenOver else { return }
+            guard !state.blocksAutomaticReconnect else { return }
             state.connection = connection
             if connection == .authenticated {
                 startClockCheckIfReady(socketGeneration: generation)
@@ -481,7 +489,7 @@ final class PhoneAppModel {
             }
         case .message(let generation, let message):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
-            guard !state.phoneTakenOver else { return }
+            guard !state.blocksAutomaticReconnect else { return }
             switch message {
             case .state(let relayState):
                 let wasReady = macIsReady

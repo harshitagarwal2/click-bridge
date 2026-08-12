@@ -12,6 +12,7 @@ enum PhoneConnectionState: Equatable, Sendable {
     case authenticated
     case backoff
     case takenOver
+    case credentialReplaced
     case authenticationRejected
 }
 
@@ -110,6 +111,8 @@ final class PhoneRelayClient: PhoneActionTransport {
             guard let self, let socket else { return }
             if closure.code == PhoneProtocolV1.phoneTakenOverCloseCode {
                 self.phoneWasTakenOver(generation: expectedGeneration, socket: socket)
+            } else if closure.code == PhoneProtocolV1.credentialReplacedCloseCode {
+                self.credentialWasReplaced(generation: expectedGeneration, socket: socket)
             } else if closure.code == PhoneProtocolV1.authenticationRejectedCloseCode {
                 self.authenticationWasRejected(generation: expectedGeneration, socket: socket)
             } else {
@@ -218,6 +221,16 @@ final class PhoneRelayClient: PhoneActionTransport {
         guard owns(socket: socket, generation: expectedGeneration) else { return }
         invalidateCurrentSocket(reason: "phone_taken_over", scheduleReconnect: false)
         publishConnection(.takenOver)
+    }
+
+    /// Terminal and unreclaimable. The stored credential is no longer active,
+    /// so the configuration is dropped exactly as for an outright rejection.
+    private func credentialWasReplaced(generation expectedGeneration: Int, socket: any PhoneWebSocket) {
+        guard owns(socket: socket, generation: expectedGeneration) else { return }
+        configuration = nil
+        reconnectAttempt = 0
+        invalidateCurrentSocket(reason: "credential_replaced", scheduleReconnect: false)
+        publishConnection(.credentialReplaced)
     }
 
     private func authenticationWasRejected(generation expectedGeneration: Int,

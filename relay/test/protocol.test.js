@@ -125,7 +125,10 @@ test('pairing constants freeze the approved protocol and invitation lifetime', (
   assert.equal(relayConstants.PAIRING_VERSION, 1);
   assert.equal(relayConstants.PAIRING_TTL_MS, 300_000);
   assert.equal(relayConstants.LEGACY_PHONE_CREDENTIAL_VERSION, 0);
-  assert.equal(relayConstants.CREDENTIAL_REPLACED_CLOSE_CODE, 4004);
+  assert.equal(relayConstants.CREDENTIAL_REPLACED_CLOSE_CODE, 4006);
+  assert.notEqual(relayConstants.CREDENTIAL_REPLACED_CLOSE_CODE,
+    relayConstants.PHONE_TAKEN_OVER_CLOSE_CODE,
+    'a reclaimable takeover and a dead credential must be distinguishable by code');
   assert.equal(relayConstants.AUTHENTICATION_REJECTED_CLOSE_CODE, 4005);
   assert.equal(relayConstants.CREDENTIAL_REPLACED_CLOSE_REASON, 'credential_replaced');
 });

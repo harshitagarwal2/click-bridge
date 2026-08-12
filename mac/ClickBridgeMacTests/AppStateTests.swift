@@ -399,12 +399,9 @@ final class AppStateTests: XCTestCase {
         let appConnecting = await eventually { state.connection == .connecting }
         XCTAssertTrue(appConnecting)
 
-        let rev2Stopped = DispatchSemaphore(value: 0)
-        Task.detached {
+        await Task.detached {
             _ = await client.clearConfigurationAndStop(credentialRevision: 2)
-            rev2Stopped.signal()
-        }
-        rev2Stopped.wait()
+        }.value
 
         let disconnected = expectation(description: "current credential revision reports disconnected")
         let observation = state.$connection.dropFirst().sink {

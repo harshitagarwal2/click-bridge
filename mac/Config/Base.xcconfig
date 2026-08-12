@@ -4,3 +4,7 @@ DEVELOPMENT_TEAM =
 
 // Optional local signing overrides are applied after the repository defaults.
 #include? "Local.xcconfig"
+
+// Version ownership is shared across both apps and cannot be shadowed by a
+// local signing override.
+#include "../../Config/Version.xcconfig"

@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing vX.Y.Z tag that must point at the dispatched commit
+        description: Existing vX.Y or vX.Y.Z tag matching Config/Version.xcconfig
         required: true
         type: string
       build_number:
-        description: Existing processed App Store Connect build number
+        description: Exact processed iOS and macOS TestFlight build number
         required: true
         type: string
 
@@ -53,7 +53,7 @@ jobs:
           ' <<< "$environment_json" >/dev/null
 
   submit:
-    name: Select processed build and submit for review
+    name: Select processed iOS and macOS builds and submit for review
     needs: verify-environment
     runs-on: macos-15
     timeout-minutes: 30
@@ -99,12 +99,15 @@ jobs:
           EVENT_REF: ${{ github.ref }}
         run: |
           set -Eeuo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*(\.[0-9]+){0,2}$ ]]
           test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "$EVENT_SHA"
+          release_version="${RELEASE_TAG#v}"
+          repository_version="$(./.github/scripts/read-apple-version.sh marketing)"
+          test "$release_version" = "$repository_version"
           {
-            echo "RELEASE_VERSION=${RELEASE_TAG#v}"
+            echo "RELEASE_VERSION=$release_version"
             echo "BUILD_NUMBER=$BUILD_NUMBER"
           } >> "$GITHUB_ENV"
 
@@ -137,11 +140,17 @@ jobs:
           chmod 0600 "$api_key"
           echo "APP_STORE_CONNECT_KEY_PATH=$api_key" >> "$GITHUB_ENV"
 
-      - name: Submit the existing processed build for review
+      - name: Submit the existing processed iOS build for review
         env:
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
         run: bundle exec fastlane ios submit_app_store release_version:"$RELEASE_VERSION" build_number:"$BUILD_NUMBER"
+
+      - name: Submit the existing processed macOS build for review
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: bundle exec fastlane mac submit_app_store release_version:"$RELEASE_VERSION" build_number:"$BUILD_NUMBER"
 
       - name: Remove ephemeral API key
         if: ${{ always() }}

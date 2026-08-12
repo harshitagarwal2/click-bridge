@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 
 import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
+import { CREDENTIAL_REPLACED_CLOSE_CODE } from '../src/constants.js';
 import { PairingCoordinator } from '../src/pairing.js';
 
 const MAC = Object.freeze({ id: 'mac' });
@@ -410,7 +411,7 @@ test('a connected replacement Mac cannot approve, deny, or cancel before capabil
   }
 });
 
-test('exact credential-bound proof activates with CAS, clears secrets, then closes the old phone with 4004', async () => {
+test('exact credential-bound proof activates with CAS, clears secrets, then closes the old phone with 4006', async () => {
   const h = harness();
   connectAndCreate(h);
   claim(h);
@@ -437,7 +438,7 @@ test('exact credential-bound proof activates with CAS, clears secrets, then clos
       },
     },
   ]);
-  assert.deepEqual(h.closes, [{ connection: OLD_PHONE, code: 4004, reason: 'credential_replaced' }]);
+  assert.deepEqual(h.closes, [{ connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced' }]);
   assert.equal(JSON.stringify(h.coordinator).includes(CREDENTIAL), false);
   assert.equal(JSON.stringify(h.coordinator).includes(activationProof()), false);
 });
@@ -706,7 +707,7 @@ test('activation revokes the current old generation after persistence and exclud
   assert.equal(await activation, 'ok');
 
   assert.deepEqual(h.closes, [{
-    connection: REPLACEMENT_PHONE, code: 4004, reason: 'credential_replaced',
+    connection: REPLACEMENT_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
   }]);
   assert.equal(await acknowledge(h), 'ok');
   assert.equal(h.closes.length, 1);
@@ -723,7 +724,7 @@ test('logical phone authorization is revoked before best-effort websocket close'
 
   assert.equal(h.phoneCanAct(OLD_PHONE, 4), false);
   assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: 4004, reason: 'credential_replaced',
+    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
   }]);
   assert.equal(h.logs.some(([name]) => name === 'pairing_phone_revocation_failed'), true);
   assert.deepEqual(h.events.slice(-2).map(({ message }) => message.type), [
@@ -796,7 +797,7 @@ test('deauthorization captures own data descriptors once before any close', asyn
 
   assert.equal(await acknowledge(h), 'ok');
   assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: 4004, reason: 'credential_replaced',
+    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
   }]);
   assert.deepEqual(Object.fromEntries(descriptorReads), {
     connection: 1, generation: 1, credentialVersion: 1,
@@ -976,7 +977,7 @@ test('terminal output failures cannot skip durable completion or old-generation 
   assert.equal(await acknowledge(h), 'ok');
   assert.equal(h.record().activePhoneCredentialVersion, 8);
   assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: 4004, reason: 'credential_replaced',
+    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
   }]);
   assert.deepEqual(h.coordinator.observe(), {
     phase: 'completed', requestId: REQUEST_ID, claimId: CLAIM_ID,

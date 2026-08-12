@@ -108,6 +108,47 @@ async function requestFrom(publicDir, { method, pathname, pairingEnabled }) {
   });
 }
 
+async function requestReadiness(probePairingReadiness) {
+  return new Promise((resolve) => {
+    const response = {
+      status: null,
+      body: '',
+      writeHead(status) { this.status = status; },
+      end(body = '') { this.body = body.toString(); resolve(this); },
+    };
+    createHttpHandler({
+      publicDir: PUBLIC,
+      clickBridgeDomain: 'localhost',
+      pairingEnabled: true,
+      probePairingReadiness,
+    })({ method: 'GET', url: '/readyz' }, response);
+  });
+}
+
+test('readyz maps readiness probes through a closed redacted status contract', async () => {
+  for (const probe of [
+    () => ({ ready: false, detail: '/secret/auth-store.json' }),
+    () => { throw new Error('/secret/auth-store.json'); },
+  ]) {
+    const response = await requestReadiness(probe);
+    assert.equal(response.status, 503);
+    assert.deepEqual(JSON.parse(response.body), {
+      live: true,
+      pairing: { ready: false, detail: 'unavailable' },
+    });
+    assert.equal(response.body.includes('/secret/'), false);
+  }
+});
+
+test('readyz fails closed when pairing is enabled without a readiness probe', async () => {
+  const response = await requestReadiness();
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(response.body), {
+    live: true,
+    pairing: { ready: false, detail: 'unavailable' },
+  });
+});
+
 test('malformed pairing capability markers fail closed for every index route and method', async () => {
   const malformed = new Map([
     ['missing', '<!doctype html><title>Click Bridge</title>'],
