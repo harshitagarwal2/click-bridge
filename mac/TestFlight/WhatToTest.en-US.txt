@@ -1,0 +1,22 @@
+Please test the complete iPhone-to-Mac click path:
+
+Setup and action paths:
+1. Manually configure both clients with the same relay URL: use PHONE_TOKEN on the iPhone and MAC_TOKEN on the Mac.
+2. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
+3. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.
+4. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control.
+5. Physical iPhone acceptance: NOT RUN unless actually performed. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source.
+6. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised. Apply the same source-agnostic output-volume observation rule.
+7. Trigger an action with the App Shortcut.
+8. For each accepted success from steps 4-7, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic. Octo +3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed.
+
+Outcome contract:
+- Relay forwarding acknowledgement: This is not a terminal result and produces no haptic.
+- Ignored before send: Expect no terminal result, no haptic, and no clicks.
+- Forwarded, then rejected before event posting: Expect terminal Rejected, an error haptic, and zero clicks. This includes remote control disabled, missing Accessibility permission, or event creation failure before posting.
+- Post-execution result loss: Expect Unknown and no haptic. Exactly three clicks may already have completed; inspect authoritative counter or receiver evidence. Never blindly retry or reuse the action ID (actionId).
+
+Recovery:
+- Fault injection: Exercise a relay disconnect, invalid credential or revocation, clock mismatch, and taken-over state. Each condition must close the readiness gate. Require a terminal result only if the action was actually sent or forwarded.
+- Taken-over state: Verify the terminal taken-over state and that the client does not auto-reconnect. Recovery requires the user to explicitly re-save or reconnect.
+- Return to ready: Restore, reconnect, or reconfigure as appropriate; confirm the Mac is Connected and the iPhone is Ready, then confirm a newly accepted action produces exactly three clicks with a terminal Succeeded result and success haptic.

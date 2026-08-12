@@ -734,6 +734,8 @@ assertIncludes(testFlightNotes, "Trigger 3 Clicks");
 assertIncludes(testFlightNotes, "exactly three independent clicks");
 assertIncludes(testFlightNotes, "Accessibility");
 
+const macTestFlightNotes = readRequired("mac/TestFlight/WhatToTest.en-US.txt");
+
 const actionReferences = [...ci.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)].map(
   (match) => match[1],
 );
@@ -804,6 +806,98 @@ const rubyResolution = spawnSync(
 );
 assert.equal(rubyResolution.status, 0, rubyResolution.stderr);
 const rubyExecutable = rubyResolution.stdout;
+const macNotesFixtureDirectory = mkdtempSync(
+  path.join(tmpdir(), "click-bridge-mac-testflight-notes-"),
+);
+const macNotesValidator = ".github/scripts/validate-release-workflows.rb";
+const runMacNotesValidation = (notes) => {
+  const fixturePath = path.join(macNotesFixtureDirectory, "WhatToTest.en-US.txt");
+  writeFileSync(fixturePath, notes);
+  return spawnSync(
+    rubyExecutable,
+    [macNotesValidator, "--validate-mac-testflight-notes", fixturePath],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+};
+const validMacNotes = `Please test the complete iPhone-to-Mac click path:
+
+Setup and action paths:
+1. Manually configure both clients with the same relay URL: use PHONE_TOKEN on the iPhone and MAC_TOKEN on the Mac.
+2. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
+3. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.
+4. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control.
+5. Physical iPhone acceptance: NOT RUN unless actually performed. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source.
+6. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised. Apply the same source-agnostic output-volume observation rule.
+7. Trigger an action with the App Shortcut.
+8. For each accepted success from steps 4-7, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic. Octo +3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed.
+
+Outcome contract:
+- Relay forwarding acknowledgement: This is not a terminal result and produces no haptic.
+- Ignored before send: Expect no terminal result, no haptic, and no clicks.
+- Forwarded, then rejected before event posting: Expect terminal Rejected, an error haptic, and zero clicks. This includes remote control disabled, missing Accessibility permission, or event creation failure before posting.
+- Post-execution result loss: Expect Unknown and no haptic. Exactly three clicks may already have completed; inspect authoritative counter or receiver evidence. Never blindly retry or reuse the action ID (actionId).
+
+Recovery:
+- Fault injection: Exercise a relay disconnect, invalid credential or revocation, clock mismatch, and taken-over state. Each condition must close the readiness gate. Require a terminal result only if the action was actually sent or forwarded.
+- Taken-over state: Verify the terminal taken-over state and that the client does not auto-reconnect. Recovery requires the user to explicitly re-save or reconnect.
+- Return to ready: Restore, reconnect, or reconfigure as appropriate; confirm the Mac is Connected and the iPhone is Ready, then confirm a newly accepted action produces exactly three clicks with a terminal Succeeded result and success haptic.
+`;
+const noteCases = [
+  ["complete structured notes", validMacNotes, true],
+  ["repository notes", macTestFlightNotes, true],
+  [
+    "paired-state claim",
+    validMacNotes.replace("Mac status is Connected", "Mac status is paired"),
+    false,
+  ],
+  [
+    "missing manual phone token",
+    validMacNotes.replace("PHONE_TOKEN", "phone credential"),
+    false,
+  ],
+  [
+    "physical iPhone evidence claimed",
+    validMacNotes.replace("Physical iPhone acceptance: NOT RUN", "Physical iPhone acceptance: PASS"),
+    false,
+  ],
+  [
+    "pre-post rejection mislabeled unknown",
+    validMacNotes.replace("Expect terminal Rejected", "Expect Unknown"),
+    false,
+  ],
+  [
+    "post-execution loss haptic claimed",
+    validMacNotes.replace("Expect Unknown and no haptic", "Expect Unknown and a success haptic"),
+    false,
+  ],
+  [
+    "post-execution retry encouraged",
+    validMacNotes.replace(
+      "Never blindly retry or reuse the action ID (actionId)",
+      "Retry the same action ID (actionId)",
+    ),
+    false,
+  ],
+  [
+    "taken-over auto-reconnect allowed",
+    validMacNotes.replace("does not auto-reconnect", "may auto-reconnect"),
+    false,
+  ],
+];
+
+try {
+  for (const [name, notes, expectedSuccess] of noteCases) {
+    const result = runMacNotesValidation(notes);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.equal(
+      result.status === 0,
+      expectedSuccess,
+      `Mac TestFlight notes fixture ${name} was mishandled:\n${output}`,
+    );
+  }
+} finally {
+  rmSync(macNotesFixtureDirectory, { recursive: true, force: true });
+}
 const pathWithoutPlutil = (process.env.PATH ?? "")
   .split(path.delimiter)
   .filter((entry) => !existsSync(path.join(entry, "plutil")))
