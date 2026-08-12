@@ -62,6 +62,10 @@ actor RelayClient {
         let credentialRevision: UInt64
         let sequence: UInt64
     }
+    private struct CredentialMutation: Sendable {
+        let revision: UInt64
+        let epoch: UInt64
+    }
     typealias Sleep = @Sendable (TimeInterval) async throws -> Void
     typealias Jitter = @Sendable (TimeInterval) -> TimeInterval
 
@@ -87,9 +91,12 @@ actor RelayClient {
     private var pendingHeartbeat: Int?
     private var running = false
     private var highestCredentialOperation: UInt64 = 0
+    private var credentialMutationEpoch: UInt64 = 0
+    private var configuredMutationEpoch: UInt64?
     private var status: Status = .disconnected
     private var advertisedState = MacState(remoteEnabled: false, permission: .unknown)
     private var statusSequence: UInt64 = 0
+    private var statusCredentialRevision: UInt64 = 0
     private var statusHandler: (@Sendable (StatusEvent) -> Void)?
     private var resultHandler: (@Sendable (ActionResult) -> Void)?
 
@@ -120,7 +127,7 @@ actor RelayClient {
         allowLocalSimulator: Bool,
         credentialRevision requestedRevision: UInt64? = nil
     ) async throws -> Bool {
-        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
+        guard let mutation = claimCredentialMutation(requestedRevision) else { return false }
         let validated: URL
         do {
             validated = try RelayEndpoint.validated(urlString, allowLocalSimulator: allowLocalSimulator)
@@ -129,13 +136,14 @@ actor RelayClient {
             endpoint = nil
             self.token = nil
             await cancelGeneration()
-            if isCurrentCredentialOperation(operationRevision) { setStatus(.disconnected) }
+            if isCurrentCredentialMutation(mutation) { setStatus(.disconnected) }
             throw error
         }
         await cancelGeneration()
-        guard isCurrentCredentialOperation(operationRevision) else { return false }
+        guard isCurrentCredentialMutation(mutation) else { return false }
         endpoint = validated
         self.token = token
+        configuredMutationEpoch = mutation.epoch
         return true
     }
 
@@ -149,6 +157,7 @@ actor RelayClient {
 
     func start(credentialRevision requestedRevision: UInt64? = nil) {
         if let requestedRevision, requestedRevision != highestCredentialOperation { return }
+        guard configuredMutationEpoch == credentialMutationEpoch else { return }
         running = true
         guard receiveTask == nil, reconnectTask == nil else { return }
         openGeneration()
@@ -156,31 +165,32 @@ actor RelayClient {
 
     @discardableResult
     func stop(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
-        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
+        guard let mutation = claimCredentialMutation(requestedRevision) else { return false }
         running = false
         await cancelGeneration()
-        guard isCurrentCredentialOperation(operationRevision) else { return false }
+        guard isCurrentCredentialMutation(mutation) else { return false }
         setStatus(.disconnected)
         return true
     }
 
     @discardableResult
     func clearConfigurationAndStop(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
-        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
+        guard let mutation = claimCredentialMutation(requestedRevision) else { return false }
         running = false
         endpoint = nil
         token = nil
         await cancelGeneration()
-        guard isCurrentCredentialOperation(operationRevision) else { return false }
+        guard isCurrentCredentialMutation(mutation) else { return false }
         setStatus(.disconnected)
         return true
     }
 
     @discardableResult
     func reconnect(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
-        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
+        guard let mutation = claimCredentialMutation(requestedRevision) else { return false }
         await cancelGeneration()
-        guard isCurrentCredentialOperation(operationRevision), running else { return false }
+        guard isCurrentCredentialMutation(mutation), running else { return false }
+        configuredMutationEpoch = mutation.epoch
         openGeneration()
         return true
     }
@@ -198,23 +208,26 @@ actor RelayClient {
         await old?.close()
     }
 
-    private func claimCredentialOperation(_ requestedRevision: UInt64?) -> UInt64? {
+    private func claimCredentialMutation(_ requestedRevision: UInt64?) -> CredentialMutation? {
         if let requestedRevision {
             guard requestedRevision >= highestCredentialOperation else { return nil }
             highestCredentialOperation = requestedRevision
         } else {
             highestCredentialOperation &+= 1
         }
-        return highestCredentialOperation
+        credentialMutationEpoch &+= 1
+        configuredMutationEpoch = nil
+        return CredentialMutation(revision: highestCredentialOperation, epoch: credentialMutationEpoch)
     }
 
-    private func isCurrentCredentialOperation(_ expected: UInt64) -> Bool {
-        expected == highestCredentialOperation
+    private func isCurrentCredentialMutation(_ mutation: CredentialMutation) -> Bool {
+        mutation.revision == highestCredentialOperation && mutation.epoch == credentialMutationEpoch
     }
 
     private func setStatus(_ value: Status) {
-        guard status != value else { return }
+        guard status != value || statusCredentialRevision != highestCredentialOperation else { return }
         status = value
+        statusCredentialRevision = highestCredentialOperation
         statusSequence &+= 1
         statusHandler?(StatusEvent(status: value,
                                    credentialRevision: highestCredentialOperation,
