@@ -133,6 +133,14 @@ actor RelayClient {
         setStatus(.disconnected)
     }
 
+    func clearConfigurationAndStop() async {
+        running = false
+        endpoint = nil
+        token = nil
+        await cancelGeneration()
+        setStatus(.disconnected)
+    }
+
     func reconnect() async {
         await cancelGeneration()
         guard running else { return }
