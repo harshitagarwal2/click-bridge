@@ -46,6 +46,10 @@ function phoneSnapshot(phone) {
       || !credentialVersion || !Object.hasOwn(credentialVersion, 'value')) {
     return null;
   }
+  if ((typeof connection.value !== 'object' || connection.value === null)
+      && typeof connection.value !== 'function') {
+    return null;
+  }
   return Object.freeze({
     connection: connection.value,
     generation: generation.value,
@@ -429,7 +433,13 @@ export class PairingCoordinator {
       this.#log('pairing_phone_resolution_failed');
       return false;
     }
-    const snapshots = Array.isArray(phones) ? Array.from(phones, phoneSnapshot) : null;
+    let snapshots = null;
+    try {
+      snapshots = Array.isArray(phones) ? Array.from(phones, phoneSnapshot) : null;
+    } catch {
+      this.#log('pairing_phone_resolution_failed');
+      return false;
+    }
     if (!snapshots || !snapshots.every((phone) => phone
         && Number.isSafeInteger(phone.generation) && phone.generation >= 0
         && Number.isSafeInteger(phone.credentialVersion) && phone.credentialVersion >= 0

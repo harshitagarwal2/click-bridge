@@ -706,6 +706,51 @@ test('accessor, inherited, claimant, and current phone entries fail closed befor
   assert.equal(getterCalls, 0);
 });
 
+test('primitive connections invalidate the complete deauthorization result before any close', async () => {
+  for (const connection of ['old-phone', 42, Symbol('old-phone')]) {
+    const h = harness({
+      deauthorizationFailure: [
+        { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
+        { connection, generation: 5, credentialVersion: 7 },
+      ],
+    });
+    connectAndCreate(h);
+    claim(h);
+    approve(h);
+
+    assert.equal(await acknowledge(h), 'reconciliation_failed');
+    assert.equal(h.closes.length, 0);
+    assert.equal(h.events.some(({ message }) => [
+      'pair.active', 'pair.completed',
+    ].includes(message.type)), false);
+  }
+});
+
+test('hostile deauthorization containers fail closed and remain retryable', async () => {
+  const hostile = new Proxy([], {
+    get(target, property, receiver) {
+      if (property === Symbol.iterator) throw new Error('iterator unavailable');
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const h = harness({ deauthorizationFailure: hostile });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  assert.equal(await acknowledge(h), 'reconciliation_failed');
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.closes.length, 0);
+  assert.equal(h.events.some(({ message }) => [
+    'pair.active', 'pair.completed',
+  ].includes(message.type)), false);
+
+  h.setDeauthorizationResult(null);
+  assert.equal(await acknowledge(h), 'ok');
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.coordinator.observe().phase, 'completed');
+});
+
 test('malformed deauthorization results cannot publish activation success', async () => {
   for (const malformed of [
     { not: 'an array' },
