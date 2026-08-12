@@ -360,6 +360,56 @@ test('approval is claim-bound CAS and offers a next-version credential without a
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
 });
 
+test('a connected replacement Mac cannot approve, deny, or cancel before capability opt-in', async () => {
+  const actions = [
+    {
+      name: 'approve',
+      run: (h, replacement) => h.coordinator.approve(replacement, 4, {
+        type: 'pair.approve', v: 1, requestId: REQUEST_ID, claimId: CLAIM_ID,
+      }),
+    },
+    {
+      name: 'deny',
+      run: (h, replacement) => h.coordinator.deny(replacement, 4, {
+        type: 'pair.deny', v: 1, requestId: REQUEST_ID, claimId: CLAIM_ID,
+      }),
+    },
+    {
+      name: 'cancel',
+      run: (h, replacement) => h.coordinator.cancelByMac(replacement, 4, {
+        type: 'pair.cancel', v: 1, requestId: REQUEST_ID,
+      }),
+    },
+  ];
+
+  for (const action of actions) {
+    const activationGate = deferred();
+    const h = harness({ activationGate });
+    const replacementMac = Object.freeze({ id: `replacement-mac-${action.name}` });
+    connectAndCreate(h);
+    claim(h);
+    approve(h);
+    const activation = acknowledge(h);
+    assert.equal(h.coordinator.macConnected(replacementMac, 4), 'activation_in_progress');
+    const stateBefore = h.coordinator.observe();
+    const eventCountBefore = h.events.length;
+    const randomCountBefore = h.randomBuffers.length;
+    const activateCountBefore = h.activateCalls();
+
+    assert.equal(action.run(h, replacementMac), 'capability_required', action.name);
+
+    assert.deepEqual(h.coordinator.observe(), stateBefore, action.name);
+    assert.equal(h.events.length, eventCountBefore, action.name);
+    assert.equal(h.randomBuffers.length, randomCountBefore, action.name);
+    assert.equal(h.activateCalls(), activateCountBefore, action.name);
+    assert.equal(h.record().activePhoneCredentialVersion, 7, action.name);
+    assert.equal(h.closes.length, 0, action.name);
+
+    activationGate.resolve();
+    assert.equal(await activation, 'ok');
+  }
+});
+
 test('exact credential-bound proof activates with CAS, clears secrets, then closes the old phone with 4004', async () => {
   const h = harness();
   connectAndCreate(h);
@@ -611,6 +661,33 @@ test('a replacement Mac must opt in before receiving durable pairing completion'
   assert.equal(completed.length, 1);
   assert.equal(completed[0].connection, replacementMac);
   assert.equal(completed[0].message.activePhoneCredentialVersion, 8);
+});
+
+test('an unadvertised replacement Mac receives no durable pairing completion', async () => {
+  const activationGate = deferred();
+  const h = harness({ activationGate });
+  const replacementMac = Object.freeze({ id: 'unadvertised-replacement-mac' });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  const activation = acknowledge(h);
+  assert.equal(h.coordinator.macConnected(replacementMac, 4), 'activation_in_progress');
+  activationGate.resolve();
+  assert.equal(await activation, 'ok');
+
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.record().activePhoneCredentialVersion, 8);
+  assert.equal(h.events.filter(({ message }) => message.type === 'pair.completed').length, 0);
+  assert.equal(h.events.filter(({ connection, message }) => (
+    connection === replacementMac && message.type.startsWith('pair.')
+  )).length, 0);
+  assert.deepEqual(h.events.filter(({ message }) => message.type === 'pair.active'), [{
+    connection: PHONE,
+    message: {
+      type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 8,
+    },
+  }]);
 });
 
 test('activation revokes the current old generation after persistence and excludes the new one', async () => {
