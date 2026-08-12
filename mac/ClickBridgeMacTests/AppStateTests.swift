@@ -130,6 +130,7 @@ private final class AppStateCountingPoster: InputPosting, @unchecked Sendable {
 private actor AppStateForwardingGatedSink: ActionRequestSink {
     private let processor: ActionProcessor
     private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
     private(set) var receiveStarted = false
     private(set) var results: [ActionResult] = []
 
@@ -151,13 +152,16 @@ private actor AppStateForwardingGatedSink: ActionRequestSink {
         authorization: ActionAuthorizationLease
     ) async -> ActionResult {
         receiveStarted = true
-        await withCheckedContinuation { continuation = $0 }
+        if !released {
+            await withCheckedContinuation { continuation = $0 }
+        }
         let result = await processor.receive(request, via: ingress, authorization: authorization)
         results.append(result)
         return result
     }
 
     func release() {
+        released = true
         continuation?.resume()
         continuation = nil
     }
@@ -414,6 +418,24 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
         XCTAssertEqual(state.notice, settings.storageError)
         XCTAssertTrue(settings.hasToken)
+
+        await state.saveToken("replacement-token").value
+        let replacementHelloSent = await eventually {
+            await transport.containsHello(token: "replacement-token")
+        }
+        XCTAssertTrue(replacementHelloSent)
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let replacementConnected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(replacementConnected)
+        let replacementNow = Date().timeIntervalSince1970 * 1_000
+        await transport.push(try Wire.encode(ActionRequest(actionId: "018f63f5-6f3d-7d21-88bc-222222222222",
+                                                           action: "click",
+                                                           issuedAtUnixMs: replacementNow,
+                                                           expiresAtUnixMs: replacementNow
+                                                               + Constants.actionLifetimeMs)))
+        let replacementPosted = await eventually { poster.postCount() == 1 }
+        XCTAssertTrue(replacementPosted)
+        XCTAssertEqual(state.notice, "Token saved.")
     }
 
     func testNewerSaveSupersedesClearSuspendedWhileClosingOldTransport() async throws {
