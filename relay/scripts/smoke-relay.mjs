@@ -164,7 +164,9 @@ try {
   // current state/hello traffic, never the completed request or result.
   const before = phone.inbox.length;
   await new Promise((r) => setTimeout(r, 400));
-  check('no replay after completion', phone.inbox.length === before);
+  check('no replay after completion',
+    phone.inbox.slice(before).every((m) =>
+      (m.type !== 'action.request' && m.type !== 'action.result') || m.actionId !== request.actionId));
 
   mac3 = connect('mac3');
   await mac3.open();
