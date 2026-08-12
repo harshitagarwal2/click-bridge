@@ -40,6 +40,7 @@ jobs:
 
       - name: Verify workflow contracts
         run: |
+          ruby .github/scripts/validate-release-workflows.rb
           node .github/scripts/test-workflows.mjs
           node .github/scripts/verify-workflows.mjs
           bash .github/scripts/test-deploy-oci.sh
@@ -174,6 +175,19 @@ jobs:
             mac/ClickBridgeMac/Info.plist \
             ios/ClickBridgePhone.xcodeproj \
             ios/ClickBridgePhone/Info.plist)"
+
+      - name: Build unsigned iOS generic-device Release
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        run: |
+          xcodebuild \
+            -project ios/ClickBridgePhone.xcodeproj \
+            -scheme ClickBridgePhone \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-ios-device-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
 
       - name: Select iPhone simulator
         if: ${{ hashFiles('ios/project.yml') != '' }}
