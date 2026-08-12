@@ -556,6 +556,8 @@ add_release() {
   local root="$1"
   local release="$2"
   mkdir -p "$root/releases/$release/deploy/oci" "$root/releases/$release/relay/scripts"
+  # Compose, not this test shell, expands the fixture placeholder below.
+  # shellcheck disable=SC2016
   printf '%s\n' \
     'services:' \
     '  relay:' \
@@ -603,6 +605,8 @@ assert_rendered_volume_case_rejected() {
 }
 
 test -f "$DEPLOY_SCRIPT" || fail 'deploy-oci.sh does not exist'
+# This fixed-string assertion must preserve Compose's literal default expansion.
+# shellcheck disable=SC2016
 grep -Fq '${CLICK_BRIDGE_SECRETS_FILE:-/opt/click-bridge/shared/secrets.env}' \
   "$REPOSITORY_ROOT/deploy/oci/compose.yaml" || fail 'Compose does not inject the shared environment'
 grep -Fq '/opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' "$REPOSITORY_ROOT/deploy/oci/compose.yaml" ||
@@ -924,6 +928,8 @@ fi
 
 root="$(new_case_root unrelated-service-spoofed-compatibility)"
 add_release "$root" "$SHA_A"
+# Compose, not this test shell, expands the decoy fixture placeholder below.
+# shellcheck disable=SC2016
 printf '%s\n' \
   'services:' \
   '  relay:' \
@@ -975,6 +981,8 @@ sed_marker="$TEST_ROOT/compat-symlink-sed.marker"
 sed_gate="$TEST_ROOT/compat-symlink-sed.gate"
 symlink_target="$TEST_ROOT/compat-symlink-target"
 output_file="$TEST_ROOT/compat-symlink.output"
+# The child shell must expand its PID and the passed environment paths.
+# shellcheck disable=SC2016
 env \
   PATH="$FAKE_BIN:/usr/bin:/bin" \
   CLICK_BRIDGE_ROOT="$root" \
@@ -993,7 +1001,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   test -e "$pid_file" && test -e "$sed_marker" && break
   /bin/sleep 0.01
 done
-test -e "$pid_file" && test -e "$sed_marker" || fail 'symlink compatibility gate did not start'
+if ! test -e "$pid_file" || ! test -e "$sed_marker"; then
+  fail 'symlink compatibility gate did not start'
+fi
 test "$(cat "$pid_file")" = "$deploy_pid" || fail 'deployment PID handoff changed process identity'
 ln -s "$symlink_target" "$root/shared/auth/.compose-compat.$deploy_pid"
 : > "$sed_gate"
