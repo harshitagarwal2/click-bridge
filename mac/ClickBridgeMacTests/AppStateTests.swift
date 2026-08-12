@@ -55,6 +55,7 @@ private final class AppStateTransportFactory: @unchecked Sendable {
 }
 
 private actor AppStateTransport: WebSocketTransport {
+    private var inbound: [String] = []
     private var inboundContinuation: CheckedContinuation<String, Error>?
     private var closeContinuation: CheckedContinuation<Void, Never>?
     private var helloWaiters: [(String, CheckedContinuation<Void, Never>)] = []
@@ -74,7 +75,16 @@ private actor AppStateTransport: WebSocketTransport {
         ready.forEach { $0.1.resume() }
     }
     func receiveText() async throws -> String {
-        try await withCheckedThrowingContinuation { inboundContinuation = $0 }
+        if !inbound.isEmpty { return inbound.removeFirst() }
+        return try await withCheckedThrowingContinuation { inboundContinuation = $0 }
+    }
+    func push(_ text: String) {
+        if let inboundContinuation {
+            self.inboundContinuation = nil
+            inboundContinuation.resume(returning: text)
+        } else {
+            inbound.append(text)
+        }
     }
     func close() async {
         closeCount += 1
@@ -98,6 +108,62 @@ private actor AppStateTransport: WebSocketTransport {
     func waitForHello(token: String) async {
         if containsHello(token: token) { return }
         await withCheckedContinuation { helloWaiters.append((token, $0)) }
+    }
+}
+
+private final class AppStateCountingPoster: InputPosting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func postLeftClickAtCurrentCursor() -> InputPostOutcome {
+        lock.withLock { count += 1 }
+        return .posted(mouseDownUnixMs: 1_786_497_600_010)
+    }
+
+    func diagnosticPostCounts() -> InputPostCounts {
+        lock.withLock { InputPostCounts(mouseDownPostCount: count, mouseUpPostCount: count) }
+    }
+
+    func postCount() -> Int { lock.withLock { count } }
+}
+
+private actor AppStateForwardingGatedSink: ActionRequestSink {
+    private let processor: ActionProcessor
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var receiveStarted = false
+    private(set) var results: [ActionResult] = []
+
+    init(processor: ActionProcessor) { self.processor = processor }
+
+    func activateAuthorizationLease(
+        for generation: ActionAuthorizationGeneration
+    ) async -> ActionAuthorizationLease {
+        await processor.activateAuthorizationLease(for: generation)
+    }
+
+    func revokeAuthorizationLease(_ lease: ActionAuthorizationLease) async {
+        await processor.revokeAuthorizationLease(lease)
+    }
+
+    func receive(
+        _ request: ActionRequest,
+        via ingress: ActionIngress,
+        authorization: ActionAuthorizationLease
+    ) async -> ActionResult {
+        receiveStarted = true
+        if !released {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        let result = await processor.receive(request, via: ingress, authorization: authorization)
+        results.append(result)
+        return result
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
@@ -307,6 +373,69 @@ final class AppStateTests: XCTestCase {
         await save.value
         let restarted = await eventually { await transport.containsHello(token: "replacement-token") }
         XCTAssertTrue(restarted)
+    }
+
+    func testClearTokenDeletionFailureRevokesAuthenticatedForwardedAction() async throws {
+        let suite = "AppStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
+        defaults.set(true, forKey: SettingsStore.remoteEnabledKey)
+        let secrets = AppStateSecretStore(token: "token", deleteError: AppStateTestError.deleteFailed)
+        let settings = try SettingsStore(defaults: defaults, secrets: secrets)
+        let permission = PostEventPermissionService(preflight: { true }, request: { true })
+        let poster = AppStateCountingPoster()
+        let processor = ActionProcessor(poster: poster, permission: permission)
+        let sink = AppStateForwardingGatedSink(processor: processor)
+        let transport = AppStateTransport(gateClose: false)
+        let client = RelayClient(actionSink: sink, diagnostics: processor, makeTransport: { transport })
+        let state = AppState(settings: settings, client: client, processor: processor,
+                             permissionService: permission, activationNotifications: NotificationCenter())
+        let helloSent = await eventually { await transport.containsHello(token: "token") }
+        XCTAssertTrue(helloSent)
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let connected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(connected)
+        let now = Date().timeIntervalSince1970 * 1_000
+        await transport.push(try Wire.encode(ActionRequest(actionId: "018f63f5-6f3d-7d21-88bc-111111111111",
+                                                           action: "click",
+                                                           issuedAtUnixMs: now,
+                                                           expiresAtUnixMs: now + Constants.actionLifetimeMs)))
+        let forwarded = await eventually { await sink.receiveStarted }
+        XCTAssertTrue(forwarded)
+
+        await state.clearToken().value
+        await sink.release()
+        let completed = await eventually { await sink.results.count == 1 }
+        guard completed else { return XCTFail("forwarded action did not complete after release") }
+        let result = await sink.results[0]
+        let status = await client.currentStatus()
+        let closeCount = await transport.closes()
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertEqual(poster.postCount(), 0)
+        XCTAssertEqual(status, .disconnected)
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(state.notice, settings.storageError)
+        XCTAssertTrue(settings.hasToken)
+
+        await state.saveToken("replacement-token").value
+        let replacementHelloSent = await eventually {
+            await transport.containsHello(token: "replacement-token")
+        }
+        XCTAssertTrue(replacementHelloSent)
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let replacementConnected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(replacementConnected)
+        let replacementNow = Date().timeIntervalSince1970 * 1_000
+        await transport.push(try Wire.encode(ActionRequest(actionId: "018f63f5-6f3d-7d21-88bc-222222222222",
+                                                           action: "click",
+                                                           issuedAtUnixMs: replacementNow,
+                                                           expiresAtUnixMs: replacementNow
+                                                               + Constants.actionLifetimeMs)))
+        let replacementPosted = await eventually { poster.postCount() == 1 }
+        XCTAssertTrue(replacementPosted)
+        XCTAssertEqual(state.notice, "Token saved.")
     }
 
     func testNewerSaveSupersedesClearSuspendedWhileClosingOldTransport() async throws {
