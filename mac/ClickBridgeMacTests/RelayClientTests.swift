@@ -43,11 +43,52 @@ private actor FakeWebSocketTransport: WebSocketTransport {
     func closes() -> Int { closeCount }
 }
 
+private actor GatedCloseTransport: WebSocketTransport {
+    private var closeContinuation: CheckedContinuation<Void, Never>?
+    private var receiveContinuation: CheckedContinuation<String, Error>?
+    private var pendingReceiveFailure = false
+    private(set) var receiveStarted = false
+    private(set) var closeStarted = false
+    private(set) var sent: [String] = []
+
+    func connect(to url: URL) async throws {}
+    func sendText(_ text: String) async throws { sent.append(text) }
+    func receiveText() async throws -> String {
+        receiveStarted = true
+        if pendingReceiveFailure {
+            pendingReceiveFailure = false
+            throw FakeTransportError.closed
+        }
+        return try await withCheckedThrowingContinuation { receiveContinuation = $0 }
+    }
+    func close() async {
+        closeStarted = true
+        await withCheckedContinuation { closeContinuation = $0 }
+        receiveContinuation?.resume(throwing: FakeTransportError.closed)
+        receiveContinuation = nil
+    }
+    func releaseClose() {
+        closeContinuation?.resume()
+        closeContinuation = nil
+    }
+    func failReceive() {
+        if let receiveContinuation {
+            self.receiveContinuation = nil
+            receiveContinuation.resume(throwing: FakeTransportError.closed)
+        } else {
+            pendingReceiveFailure = true
+        }
+    }
+    func didStartClose() -> Bool { closeStarted }
+    func didStartReceive() -> Bool { receiveStarted }
+    func sentMessages() -> [String] { sent }
+}
+
 private final class TransportFactory: @unchecked Sendable {
     private let lock = NSLock()
-    private var transports: [FakeWebSocketTransport]
+    private var transports: [any WebSocketTransport]
     private var makeCount = 0
-    init(_ transports: [FakeWebSocketTransport]) { self.transports = transports }
+    init(_ transports: [any WebSocketTransport]) { self.transports = transports }
     func make() -> any WebSocketTransport {
         lock.lock(); defer { lock.unlock() }
         makeCount += 1
@@ -450,6 +491,199 @@ final class RelayClientTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
+    func testClearSupersedesConfigureSuspendedWhileClosingOldTransport() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "initial-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+
+        let configuring = Task {
+            try await client.configure(urlString: "wss://example.com/ws", token: "old-token",
+                                       allowLocalSimulator: false, credentialRevision: 2)
+            await client.start(credentialRevision: 2)
+        }
+        let closeSuspended = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeSuspended)
+        await client.clearConfigurationAndStop(credentialRevision: 3)
+        await oldTransport.releaseClose()
+        _ = try? await configuring.value
+
+        XCTAssertEqual(factory.count(), 1)
+        let clearedStatus = await client.currentStatus()
+        XCTAssertEqual(clearedStatus, .disconnected)
+        let replacementMessages = await replacement.sentMessages()
+        XCTAssertTrue(replacementMessages.isEmpty)
+        await client.start(credentialRevision: 2)
+        XCTAssertEqual(factory.count(), 1)
+
+        try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                   allowLocalSimulator: false, credentialRevision: 4)
+        await client.start(credentialRevision: 4)
+        let explicitlyRestarted = await eventually { await replacement.connections() == 1 }
+        XCTAssertTrue(explicitlyRestarted)
+        await client.stop()
+    }
+
+    func testNewerConfigureSupersedesStopSuspendedWhileClosingOldTransport() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "old-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+
+        let stopping = Task { await client.stop(credentialRevision: 2) }
+        let closeSuspended = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeSuspended)
+        let configured = try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                                    allowLocalSimulator: false, credentialRevision: 3)
+        XCTAssertTrue(configured)
+        await client.start(credentialRevision: 3)
+        await oldTransport.releaseClose()
+        _ = await stopping.value
+
+        let status = await client.currentStatus()
+        XCTAssertEqual(status, .connecting)
+        XCTAssertEqual(factory.count(), 2)
+        let newHelloSent = await eventually { await replacement.containsHello(token: "new-token") }
+        XCTAssertTrue(newHelloSent)
+        await client.stop()
+    }
+
+    func testNewerConfigureSupersedesReconnectSuspendedWhileClosingOldTransport() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+                                 makeTransport: { factory.make() })
+        try await client.configure(urlString: "wss://example.com/ws", token: "old-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+
+        let reconnecting = Task { await client.reconnect(credentialRevision: 2) }
+        let closeStarted = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeStarted)
+        let configured = try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                                    allowLocalSimulator: false, credentialRevision: 3)
+        XCTAssertTrue(configured)
+        await client.start(credentialRevision: 3)
+        await oldTransport.releaseClose()
+        let reconnected = await reconnecting.value
+        XCTAssertFalse(reconnected)
+
+        XCTAssertEqual(factory.count(), 2)
+        let helloSent = await eventually { await replacement.containsHello(token: "new-token") }
+        let status = await client.currentStatus()
+        XCTAssertTrue(helloSent)
+        XCTAssertEqual(status, .connecting)
+        await client.stop()
+    }
+
+    func testNewerConfigureSupersedesConfigureSuspendedWhileClosingOldTransport() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+                                 makeTransport: { factory.make() })
+        try await client.configure(urlString: "wss://example.com/ws", token: "initial-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+
+        let older = Task {
+            try await client.configure(urlString: "wss://example.com/ws", token: "stale-token",
+                                       allowLocalSimulator: false, credentialRevision: 2)
+        }
+        let closeStarted = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeStarted)
+        let configured = try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                                    allowLocalSimulator: false, credentialRevision: 3)
+        XCTAssertTrue(configured)
+        await client.start(credentialRevision: 3)
+        await oldTransport.releaseClose()
+        let olderConfigured = try await older.value
+        XCTAssertFalse(olderConfigured)
+
+        XCTAssertEqual(factory.count(), 2)
+        let helloSent = await eventually { await replacement.containsHello(token: "new-token") }
+        XCTAssertTrue(helloSent)
+        await client.stop()
+    }
+
+    func testNewerInvalidConfigureRevokesAndSupersedesSuspendedConfigure() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+                                 makeTransport: { factory.make() })
+        try await client.configure(urlString: "wss://example.com/ws", token: "initial-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+
+        let older = Task {
+            try await client.configure(urlString: "wss://example.com/ws", token: "stale-token",
+                                       allowLocalSimulator: false, credentialRevision: 2)
+        }
+        let closeStarted = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeStarted)
+        do {
+            _ = try await client.configure(urlString: "https://example.com/ws", token: "invalid-token",
+                                           allowLocalSimulator: false, credentialRevision: 3)
+            XCTFail("Expected invalid relay URL")
+        } catch RelayEndpointError.invalidScheme {}
+        await oldTransport.releaseClose()
+        let olderConfigured = try await older.value
+        XCTAssertFalse(olderConfigured)
+
+        XCTAssertEqual(factory.count(), 1)
+        let replacementMessages = await replacement.sentMessages()
+        let status = await client.currentStatus()
+        XCTAssertTrue(replacementMessages.isEmpty)
+        XCTAssertEqual(status, .disconnected)
+    }
+
+    func testNewConfigurationSupersedesGenerationFailureSuspendedWhileClosing() async throws {
+        let oldTransport = GatedCloseTransport()
+        let replacement = FakeWebSocketTransport()
+        let factory = TransportFactory([oldTransport, replacement])
+        let client = RelayClient(actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+                                 makeTransport: { factory.make() })
+        try await client.configure(urlString: "wss://example.com/ws", token: "old-token",
+                                   allowLocalSimulator: false, credentialRevision: 1)
+        await client.start(credentialRevision: 1)
+        let receiveStarted = await eventually { await oldTransport.didStartReceive() }
+        XCTAssertTrue(receiveStarted)
+        await oldTransport.failReceive()
+        let closeStarted = await eventually { await oldTransport.didStartClose() }
+        XCTAssertTrue(closeStarted)
+
+        let configured = try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                                    allowLocalSimulator: false, credentialRevision: 2)
+        XCTAssertTrue(configured)
+        await client.start(credentialRevision: 2)
+        await oldTransport.releaseClose()
+
+        XCTAssertEqual(factory.count(), 2)
+        let helloSent = await eventually { await replacement.containsHello(token: "new-token") }
+        let status = await client.currentStatus()
+        XCTAssertTrue(helloSent)
+        XCTAssertEqual(status, .connecting)
+        await client.stop()
+    }
+
     func testTimeSyncUsesReceiptAndSendSamples() async throws {
         let transport = FakeWebSocketTransport()
         let values = LockedMilliseconds([100, 125])
@@ -485,6 +719,9 @@ private extension WireMessage {
 }
 
 private extension FakeWebSocketTransport {
+    func containsHello(token: String) -> Bool {
+        sent.contains { (try? JSONDecoder().decode(Hello.self, from: Data($0.utf8)))?.token == token }
+    }
     func contains(_ snapshot: MacState) -> Bool { count(of: snapshot) > 0 }
     func count(of snapshot: MacState) -> Int {
         sent.compactMap { text -> MacState? in

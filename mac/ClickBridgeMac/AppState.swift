@@ -14,6 +14,10 @@ final class AppState: ObservableObject {
     private let permissionService: PostEventPermissionService
     private let activationNotifications: NotificationCenter
     private var activationObserver: NSObjectProtocol?
+    private var credentialRevision: UInt64 = 0
+    private var credentialTask: Task<Void, Never>?
+    private var credentialEligible = true
+    private var lastStatusSequence: UInt64 = 0
 
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
          permissionService: PostEventPermissionService,
@@ -33,9 +37,16 @@ final class AppState: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.refreshPermission() }
         }
-        Task { [weak self, client, processor, settings] in
-            await client.setStatusHandler { [weak self] status in
-                Task { @MainActor in self?.connection = status }
+        let initialCredentialRevision = beginCredentialOperation()
+        credentialTask = Task { [weak self, client, processor, settings] in
+            await client.setStatusHandler { [weak self] event in
+                Task { @MainActor in
+                    guard let self,
+                          event.credentialRevision == self.credentialRevision,
+                          event.sequence > self.lastStatusSequence else { return }
+                    self.lastStatusSequence = event.sequence
+                    self.connection = event.status
+                }
             }
             await client.setResultHandler { [weak self] result in
                 Task { @MainActor in
@@ -44,32 +55,25 @@ final class AppState: ObservableObject {
                 }
             }
             await processor.setRemoteEnabled(settings.remoteEnabled)
-            await self?.publishState()
-            self?.reconnect()
+            guard let self, initialCredentialRevision == self.credentialRevision,
+                  !Task.isCancelled else { return }
+            await self.publishState()
+            guard initialCredentialRevision == self.credentialRevision, !Task.isCancelled else { return }
+            self.connect(credentialRevision: initialCredentialRevision)
         }
     }
 
     deinit {
+        credentialTask?.cancel()
         if let activationObserver { activationNotifications.removeObserver(activationObserver) }
     }
 
     var remoteToggleEnabled: Bool { true }
 
-    func reconnect() {
-        Task {
-            do {
-                guard let token = try settings.macToken(), !token.isEmpty else {
-                    notice = "Save MAC_TOKEN in Settings before connecting."
-                    return
-                }
-                try await client.configure(urlString: settings.relayURLString,
-                                           token: token,
-                                           allowLocalSimulator: false)
-                await client.start()
-            } catch {
-                notice = "Connection settings are invalid: \(error.localizedDescription)"
-            }
-        }
+    @discardableResult
+    func reconnect() -> Task<Void, Never> {
+        let revision = beginCredentialOperation()
+        return connect(credentialRevision: revision)
     }
 
     func publishState() async {
@@ -94,19 +98,81 @@ final class AppState: ObservableObject {
         refreshPermission()
     }
 
-    func saveToken(_ token: String) {
-        do { try settings.saveMacToken(token); notice = "Token saved."; reconnect() }
-        catch { notice = settings.storageError }
+    @discardableResult
+    func saveToken(_ token: String) -> Task<Void, Never> {
+        let revision = beginCredentialOperation()
+        do {
+            try settings.saveMacToken(token)
+            credentialEligible = true
+            notice = "Token saved."
+            return connect(credentialRevision: revision)
+        }
+        catch {
+            credentialEligible = false
+            notice = settings.storageError
+            let task = Task { _ = await client.clearConfigurationAndStop(credentialRevision: revision) }
+            credentialTask = task
+            return task
+        }
     }
 
-    func clearToken() {
-        Task {
-            var persistenceError: String?
-            do { try settings.clearMacToken() }
-            catch { persistenceError = settings.storageError }
+    @discardableResult
+    func clearToken() -> Task<Void, Never> {
+        let revision = beginCredentialOperation()
+        credentialEligible = false
+        var persistenceError: String?
+        do { try settings.clearMacToken() }
+        catch { persistenceError = settings.storageError }
 
-            await client.clearConfigurationAndStop()
+        let task = Task {
+            guard revision == credentialRevision, !Task.isCancelled else { return }
+            let cleared = await client.clearConfigurationAndStop(credentialRevision: revision)
+            guard cleared else { return }
+            guard revision == credentialRevision, !Task.isCancelled else { return }
             notice = persistenceError ?? "Token cleared."
         }
+        credentialTask = task
+        return task
+    }
+
+    private func beginCredentialOperation() -> UInt64 {
+        credentialRevision &+= 1
+        return credentialRevision
+    }
+
+    @discardableResult
+    private func connect(credentialRevision revision: UInt64) -> Task<Void, Never> {
+        let task = Task {
+            do {
+                try Task.checkCancellation()
+                guard revision == credentialRevision else { return }
+                guard credentialEligible else {
+                    await client.clearConfigurationAndStop(credentialRevision: revision)
+                    return
+                }
+                guard let token = try settings.macToken(), !token.isEmpty else {
+                    guard revision == credentialRevision, credentialEligible else { return }
+                    notice = "Save MAC_TOKEN in Settings before connecting."
+                    return
+                }
+                guard revision == credentialRevision, credentialEligible else { return }
+                let configured = try await client.configure(urlString: settings.relayURLString,
+                                                            token: token,
+                                                            allowLocalSimulator: false,
+                                                            credentialRevision: revision)
+                guard configured else { return }
+                try Task.checkCancellation()
+                guard revision == credentialRevision, credentialEligible else { return }
+                await client.start(credentialRevision: revision)
+            } catch {
+                guard revision == credentialRevision, !Task.isCancelled else { return }
+                credentialEligible = false
+                await client.clearConfigurationAndStop(credentialRevision: revision)
+                guard revision == credentialRevision, !Task.isCancelled else { return }
+                notice = "Connection settings are invalid: \(error.localizedDescription)"
+            }
+        }
+        credentialTask = task
+        return task
     }
 }
