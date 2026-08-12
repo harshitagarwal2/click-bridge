@@ -726,6 +726,30 @@ test('primitive connections invalidate the complete deauthorization result befor
   }
 });
 
+test('claimant connection is never closed through a mismatched generation snapshot', async () => {
+  const h = harness({
+    deauthorizationFailure: [
+      { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
+      { connection: PHONE, generation: 999, credentialVersion: 7 },
+    ],
+  });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  assert.equal(await acknowledge(h), 'reconciliation_failed');
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.closes.length, 0);
+  assert.equal(h.events.some(({ message }) => [
+    'pair.active', 'pair.completed',
+  ].includes(message.type)), false);
+
+  h.setDeauthorizationResult(null);
+  assert.equal(await acknowledge(h), 'ok');
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.coordinator.observe().phase, 'completed');
+});
+
 test('hostile deauthorization containers fail closed and remain retryable', async () => {
   const hostile = new Proxy([], {
     get(target, property, receiver) {

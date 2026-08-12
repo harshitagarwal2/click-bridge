@@ -444,7 +444,7 @@ export class PairingCoordinator {
         && Number.isSafeInteger(phone.generation) && phone.generation >= 0
         && Number.isSafeInteger(phone.credentialVersion) && phone.credentialVersion >= 0
         && phone.credentialVersion < completed.credentialVersion
-        && !this.#owns(completed.claimant, phone.connection, phone.generation))) {
+        && phone.connection !== completed.claimant.connection)) {
       this.#log('pairing_phone_resolution_failed');
       return false;
     }
