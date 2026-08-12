@@ -1,200 +1,123 @@
-// Owns the single pending logical action, the result timeout, and the clock
-// health gate. Transports are dumb pipes; this is the only place an action is
-// created, so adding a second transport in Milestone 2 cannot create a second
-// logical action.
+import { ACTION_LIFETIME_MS, PROTOCOL_VERSION } from './wire-protocol.js';
+import { PHONE_RESULT_TIMEOUT_MS } from './runtime-constants.js';
 
-import { reduce, activationDecision, clockSample, bestSample, clockHealthy } from './state.js';
-import {
-  PROTOCOL_VERSION,
-  ACTION_LIFETIME_MS,
-  PHONE_RESULT_TIMEOUT_MS,
-  CLOCK_SKEW_TOLERANCE_MS,
-  CLOCK_HEALTH_SAMPLES,
-  CLOCK_HEALTH_REFRESH_MS,
-} from './constants-lite.js';
+export function createActionRequest({ nowUnixMs, actionId }) {
+  return Object.freeze({
+    type: 'action.request',
+    v: PROTOCOL_VERSION,
+    actionId,
+    action: 'click',
+    issuedAtUnixMs: nowUnixMs,
+    expiresAtUnixMs: nowUnixMs + ACTION_LIFETIME_MS,
+  });
+}
 
 export class TransportCoordinator {
-  constructor({ getState, dispatch, transports, now, uuid, setTimeout: st, clearTimeout: ct }) {
+  constructor({
+    getState,
+    dispatch,
+    transports,
+    selectTransports,
+    clock,
+    scheduler,
+    idGenerator,
+    getClockDiagnostics,
+    onBusyChange,
+  }) {
     this.getState = getState;
     this.dispatch = dispatch;
-    this.transports = transports;              // [{ name, controller }]
-    this.now = now ?? (() => Date.now());
-    this.hiRes = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    this.uuid = uuid ?? (() => crypto.randomUUID());
-    this.setTimeout = st ?? ((f, ms) => setTimeout(f, ms));
-    this.clearTimeout = ct ?? ((t) => clearTimeout(t));
-
+    this.getTransports = typeof transports === 'function' ? transports : () => transports;
+    this.selectTransports = selectTransports ?? ((ports) => ports.filter((port) => port.ready).slice(0, 1));
+    this.clock = clock ?? { now: Date.now, monotonicNow: () => performance.now() };
+    this.scheduler = scheduler ?? { setTimeout, clearTimeout };
+    this.idGenerator = idGenerator ?? (() => crypto.randomUUID());
+    this.getClockDiagnostics = getClockDiagnostics ?? (() => null);
+    this.onBusyChange = onBusyChange ?? (() => {});
+    this.pending = null;
     this.resultTimer = null;
-    this.activationAt = null;
-    this.pendingSyncs = new Map();
-    this.samples = [];
-    this.clockTimer = null;
-    /** Diagnostics only; never mutates action.result. */
-    this.firstResultVia = null;
   }
 
-  // -- activation ----------------------------------------------------------
+  get busy() {
+    return this.pending !== null;
+  }
 
-  /** @param {'pointer'|'click'} kind */
-  activate(kind) {
-    const decision = activationDecision(kind, this.getState());
-    if (decision === 'consume') {
-      this.dispatch({ type: 'pointer.consumed' });
-      return 'consumed';
-    }
-    if (decision === 'ignore') return 'ignored';
+  activate() {
+    if (this.pending || !this.getState().visible) return 'ignored';
+    const readyPorts = this.getTransports().filter((port) => port.ready);
+    const selected = this.selectTransports(readyPorts).filter((port) => port.ready);
+    if (selected.length === 0) return 'ignored';
 
-    if (kind === 'pointer') this.dispatch({ type: 'pointer.armed' });
+    const request = createActionRequest({
+      nowUnixMs: this.clock.now(),
+      actionId: this.idGenerator(),
+    });
+    const sentPorts = selected.filter((port) => port.send(request));
+    if (sentPorts.length === 0) return 'ignored';
 
-    const issuedAtUnixMs = this.now();
-    const request = {
-      type: 'action.request',
-      v: PROTOCOL_VERSION,
-      actionId: this.uuid(),
-      action: 'click',
-      issuedAtUnixMs,
-      expiresAtUnixMs: issuedAtUnixMs + ACTION_LIFETIME_MS,
+    this.pending = {
+      request,
+      activationMonotonicMs: this.clock.monotonicNow(),
+      ports: Object.freeze(sentPorts.map((port) => Object.freeze({
+        name: port.name,
+        generation: port.generation,
+      }))),
     };
-
-    const ready = this.transports.filter((t) => t.controller.ready);
-    if (ready.length === 0) return 'ignored';
-
-    this.activationAt = this.hiRes();
-    this.firstResultVia = null;
     this.dispatch({ type: 'action.sent', actionId: request.actionId });
-
-    // Milestone 1 selects one path. Milestone 2 may send on every ready
-    // transport — the identical immutable request, never a regenerated one.
-    for (const t of ready) {
-      t.controller.send(request);
-      if (!this.hedging) break;
-    }
-
-    this.clearTimeout(this.resultTimer);
-    this.resultTimer = this.setTimeout(() => {
+    this.onBusyChange(true);
+    this.resultTimer = this.scheduler.setTimeout(() => {
+      if (this.pending?.request.actionId !== request.actionId) return;
       this.dispatch({ type: 'action.timeout', actionId: request.actionId });
+      this.#settled();
     }, PHONE_RESULT_TIMEOUT_MS);
-
     return 'sent';
   }
 
-  cancelPointer() {
-    this.dispatch({ type: 'pointer.cancelled' });
-  }
+  handleMessage(_via, message) {
+    if (message.type === 'relay.ack') {
+      if (this.pending?.request.actionId !== message.actionId) return false;
+      const terminal = message.status !== 'forwarded';
+      this.dispatch({
+        type: 'action.ack',
+        actionId: message.actionId,
+        status: message.status,
+        reason: message.reason,
+        clockDiagnostics: message.reason === 'expired' ? this.getClockDiagnostics() : null,
+      });
+      if (terminal) this.#settled();
+      return true;
+    }
 
-  // -- inbound -------------------------------------------------------------
-
-  handleMessage(via, msg) {
-    switch (msg.type) {
-      case 'state':
+    if (message.type === 'action.result') {
+      if (this.pending?.request.actionId !== message.actionId) {
         this.dispatch({
-          type: 'mac.state',
-          macOnline: msg.macOnline,
-          remoteEnabled: msg.remoteEnabled,
-          permission: msg.permission,
+          type: 'action.result', actionId: message.actionId,
+          status: message.status, reason: message.reason, ms: null,
         });
-        if (msg.macOnline && !this.getState().clock.checked) this.startClockHealth(via);
-        return;
-
-      case 'relay.ack':
-        this.dispatch({ type: 'action.ack', actionId: msg.actionId, status: msg.status });
-        if (msg.status !== 'forwarded') this.#stopResultTimer();
-        return;
-
-      case 'action.result': {
-        const state = this.getState();
-        const isFirst = state.action?.id === msg.actionId;
-        if (isFirst) {
-          this.firstResultVia = via;
-          this.#stopResultTimer();
-        }
-        this.dispatch({
-          type: 'action.result',
-          actionId: msg.actionId,
-          status: msg.status,
-          reason: msg.reason,
-          ms: isFirst && this.activationAt != null ? this.hiRes() - this.activationAt : null,
-        });
-        return;
+        return false;
       }
-
-      case 'time.sync.response':
-        this.#onSyncResponse(msg);
-        return;
-
-      default:
+      const ms = this.clock.monotonicNow() - this.pending.activationMonotonicMs;
+      this.dispatch({
+        type: 'action.result', actionId: message.actionId,
+        status: message.status, reason: message.reason, ms,
+      });
+      this.#settled();
+      return true;
     }
+    return false;
   }
 
-  #stopResultTimer() {
-    this.clearTimeout(this.resultTimer);
+  abandon(reason = 'disconnected') {
+    if (!this.pending) return;
+    const actionId = this.pending.request.actionId;
+    this.dispatch({ type: 'action.timeout', actionId, reason });
+    this.#settled();
+  }
+
+  #settled() {
+    if (!this.pending) return;
+    this.scheduler.clearTimeout(this.resultTimer);
     this.resultTimer = null;
-  }
-
-  // -- clock health --------------------------------------------------------
-
-  /**
-   * Measure the phone↔Mac offset before allowing any action. Without this a
-   * skewed clock would make every click fail as `expired` with no explanation —
-   * and a phone running fast would silently disable expiry altogether.
-   */
-  startClockHealth(via) {
-    this.samples = [];
-    this.pendingSyncs.clear();
-    for (let i = 0; i < CLOCK_HEALTH_SAMPLES; i++) this.#sendSync(via);
-
-    this.clearTimeout(this.clockTimer);
-    this.clockTimer = this.setTimeout(() => {
-      if (this.getState().mac.online) this.startClockHealth(via);
-    }, CLOCK_HEALTH_REFRESH_MS);
-  }
-
-  #sendSync(via) {
-    const transport = this.transports.find((t) => t.name === via) ?? this.transports[0];
-    if (!transport?.controller.ready) return;
-    const syncId = this.uuid();
-    const phoneSendUnixMs = this.now();
-    this.pendingSyncs.set(syncId, phoneSendUnixMs);
-    transport.controller.send({
-      type: 'time.sync.request', v: PROTOCOL_VERSION, syncId, phoneSendUnixMs,
-    });
-  }
-
-  #onSyncResponse(msg) {
-    const t0 = this.pendingSyncs.get(msg.syncId);
-    if (t0 === undefined) return;
-    this.pendingSyncs.delete(msg.syncId);
-
-    this.samples.push(clockSample({
-      t0,
-      t1: msg.macReceiveUnixMs,
-      t2: msg.macSendUnixMs,
-      t3: this.now(),
-    }));
-
-    if (this.samples.length < CLOCK_HEALTH_SAMPLES) return;
-
-    const best = bestSample(this.samples);
-    if (!best) {
-      this.dispatch({ type: 'clock.health', healthy: false, offsetMs: null, uncertaintyMs: null });
-      return;
-    }
-    this.dispatch({
-      type: 'clock.health',
-      healthy: clockHealthy(best.offsetMs, best.rttMs, CLOCK_SKEW_TOLERANCE_MS),
-      offsetMs: best.offsetMs,
-      uncertaintyMs: best.rttMs / 2,
-    });
-  }
-
-  reset() {
-    this.#stopResultTimer();
-    this.clearTimeout(this.clockTimer);
-    this.clockTimer = null;
-    this.samples = [];
-    this.pendingSyncs.clear();
-    this.activationAt = null;
+    this.pending = null;
+    this.onBusyChange(false);
   }
 }
-
-export { reduce };

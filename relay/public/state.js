@@ -9,6 +9,7 @@ export const PHASE = Object.freeze({
   PERMISSION_REQUIRED: 'permission_required',
   REMOTE_DISABLED: 'remote_disabled',
   CLOCK_UNHEALTHY: 'clock_unhealthy',
+  CLOCK_UNAVAILABLE: 'clock_unavailable',
   CLOCK_CHECKING: 'clock_checking',
   READY: 'ready',
   SENDING: 'sending',
@@ -27,13 +28,13 @@ export function initialState() {
     visible: true,
     connected: false,
     mac: { online: false, remoteEnabled: false, permission: 'unknown' },
-    clock: { checked: false, healthy: false, offsetMs: null, uncertaintyMs: null },
+    clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null },
     /** in-flight logical action: { id, phase: 'sending'|'forwarded' } */
     action: null,
     /** last completed outcome: { outcome, reason, ms } */
     last: null,
     /** a pointer activation is awaiting the synthetic click that belongs to it */
-    pointerArmed: false,
+    pointerSequence: null,
     lateResultCount: 0,
   };
 }
@@ -42,8 +43,8 @@ const clearVolatile = (s) => ({
   ...s,
   connected: false,
   mac: { online: false, remoteEnabled: false, permission: 'unknown' },
-  clock: { checked: false, healthy: false, offsetMs: null, uncertaintyMs: null },
-  pointerArmed: false,
+  clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null },
+  pointerSequence: null,
 });
 
 export function reduce(state, event) {
@@ -91,20 +92,37 @@ export function reduce(state, event) {
         clock: {
           checked: true,
           healthy: event.healthy,
+          unavailable: false,
           offsetMs: event.offsetMs ?? null,
           uncertaintyMs: event.uncertaintyMs ?? null,
+          measuredAtUnixMs: event.measuredAtUnixMs ?? null,
         },
       };
 
+    case 'clock.started':
     case 'clock.reset':
-      return { ...state, clock: { checked: false, healthy: false, offsetMs: null, uncertaintyMs: null } };
+      return { ...state, clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null } };
+
+    case 'clock.unavailable':
+      return { ...state, clock: { ...state.clock, checked: false, healthy: false, unavailable: true } };
 
     case 'pointer.armed':
-      return { ...state, pointerArmed: true };
+      return {
+        ...state,
+        pointerSequence: {
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          button: event.button,
+          startedAtMonotonicMs: event.startedAtMonotonicMs,
+        },
+      };
 
     case 'pointer.consumed':
+      return { ...state, pointerSequence: null };
+
     case 'pointer.cancelled':
-      return { ...state, pointerArmed: false };
+      if (!state.pointerSequence || state.pointerSequence.pointerId !== event.pointerId) return state;
+      return { ...state, pointerSequence: null };
 
     case 'action.sent':
       if (state.action) return state;                 // one in flight, always
@@ -119,7 +137,12 @@ export function reduce(state, event) {
       return {
         ...state,
         action: null,
-        last: { outcome: 'rejected', reason: event.status, ms: event.ms ?? null },
+        last: {
+          outcome: 'rejected',
+          reason: event.reason ?? event.status,
+          ms: event.ms ?? null,
+          clockDiagnostics: event.clockDiagnostics ?? null,
+        },
       };
 
     case 'action.result':
@@ -161,6 +184,7 @@ export function phaseOf(state) {
   if (!state.mac.online) return PHASE.MAC_OFFLINE;
   if (state.mac.permission !== 'ready') return PHASE.PERMISSION_REQUIRED;
   if (!state.mac.remoteEnabled) return PHASE.REMOTE_DISABLED;
+  if (state.clock.unavailable) return PHASE.CLOCK_UNAVAILABLE;
   if (!state.clock.checked) return PHASE.CLOCK_CHECKING;
   if (!state.clock.healthy) return PHASE.CLOCK_UNHEALTHY;
   if (state.last?.outcome === 'posted') return PHASE.POSTED;
@@ -197,6 +221,7 @@ export function view(state) {
     case PHASE.PERMISSION_REQUIRED: status = 'Grant input permission on the Mac'; break;
     case PHASE.REMOTE_DISABLED: status = 'Enable remote control on the Mac'; break;
     case PHASE.CLOCK_CHECKING: status = 'Checking clock…'; break;
+    case PHASE.CLOCK_UNAVAILABLE: status = 'Clock check unavailable — retry'; break;
     case PHASE.CLOCK_UNHEALTHY: status = 'Clock mismatch — enable automatic date and time'; break;
     case PHASE.SENDING: status = 'Sending…'; break;
     case PHASE.FORWARDED: status = 'Forwarded…'; break;
@@ -207,11 +232,16 @@ export function view(state) {
       status = REASON_TEXT[state.last.reason] ?? `Rejected — ${state.last.reason}`;
       break;
     case PHASE.UNKNOWN:
-      status = 'Click may have occurred — check the Mac before retrying';
+      status = 'Click may have occurred; check the Mac before trying again.';
       break;
     default: status = 'Tap to click';
   }
-  return { phase, enabled, status };
+  return {
+    phase,
+    enabled,
+    status,
+    retryClockVisible: phase === PHASE.CLOCK_UNAVAILABLE,
+  };
 }
 
 /**
@@ -223,12 +253,18 @@ export function view(state) {
  *
  * @returns {'send'|'consume'|'ignore'}
  */
-export function activationDecision(kind, state) {
+export function activationDecision(activation, state) {
+  const event = typeof activation === 'string'
+    ? { kind: activation === 'pointer' ? 'pointerdown' : activation }
+    : activation;
   const gateOpen = view(state).enabled;
-  if (kind === 'pointer') return gateOpen ? 'send' : 'ignore';
-  if (kind === 'click') {
-    if (state.pointerArmed) return 'consume';       // synthetic click from our own pointerdown
-    return gateOpen ? 'send' : 'ignore';            // keyboard / VoiceOver / Switch Control
+  if (event.kind === 'pointerdown') return gateOpen ? 'send' : 'ignore';
+  if (event.kind === 'click') {
+    const handled = state.pointerSequence;
+    const pointerGenerated = event.detail > 0 || Boolean(event.pointerType);
+    const matchingId = event.pointerId == null || event.pointerId === handled?.pointerId;
+    if (handled && pointerGenerated && matchingId) return 'consume';
+    return gateOpen ? 'send' : 'ignore';
   }
   return 'ignore';
 }

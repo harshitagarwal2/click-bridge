@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Click Bridge">
 <title>Click Bridge</title>
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png">
 <link rel="icon" href="/icons/icon-192.png">
 <!-- No inline script or style anywhere: the relay serves a CSP with
      script-src 'self' and style-src 'self', and Caddy passes it through
@@ -34,6 +34,7 @@
   <button id="click-button" class="click" type="button" disabled>CLICK</button>
   <p class="hint">Clicks at the Mac's current cursor</p>
   <p id="status" class="result" role="status" aria-live="polite">Starting…</p>
+  <button id="clock-retry" class="btn retry" type="button" hidden>Retry clock check</button>
 </main>
 
 <dialog id="settings" class="sheet" aria-labelledby="settings-title">
@@ -47,7 +48,7 @@
     <p id="token-state" class="muted">No token stored.</p>
 
     <div class="row">
-      <button id="token-save" class="btn primary" type="button">Save</button>
+      <button id="token-save" class="btn primary" type="button">Save / replace</button>
       <button id="token-clear" class="btn danger" type="button">Clear</button>
     </div>
 
@@ -57,6 +58,11 @@
       <span>Keep-warm ping (5s) — experimental, off by default</span>
     </label>
     <p id="diag" class="muted mono">—</p>
+    <p id="wake-status" class="muted">Wake Lock status unavailable.</p>
+
+    <h3 class="sub">Install on phone</h3>
+    <p class="muted install">iOS/iPadOS 16.4 or newer: open the browser Share menu, then choose Add to Home Screen.</p>
+    <p class="muted install">Android: use the browser Install/Add to Home Screen action.</p>
 
     <div class="row end">
       <button class="btn" value="close" type="submit">Done</button>

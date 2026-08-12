@@ -29,6 +29,7 @@ const STATIC_FILES = new Map([
   ['/state.js', ['state.js', 'text/javascript; charset=utf-8']],
   ['/wire-protocol.js', ['wire-protocol.js', 'text/javascript; charset=utf-8']],
   ['/runtime-constants.js', ['runtime-constants.js', 'text/javascript; charset=utf-8']],
+  ['/runtime-scheduler.js', ['runtime-scheduler.js', 'text/javascript; charset=utf-8']],
   ['/protocol-lite.js', ['protocol-lite.js', 'text/javascript; charset=utf-8']],
   ['/constants-lite.js', ['constants-lite.js', 'text/javascript; charset=utf-8']],
   ['/transport-controller.js', ['transport-controller.js', 'text/javascript; charset=utf-8']],

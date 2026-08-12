@@ -76,6 +76,19 @@ test('clock checking, then unhealthy, then ready', () => {
   assert.equal(view(good).enabled, true);
 });
 
+test('clock check unavailable is distinct from clock mismatch and exposes retry', () => {
+  const checking = apply(initialState(),
+    { type: 'token.set', token: 'x' }, { type: 'transport.open' },
+    { type: 'mac.state', macOnline: true, remoteEnabled: true, permission: 'ready' },
+    { type: 'clock.started' });
+  const unavailable = reduce(checking, { type: 'clock.unavailable' });
+
+  assert.equal(phaseOf(unavailable), PHASE.CLOCK_UNAVAILABLE);
+  assert.equal(view(unavailable).enabled, false);
+  assert.equal(view(unavailable).retryClockVisible, true);
+  assert.equal(view(unavailable).status, 'Clock check unavailable — retry');
+});
+
 test('ready → sending → forwarded → posted', () => {
   let s = readyState();
   assert.equal(phaseOf(s), PHASE.READY);
@@ -142,7 +155,20 @@ test('result timeout becomes Unknown and never retries', () => {
   s = reduce(s, { type: 'action.timeout', actionId: ID });
   assert.equal(phaseOf(s), PHASE.UNKNOWN);
   assert.equal(s.action, null);
-  assert.match(view(s).status, /check the Mac/);
+  assert.equal(view(s).status, 'Click may have occurred; check the Mac before trying again.');
+});
+
+test('rejected relay acknowledgement preserves its actionable wire reason', () => {
+  let s = reduce(readyState(), { type: 'action.sent', actionId: ID });
+  s = reduce(s, {
+    type: 'action.ack', actionId: ID, status: 'rejected', reason: 'expired',
+    clockDiagnostics: { offsetMs: 80, uncertaintyMs: 12, sampleAgeMs: 2400 },
+  });
+
+  assert.equal(phaseOf(s), PHASE.REJECTED);
+  assert.equal(s.last.reason, 'expired');
+  assert.deepEqual(s.last.clockDiagnostics,
+    { offsetMs: 80, uncertaintyMs: 12, sampleAgeMs: 2400 });
 });
 
 test('a late result after timeout counts as diagnostics and cannot regress', () => {
@@ -213,38 +239,49 @@ test('clearing the token resets everything', () => {
 
 test('pointerdown sends and its synthetic click is consumed', () => {
   const s = readyState();
-  assert.equal(activationDecision('pointer', s), 'send');
+  assert.equal(activationDecision({ kind: 'pointerdown', pointerId: 7, pointerType: 'touch', button: 0 }, s), 'send');
 
-  const armed = reduce(s, { type: 'pointer.armed' });
-  assert.equal(activationDecision('click', armed), 'consume', 'no second request');
+  const armed = reduce(s, {
+    type: 'pointer.armed', pointerId: 7, pointerType: 'touch', button: 0,
+    startedAtMonotonicMs: 1234,
+  });
+  assert.equal(armed.pointerSequence.startedAtMonotonicMs, 1234);
+  assert.equal(activationDecision({ kind: 'click', detail: 1, pointerType: 'touch' }, armed), 'consume', 'no second request');
 });
 
 test('a long press still produces exactly one request', () => {
   // The old 400 ms window broke here: the synthetic click landed outside it and
   // read as a fresh activation. Sequence-based suppression has no such edge.
-  let s = reduce(readyState(), { type: 'pointer.armed' });
+  let s = reduce(readyState(), { type: 'pointer.armed', pointerId: 7, pointerType: 'touch', button: 0 });
   s = reduce(s, { type: 'action.sent', actionId: ID });
   s = reduce(s, { type: 'action.result', actionId: ID, status: 'posted', reason: 'ok', ms: 60 });
   // ... 5 seconds later the finger lifts and the synthetic click fires.
-  assert.equal(activationDecision('click', s), 'consume');
+  assert.equal(activationDecision({ kind: 'click', detail: 1, pointerType: 'touch' }, s), 'consume');
 });
 
 test('keyboard and assistive activation still work', () => {
-  const s = readyState();
-  assert.equal(s.pointerArmed, false);
-  assert.equal(activationDecision('click', s), 'send', 'VoiceOver / keyboard path');
+  const s = reduce(readyState(), {
+    type: 'pointer.armed', pointerId: 7, pointerType: 'touch', button: 0,
+  });
+  assert.equal(activationDecision({ kind: 'click', detail: 0 }, s), 'send', 'VoiceOver / keyboard path');
 });
 
 test('a cancelled pointer disarms suppression', () => {
-  let s = reduce(readyState(), { type: 'pointer.armed' });
-  s = reduce(s, { type: 'pointer.cancelled' });
-  assert.equal(activationDecision('click', s), 'send');
+  let s = reduce(readyState(), { type: 'pointer.armed', pointerId: 7, pointerType: 'touch', button: 0 });
+  s = reduce(s, { type: 'pointer.cancelled', pointerId: 7 });
+  assert.equal(activationDecision({ kind: 'click', detail: 1, pointerType: 'touch' }, s), 'send');
+});
+
+test('pointercancel for another sequence does not clear the handled pointer', () => {
+  let s = reduce(readyState(), { type: 'pointer.armed', pointerId: 7, pointerType: 'touch', button: 0 });
+  s = reduce(s, { type: 'pointer.cancelled', pointerId: 8 });
+  assert.equal(activationDecision({ kind: 'click', detail: 1, pointerType: 'touch' }, s), 'consume');
 });
 
 test('activation is refused whenever the gate is shut', () => {
   const shut = apply(initialState(), { type: 'token.set', token: 'x' });
-  assert.equal(activationDecision('pointer', shut), 'ignore');
-  assert.equal(activationDecision('click', shut), 'ignore');
+  assert.equal(activationDecision({ kind: 'pointerdown', pointerId: 1, pointerType: 'touch', button: 0 }, shut), 'ignore');
+  assert.equal(activationDecision({ kind: 'click', detail: 0 }, shut), 'ignore');
 });
 
 // ---------------------------------------------------------------------------

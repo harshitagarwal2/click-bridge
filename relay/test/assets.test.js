@@ -73,7 +73,36 @@ test('the manifest is installable', () => {
 });
 
 test('an Apple touch icon is declared', () => {
-  assert.match(html, /rel="apple-touch-icon"/);
+  assert.match(html, /rel="apple-touch-icon" href="\/icons\/apple-touch-icon-180\.png"/);
+});
+
+test('platform installation guidance does not depend on beforeinstallprompt', () => {
+  assert.match(html, /Share.*Add to Home Screen/s);
+  assert.match(html, /Android.*Install\/Add to Home Screen/s);
+  assert.equal(/beforeinstallprompt/.test(readFileSync(join(PUBLIC, 'app.js'), 'utf8')), false);
+});
+
+test('clock failure and wake-lock support have actionable status controls', () => {
+  assert.match(html, /id="clock-retry"/);
+  assert.match(html, /id="wake-status"/);
+});
+
+test('click target preserves the low-latency accessible dimensions', () => {
+  const css = readFileSync(join(PUBLIC, 'styles.css'), 'utf8');
+  assert.match(css, /body\s*\{[\s\S]*touch-action\s*:\s*manipulation/);
+  assert.match(css, /#click-button\s*\{[\s\S]*min-height\s*:\s*45vh/);
+  assert.match(css, /#click-button\s*\{[\s\S]*width\s*:\s*min\(88vw\s*,\s*32rem\)/);
+});
+
+test('install icons have their declared PNG dimensions', () => {
+  for (const [name, size] of [
+    ['icon-192.png', 192], ['icon-512.png', 512], ['apple-touch-icon-180.png', 180],
+  ]) {
+    const bytes = readFileSync(join(PUBLIC, 'icons', name));
+    assert.equal(bytes.toString('ascii', 1, 4), 'PNG');
+    assert.equal(bytes.readUInt32BE(16), size, `${name} width`);
+    assert.equal(bytes.readUInt32BE(20), size, `${name} height`);
+  }
 });
 
 test('no service worker is registered in Milestone 1', () => {
