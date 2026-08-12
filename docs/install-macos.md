@@ -111,7 +111,8 @@ validate_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -c '%a' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
@@ -196,7 +197,8 @@ validate_local_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -f '%Lp' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
@@ -240,7 +242,8 @@ validate_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -c '%a' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
@@ -318,7 +321,8 @@ validate_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -c '%a' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
@@ -358,7 +362,8 @@ validate_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -c '%a' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
@@ -391,7 +396,8 @@ validate_secret_file() {
   test -f "$file"
   test ! -L "$file"
   test "$(stat -c '%a' "$file")" = 600
-  test "$(wc -l < "$file" | tr -d '[:space:]')" = 3
+  test "$(awk 'END { print NR }' "$file")" = 3
+  test "$(tail -c 1 "$file" | od -An -tu1 | tr -d '[:space:]')" = 10
   test "$(grep -c '^CLICK_BRIDGE_DOMAIN=' "$file")" = 1
   test "$(grep -c '^PHONE_TOKEN=' "$file")" = 1
   test "$(grep -c '^MAC_TOKEN=' "$file")" = 1
