@@ -457,6 +457,84 @@ test('cancel aborts delayed transport startup before its external side effect', 
   assert.deepEqual(h.states.at(-1), { phase: 'cancelled', reason: null });
 });
 
+test('an abort listener that cancels cannot duplicate cancellation work', async () => {
+  const activationStarted = deferred();
+  const activationReleased = deferred();
+  let h;
+  h = harness({
+    startTransport: async (_slot, signal) => {
+      signal.addEventListener('abort', () => h.controller.cancel());
+      activationStarted.resolve();
+      await activationReleased.promise;
+      return false;
+    },
+  });
+  h.controller.start(REFERENCE);
+  const pairingSocket = h.sockets[0];
+  const ackSent = observeAck(pairingSocket);
+  pairingSocket.open();
+  acceptClaim(pairingSocket);
+  pairingSocket.message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  pairingSocket.message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+  await activationStarted.promise;
+
+  h.controller.cancel();
+  activationReleased.resolve();
+  await settleAsyncWork();
+
+  assert.equal(pairingSocket.sent.filter(({ type }) => type === 'pair.cancel.claim').length, 1);
+  assert.equal(h.states.filter(({ phase }) => phase === 'cancelled').length, 1);
+  assert.deepEqual(h.states.at(-1), { phase: 'cancelled', reason: null });
+});
+
+test('an abort listener that starts pairing owns the controller over the interrupted start', async () => {
+  const activationStarted = deferred();
+  const activationReleased = deferred();
+  const interruptedReference = `${'B'.repeat(42)}A`;
+  const reentrantReference = `${'C'.repeat(42)}A`;
+  const claimIds = [CLAIM_ID, '018f63f5-6f3d-7d21-88bc-9ef561f030e3'];
+  let h;
+  h = harness({
+    idGenerator: () => claimIds.shift(),
+    startTransport: async (_slot, signal) => {
+      signal.addEventListener('abort', () => h.controller.start(reentrantReference));
+      activationStarted.resolve();
+      await activationReleased.promise;
+      return false;
+    },
+  });
+  h.controller.start(REFERENCE);
+  const pairingSocket = h.sockets[0];
+  const ackSent = observeAck(pairingSocket);
+  pairingSocket.open();
+  acceptClaim(pairingSocket);
+  pairingSocket.message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  pairingSocket.message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+  await activationStarted.promise;
+
+  h.controller.start(interruptedReference);
+  activationReleased.resolve();
+  await settleAsyncWork();
+
+  assert.equal(h.sockets.length, 2);
+  const reentrantSocket = h.sockets[1];
+  reentrantSocket.open();
+  assert.equal(reentrantSocket.sent[0].reference, reentrantReference);
+  assert.equal(h.states.at(-1).phase, 'claiming');
+});
+
 test('credential replacement aborts delayed transport startup before its external side effect', async () => {
   const activationStarted = deferred();
   const activationReleased = deferred();

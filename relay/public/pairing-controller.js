@@ -87,11 +87,14 @@ export class PairingController {
   }
 
   start(reference) {
-    this.#abortActivation();
-    this.#clearDeadline();
-    this.#retireSocket(this.socket);
+    const activation = this.#detachActivation();
+    const socketToRetire = this.socket;
     const generation = ++this.generation;
+    this.#clearDeadline();
     this.#clearSensitive();
+    this.#retireSocket(socketToRetire);
+    this.#abortActivation(activation);
+    if (this.generation !== generation) return;
     this.reference = reference;
     this.claimId = this.idGenerator();
     this.acknowledgedSlot = null;
@@ -152,21 +155,24 @@ export class PairingController {
     } catch {
       // Cancellation is local-first. Cleanup below must not depend on delivery.
     } finally {
-      this.#abortActivation();
-      this.generation += 1;
+      const activation = this.#detachActivation();
+      const cancellationGeneration = ++this.generation;
       this.#clearDeadline();
       this.#clearSensitive();
       this.#retireSocket(socket);
-      this.#publish('cancelled');
+      this.#abortActivation(activation);
+      if (this.generation === cancellationGeneration) this.#publish('cancelled');
     }
   }
 
   async recover() {
-    this.#abortActivation();
+    const activation = this.#detachActivation();
     const ownership = { generation: ++this.generation, socket: null };
     this.#clearDeadline();
     this.#retireSocket(this.socket);
     this.#clearSensitive();
+    this.#abortActivation(activation);
+    if (!this.#owns(ownership)) return false;
     while (true) {
       if (!this.#owns(ownership)) return false;
       const pending = this.settings.getPending();
@@ -329,7 +335,9 @@ export class PairingController {
       this.#failActivation('storage_failed', ownership);
       return false;
     }
-    this.#abortActivation();
+    const previousActivation = this.#detachActivation();
+    this.#abortActivation(previousActivation);
+    if (!this.#owns(ownership)) return false;
     const activation = { controller: new AbortController(), ownership };
     this.activation = activation;
     try {
@@ -384,12 +392,13 @@ export class PairingController {
   }
 
   #terminate(phase, reason, socket) {
-    this.#abortActivation();
-    this.generation += 1;
+    const activation = this.#detachActivation();
+    const terminalGeneration = ++this.generation;
     this.#clearDeadline();
     this.#clearSensitive();
     this.#retireSocket(socket);
-    this.#publish(phase, reason);
+    this.#abortActivation(activation);
+    if (this.generation === terminalGeneration) this.#publish(phase, reason);
   }
 
   #clearSensitive() {
@@ -399,9 +408,13 @@ export class PairingController {
     this.pairingExpiresAtUnixMs = null;
   }
 
-  #abortActivation() {
+  #detachActivation() {
     const activation = this.activation;
     this.activation = null;
+    return activation;
+  }
+
+  #abortActivation(activation) {
     activation?.controller.abort();
   }
 
