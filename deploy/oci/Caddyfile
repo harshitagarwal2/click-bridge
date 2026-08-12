@@ -1,10 +1,4 @@
 {$CLICK_BRIDGE_DOMAIN} {
 	encode zstd gzip
-
-	# The relay emits the canonical Content-Security-Policy itself so localhost
-	# and production enforce identical rules. Caddy passes it through unchanged
-	# — do NOT define a second policy string here, it will drift.
-	reverse_proxy relay:8080 {
-		header_up X-Forwarded-Proto {scheme}
-	}
+	reverse_proxy relay:8080
 }
