@@ -4,6 +4,7 @@ import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
 import { activationDecision, initialState, PHASE, reduce, view } from './state.js';
 import { TransportCoordinator } from './transport-coordinator.js';
+import { WakeLockController } from './wake-lock-controller.js';
 
 const byId = (id) => document.getElementById(id);
 const element = {
@@ -27,7 +28,6 @@ const settings = new PhoneSettingsStore(window.localStorage);
 const scheduler = createRuntimeScheduler(window);
 let state = initialState();
 let lastMacReadyGeneration = null;
-let wakeLock = null;
 let clockHealth;
 
 function dispatch(event) {
@@ -239,44 +239,38 @@ function legacyIOSWakeLockUnavailable() {
   return major < 18 || (major === 18 && minor < 4);
 }
 
-async function acquireWakeLock() {
-  if (legacyIOSWakeLockUnavailable()) {
-    element.wakeStatus.textContent = 'Wake Lock unavailable on iOS/iPadOS below 18.4.';
-    return;
-  }
-  if (!navigator.wakeLock?.request) {
-    element.wakeStatus.textContent = 'Wake Lock unavailable in this browser.';
-    return;
-  }
-  try {
-    wakeLock = await navigator.wakeLock.request('screen');
-    element.wakeStatus.textContent = 'Wake Lock active while this page is visible.';
-    wakeLock.addEventListener?.('release', () => {
-      if (document.visibilityState === 'visible') element.wakeStatus.textContent = 'Wake Lock released.';
-    }, { once: true });
-  } catch {
-    wakeLock = null;
-    element.wakeStatus.textContent = 'Wake Lock was not granted; clicking still works.';
-  }
-}
-
-async function releaseWakeLock() {
-  try { await wakeLock?.release(); } catch { /* already released */ }
-  wakeLock = null;
-}
+const wakeLockLegacyUnavailable = legacyIOSWakeLockUnavailable();
+const wakeLockController = new WakeLockController({
+  requestLock: wakeLockLegacyUnavailable || !navigator.wakeLock?.request
+    ? null
+    : () => navigator.wakeLock.request('screen'),
+  onStatus: ({ state: wakeState }) => {
+    const copy = {
+      active: 'Wake Lock active while this page is visible.',
+      released: 'Wake Lock released.',
+      denied: 'Wake Lock was not granted; clicking still works.',
+      suspended: 'Wake Lock paused while hidden.',
+      pending: 'Requesting Wake Lock…',
+      unavailable: wakeLockLegacyUnavailable
+        ? 'Wake Lock unavailable on iOS/iPadOS below 18.4.'
+        : 'Wake Lock unavailable in this browser.',
+    };
+    element.wakeStatus.textContent = copy[wakeState] ?? 'Wake Lock status unavailable.';
+  },
+});
 
 function goHidden() {
   coordinator.abandon('hidden');
   clockHealth.macNotReady();
   dispatch({ type: 'visibility', visible: false });
   oci.close('hidden');
-  releaseWakeLock();
+  wakeLockController.suspend();
 }
 
 function goVisible() {
   dispatch({ type: 'visibility', visible: true });
   if (state.token && !oci.ready) oci.connect();
-  acquireWakeLock();
+  wakeLockController.acquire();
 }
 
 document.addEventListener('visibilitychange', () => {

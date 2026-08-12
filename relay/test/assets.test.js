@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CONTENT_SECURITY_POLICY } from '../src/csp.js';
+import { createHttpHandler } from '../src/server.js';
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), '../public');
 const html = readFileSync(join(PUBLIC, 'index.html'), 'utf8');
@@ -55,6 +56,34 @@ test('every asset referenced by index.html exists', () => {
   for (const ref of refs) {
     assert.ok(existsSync(join(PUBLIC, ref)), `missing asset ${ref}`);
   }
+});
+
+async function requestStatic(pathname) {
+  return new Promise((resolve) => {
+    const response = {
+      status: null,
+      body: '',
+      writeHead(status) { this.status = status; },
+      end(body = '') { this.body = body.toString(); resolve(this); },
+    };
+    createHttpHandler({ publicDir: PUBLIC, clickBridgeDomain: 'localhost' })(
+      { method: 'GET', url: pathname }, response,
+    );
+  });
+}
+
+test('legacy protocol-lite asset is unreferenced and unavailable over HTTP', async () => {
+  assert.equal(existsSync(join(PUBLIC, 'protocol-lite.js')), false, 'duplicate parser shim must not ship');
+  for (const name of ['app.js', 'state.js', 'transport-controller.js', 'transport-coordinator.js']) {
+    assert.equal(
+      readFileSync(join(PUBLIC, name), 'utf8').includes('protocol-lite'),
+      false,
+      `${name} must use wire-protocol.js directly`,
+    );
+  }
+  const response = await requestStatic('/protocol-lite.js');
+  assert.equal(response.status, 404);
+  assert.equal(response.body, 'not found');
 });
 
 test('the manifest is installable', () => {
