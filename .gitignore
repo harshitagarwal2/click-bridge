@@ -15,3 +15,4 @@ benchmarks/*.csv
 !benchmarks/run-evidence.csv
 !benchmarks/measurements.example.csv
 _to_delete/
+.omx/

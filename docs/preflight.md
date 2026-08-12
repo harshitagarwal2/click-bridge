@@ -59,26 +59,32 @@ engine does not establish the VM architecture or production readiness.
 
 ## OCI SJC and public endpoint gates
 
-No OCI credential, SSH target, cloud console, DNS account, or secret file was
-available to this isolated lane. The existing VM was not mutated, and no secret
-was inspected. Later deployment must close the following gates with fresh
-read-only evidence before changing the instance.
+The gates that were unknown during Task 1 were closed on 2026-08-12 UTC through
+the authenticated OCI CLI, an SSH inspection, public DNS/TLS probes, and an
+authenticated WebSocket smoke. This record deliberately omits tenancy, user,
+VNIC, subnet, NSG, API-key, and token identifiers.
 
-| Gate | Required recorded fact | Current value |
+| Gate | Required recorded fact | Verified value |
 |---|---|---|
-| OCI-01 | SSH user and public IPv4 supplied through the approved operator path | Not supplied |
-| OCI-02 | Region | `us-sanjose-1` (user-confirmed plan constraint) |
-| OCI-03 | Shape and `amd64`/`arm64` architecture | Pending OCI inspection |
-| OCI-04 | Operating system, Docker server, and Compose versions | Pending OCI inspection |
-| OCI-05 | Public IPv4 and ephemeral/reserved status | Pending OCI inspection |
-| OCI-06 | Public subnet, Internet Gateway, default route, VNIC, and NSG/security-list state | Pending OCI inspection |
-| OCI-07 | Existing ingress and host-firewall state | Pending OCI inspection |
-| DOMAIN-01 | Final hostname and DNS A record | Pending user-owned DNS decision |
+| OCI-01 | SSH user and public IPv4 | `opc@146.235.216.172`; the host key is pinned in the operator's SSH known-hosts data |
+| OCI-02 | Region | `us-sanjose-1`, confirmed as the tenancy home region |
+| OCI-03 | Shape and architecture | `VM.Standard.A1.Flex`, Arm64/aarch64, 1 OCPU, 6 GB RAM |
+| OCI-04 | Operating system and container runtime | Oracle Linux 9.8; Docker Engine 29.7.2; Compose 5.4.0 |
+| OCI-05 | Public IPv4 status | `146.235.216.172`, ephemeral and attached to the instance's primary private IP |
+| OCI-06 | Public network path | Public subnet, Internet Gateway/default route, instance NSG, and subnet security-list path verified |
+| OCI-07 | Ingress and host firewall | Public HTTP/HTTPS and operator SSH only; TCP 8080 is not published and is externally closed |
+| DOMAIN-01 | Final hostname and DNS | `clickbridge-sjc.duckdns.org` resolves to `146.235.216.172`; no AAAA record |
 
-`CLICK_BRIDGE_DOMAIN` is intentionally **unset** until DOMAIN-01 closes. The
-preferred choice is a subdomain of a domain the user owns; a dedicated DuckDNS
-name is the no-cost fallback. Shared `sslip.io`/`nip.io` names and bare-IP TLS
-are not permanent choices for this deployment.
+The ephemeral address is acceptable for this personal Milestone 1 deployment:
+it persists for the current instance/VNIC lifetime. If the instance or primary
+private IP is replaced, update DuckDNS before starting Caddy on the replacement.
+A reserved IP remains an optional durability improvement, not a correctness
+dependency. Shared `sslip.io`/`nip.io` names and bare-IP TLS remain out of scope.
+
+The initial OCI-native release `20260812T020129Z` passed HTTPS, TLS, health, and
+an authenticated 11/11 WebSocket smoke. It must still be replaced by an image
+built from the reviewed and merged Milestone 1 commit before repository
+delivery is considered complete.
 
 ## Physical target gates
 
@@ -116,6 +122,6 @@ secrets. Record them when the physical devices are available; do not infer them.
 - [x] Historical bundles preserved and ignored.
 - [x] Harmless physical click target identified.
 - [x] NODE-01: Node 24.19.0/npm 11.17.0 installed; explicitly select its bin directory for Task 2.
-- [ ] OCI-01 through OCI-07: inspect the existing VM through approved access.
-- [ ] DOMAIN-01: choose and resolve `CLICK_BRIDGE_DOMAIN`.
+- [x] OCI-01 through OCI-07: inspected through authenticated OCI CLI, SSH, and public probes.
+- [x] DOMAIN-01: `clickbridge-sjc.duckdns.org` resolves to the active OCI IPv4.
 - [ ] OCTO-01, PHONE-01, PHONE-02, NETWORK-01: record the physical test setup.

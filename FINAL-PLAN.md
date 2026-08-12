@@ -618,11 +618,12 @@ Expected at this handoff: `main` is at `b3d7729`, with `ab0fc92` in its ancestry
 Run through the existing SSH access:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_OCI_PUBLIC_IP'
+export OCI_SSH_TARGET='opc@146.235.216.172'
 ssh "$OCI_SSH_TARGET" 'uname -m; cat /etc/os-release; docker version --format "{{.Server.Arch}}" 2>/dev/null || true; docker compose version 2>/dev/null || true'
 ~~~
 
-Replace ACTUAL_SSH_USER and ACTUAL_OCI_PUBLIC_IP with the instance login recorded for this VM before running.
+The verified Milestone 1 SSH target is recorded above; update it only after an
+instance/address replacement and the corresponding DuckDNS change.
 
 Record:
 
@@ -1619,7 +1620,7 @@ git commit -m "test: prove native clicking in octo browser"
 Run this read-only inspection before changing the VM:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_OCI_PUBLIC_IP'
+export OCI_SSH_TARGET='opc@146.235.216.172'
 ssh "$OCI_SSH_TARGET" 'set -eu; uname -m; cat /etc/os-release; ip route; command -v rsync || true; docker version 2>/dev/null || true; docker compose version 2>/dev/null || true; docker buildx version 2>/dev/null || true; systemctl is-enabled docker 2>/dev/null || true; sudo ss -ltnp | awk "NR == 1 || \$4 ~ /:(80|443|8080)$/"'
 ~~~
 
@@ -1705,6 +1706,11 @@ Compose contains exactly:
 - local validation selects ignored `deploy/oci/.env`; OCI selects `/opt/click-bridge/shared/secrets.env`, which remains outside every release;
 - relay health check.
 
+Every production command uses the fixed Compose project name `oci`. The live
+flat deployment already owns `oci_caddy_data` and `oci_caddy_config`; preserving
+that project name reuses its certificate state during immutable-release
+migration and avoids a second project competing for ports 80 and 443.
+
 The relay environment block is explicit so the CLI-selected shared file works from every immutable release:
 
 ~~~yaml
@@ -1777,9 +1783,11 @@ trap - EXIT INT TERM
 
 When the optional local container path runs, expected: the relay image builds, the Compose model validates, and relay-only health passes. When it cannot run, record the exact missing capability in `docs/preflight.md`; Step 10 performs the same required image/config/health gate on OCI before any production `up -d`. Do not start the production-domain Caddyfile locally: DNS is not local and Caddy would attempt public ACME. TLS/Caddy validation occurs on OCI after DNS and firewall readiness.
 
-- [ ] **Step 5: Attach a durable OCI address and instance-scoped ingress**
+- [ ] **Step 5: Verify the attached OCI address and instance-scoped ingress**
 
-Use the OCI Console and record the resulting resource names and public IPv4 in `docs/oci-deployment.md`:
+Use the OCI Console and record the resulting resource names and public IPv4 in `docs/oci-deployment.md`. For this personal Milestone 1 deployment, the existing attached ephemeral IPv4 is acceptable because it survives ordinary instance stops. A reserved address is an optional durability improvement, not a release gate. If the instance, VNIC, or primary private IP is replaced, update DuckDNS before starting Caddy on the replacement.
+
+When a reserved-address migration is desired later:
 
 1. Under **Networking > IP management > Reserved public IPs**, create a regional reserved IPv4 in the instance's compartment.
 2. Open **Compute > Instances > the relay instance > Attached VNICs > the primary VNIC > IPv4 Addresses**.
@@ -1792,16 +1800,16 @@ A subnet security list is acceptable only if its wider subnet scope is explicitl
 
 - [ ] **Step 6: Choose the hostname and verify DNS before Caddy starts**
 
-Point `CLICK_BRIDGE_DOMAIN` to the reserved OCI public IPv4. An owned domain is the default; a dedicated DuckDNS hostname is the free fallback. Do not use `sslip.io` or `nip.io` as the permanent address because certificate issuance for their shared registered domains can be affected by other users.
+Point `CLICK_BRIDGE_DOMAIN` to the selected attached OCI public IPv4. The verified Milestone 1 endpoint is `clickbridge-sjc.duckdns.org` at `146.235.216.172`. Do not use `sslip.io` or `nip.io` as the permanent address because certificate issuance for their shared registered domains can be affected by other users.
 
 Let's Encrypt supports short-lived IP-address certificates as of 2026, but the stock Caddy automatic-public-HTTPS path used by this plan is hostname-based. Do not add a second ACME client and six-day IP-certificate renewal path to avoid choosing a hostname.
 
 Verify from the Mac, not only from the VM:
 
 ~~~bash
-export CLICK_BRIDGE_DOMAIN='ACTUAL_CLICK_BRIDGE_DOMAIN'
-export OCI_RESERVED_PUBLIC_IP='ACTUAL_RESERVED_PUBLIC_IPV4'
-test "$(dig +short A "$CLICK_BRIDGE_DOMAIN" | sort -u)" = "$OCI_RESERVED_PUBLIC_IP"
+export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
+export OCI_PUBLIC_IP='146.235.216.172'
+test "$(dig +short A "$CLICK_BRIDGE_DOMAIN" | sort -u)" = "$OCI_PUBLIC_IP"
 test -z "$(dig +short AAAA "$CLICK_BRIDGE_DOMAIN")"
 ~~~
 
@@ -1846,13 +1854,26 @@ If neither UFW nor `firewalld` is the active host-firewall tool, stop and record
 
 Stop if another process already owns port 80 or 443; identify and resolve that service deliberately rather than killing it from this plan. Docker-published ports can bypass UFW, so the actual boundary is both of the following: OCI permits only 80/443, and Compose publishes only Caddy's 80/443 mappings. The relay uses `expose: 8080` on the private Compose network and has no host `ports` entry.
 
-- [ ] **Step 8: Generate and install the role-token environment**
+- [ ] **Step 8: Install the one shared role-token environment**
+
+For the first migration, preserve the already-paired credentials. Copy only the
+domain and two role tokens from the existing live mode-0600 file into the shared
+location without printing them:
+
+~~~bash
+export OCI_SSH_TARGET='opc@146.235.216.172'
+ssh "$OCI_SSH_TARGET" 'set -eu; test "$(stat -c %a /opt/click-bridge/deploy/oci/.env)" = 600; install -d -m 0700 /opt/click-bridge/shared; umask 077; grep -E "^(CLICK_BRIDGE_DOMAIN|PHONE_TOKEN|MAC_TOKEN)=" /opt/click-bridge/deploy/oci/.env > /opt/click-bridge/shared/secrets.env; test "$(wc -l < /opt/click-bridge/shared/secrets.env)" = 3; grep -Eq "^PHONE_TOKEN=[0-9a-f]{64}$" /opt/click-bridge/shared/secrets.env; grep -Eq "^MAC_TOKEN=[0-9a-f]{64}$" /opt/click-bridge/shared/secrets.env; test "$(stat -c %a /opt/click-bridge/shared/secrets.env)" = 600'
+~~~
+
+Keep the flat tree and its original `.env` untouched until the immutable
+candidate and rollback test pass. Only a new installation or deliberate
+two-role rotation uses the generation path below.
 
 On the Mac, generate a temporary mode-0600 transfer file without printing either token:
 
 ~~~bash
 umask 077
-export CLICK_BRIDGE_DOMAIN='ACTUAL_CLICK_BRIDGE_DOMAIN'
+export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 PHONE_TOKEN="$(openssl rand -hex 32)"
 MAC_TOKEN="$(openssl rand -hex 32)"
 {
@@ -1866,7 +1887,7 @@ test "$(wc -l < /private/tmp/click-bridge-secrets.env | tr -d ' ')" = 3
 Transfer it and install the single canonical VM copy outside every release:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_RESERVED_PUBLIC_IPV4'
+export OCI_SSH_TARGET='opc@146.235.216.172'
 scp /private/tmp/click-bridge-secrets.env "$OCI_SSH_TARGET:/tmp/click-bridge-secrets.env"
 ssh "$OCI_SSH_TARGET" 'sudo install -d -m 0700 -o "$USER" -g "$(id -gn)" /opt/click-bridge/shared && install -m 0600 /tmp/click-bridge-secrets.env /opt/click-bridge/shared/secrets.env && rm -f /tmp/click-bridge-secrets.env && test "$(stat -c %a /opt/click-bridge/shared/secrets.env)" = 600'
 ~~~
@@ -1878,13 +1899,14 @@ Every OCI Compose command selects `/opt/click-bridge/shared/secrets.env` directl
 Define the real values recorded in Task 1 before running the commands:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_RESERVED_PUBLIC_IPV4'
-export CLICK_BRIDGE_DOMAIN='ACTUAL_CLICK_BRIDGE_DOMAIN'
+export OCI_SSH_TARGET='opc@146.235.216.172'
+export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 export CLICK_BRIDGE_RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
 [[ "$CLICK_BRIDGE_RELEASE" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || exit 1
 ssh "$OCI_SSH_TARGET" 'sudo mkdir -p /opt/click-bridge/releases /opt/click-bridge/shared && sudo chown -R "$USER":"$USER" /opt/click-bridge && command -v rsync && rsync --version >/dev/null && docker version && docker compose version && docker buildx version && test -f /opt/click-bridge/shared/secrets.env'
 ssh "$OCI_SSH_TARGET" "test ! -e /opt/click-bridge/releases/$CLICK_BRIDGE_RELEASE && mkdir /opt/click-bridge/releases/$CLICK_BRIDGE_RELEASE"
 rsync -az --delete --exclude .git --exclude node_modules --exclude build --exclude DerivedData --exclude deploy/oci/.env --exclude archive --exclude _to_delete --exclude benchmarks /Users/harshitagarwal/Desktop/clicker/ "$OCI_SSH_TARGET":/opt/click-bridge/releases/"$CLICK_BRIDGE_RELEASE"/
+ssh "$OCI_SSH_TARGET" "printf '%s\\n' '$CLICK_BRIDGE_RELEASE' > /opt/click-bridge/candidate-release"
 ~~~
 
 Replace every ACTUAL value before execution and verify `CLICK_BRIDGE_RELEASE` matches only fourteen UTC digits plus `T` and `Z`. The `--delete` target is the newly created exact release directory; never point it at `/opt/click-bridge`, a home directory, or an unresolved variable. Historical archives, `_to_delete/`, and benchmark data never enter a VM release. A failed prerequisite check stops deployment; do not improvise a different container engine inside this step.
@@ -1897,11 +1919,11 @@ Build on the VM so Docker selects the VM's recorded amd64 or arm64 architecture:
 export CLICK_BRIDGE_RELEASE='ACTUAL_RELEASE_FROM_STEP_9'
 cd "/opt/click-bridge/releases/$CLICK_BRIDGE_RELEASE"
 test "$(stat -c %a /opt/click-bridge/shared/secrets.env)" = 600
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --quiet
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --quiet
 if test -f /opt/click-bridge/current-release; then
   cp /opt/click-bridge/current-release /opt/click-bridge/previous-release
 fi
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml build --pull
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml build --pull
 cleanup_candidate() { docker rm -f click-bridge-relay-candidate >/dev/null 2>&1 || true; }
 trap cleanup_candidate EXIT INT TERM
 cleanup_candidate
@@ -1920,10 +1942,10 @@ if test "$CANDIDATE_READY" != 1; then
 fi
 cleanup_candidate
 trap - EXIT INT TERM
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml logs --tail=100 caddy relay
-docker volume ls --filter label=com.docker.compose.project=click-bridge
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml logs --tail=100 caddy relay
+docker volume ls --filter label=com.docker.compose.project=oci
 ~~~
 
 Expected: Compose configuration, OCI-native image build, and loopback relay-only health all pass before the candidate can replace the production services. Then exactly one relay and one Caddy container run. Caddy publishes host ports 80 and 443; relay port 8080 is absent from the host-published-port list. The named Caddy data and config volumes exist so certificate state survives container replacement.
@@ -1933,7 +1955,7 @@ Expected: Compose configuration, OCI-native image build, and loopback relay-only
 From the Mac:
 
 ~~~bash
-export CLICK_BRIDGE_DOMAIN='ACTUAL_CLICK_BRIDGE_DOMAIN'
+export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 curl -fsS "https://${CLICK_BRIDGE_DOMAIN}/healthz"
 curl -fsS -I "http://${CLICK_BRIDGE_DOMAIN}/"
 curl -fsS -D - -o /dev/null "https://${CLICK_BRIDGE_DOMAIN}/"
@@ -1958,8 +1980,8 @@ On the VM, verify the bindings and logs:
 ~~~bash
 export CLICK_BRIDGE_RELEASE='ACTUAL_RELEASE_FROM_STEP_9'
 cd "/opt/click-bridge/releases/$CLICK_BRIDGE_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml logs --tail=100 caddy relay
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml logs --tail=100 caddy relay
 sudo ss -ltnp | awk 'NR == 1 || $4 ~ /:(80|443|8080)$/'
 ~~~
 
@@ -1979,6 +2001,12 @@ Only after the public smoke passes, record the active release on the VM:
 printf '%s\n' "$CLICK_BRIDGE_RELEASE" > /opt/click-bridge/current-release
 ~~~
 
+For the first flat-layout migration, retain `candidate-release` through the
+entire Step 12 rollback, roll-forward, restart, reboot, and external-smoke gate.
+The emergency legacy fallback must validate its strict release-ID format and
+directory before intentionally stopping the new stack. Remove the marker only
+after the complete recovery gate passes.
+
 - [ ] **Step 12: Verify rollback and recovery behavior**
 
 Step 10 already captures `current-release` into `previous-release` before starting a later release. Never overwrite `previous-release` after the candidate stack has started. All recovery Compose commands use the one shared secrets file; no release contains its own `.env`.
@@ -1992,8 +2020,8 @@ test -n "$RECOVERY_RELEASE"
 test "$RECOVERY_RELEASE" != "$FAILED_RELEASE"
 export CLICK_BRIDGE_RELEASE="$RECOVERY_RELEASE"
 cd "/opt/click-bridge/releases/$RECOVERY_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the same external HTTPS, WSS, CSP, and public-port smoke from Step 11 against the restored stack. Also rerun the VM listener check and verify relay `8080` is still not host-published. `current-release` already contains `RECOVERY_RELEASE`, so do not rewrite it. If the restored stack does not pass, preserve both release directories and logs and follow `docs/oci-recovery.md`; do not mark recovery healthy. If the first-ever candidate fails, there is no previous application to recover: leave `current-release` absent, preserve the failed release and logs, fix the cause, and repeat Steps 9 through 11 with a new release ID.
@@ -2004,9 +2032,9 @@ For the first deployment, prove recovery from its immutable source even though n
 export ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"
 export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"
 cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml build
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --force-recreate
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml build
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --force-recreate
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the full external Step 11 smoke before calling first-release recovery successful.
@@ -2023,8 +2051,8 @@ test -n "$ROLLBACK_RELEASE"
 test "$ROLLBACK_RELEASE" != "$FORWARD_RELEASE"
 export CLICK_BRIDGE_RELEASE="$ROLLBACK_RELEASE"
 cd "/opt/click-bridge/releases/$ROLLBACK_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the complete external Step 11 smoke. Only after it passes:
@@ -2038,8 +2066,8 @@ printf '%s\n' "$ROLLBACK_RELEASE" > /opt/click-bridge/current-release
 ~~~bash
 export CLICK_BRIDGE_RELEASE="$FORWARD_RELEASE"
 cd "/opt/click-bridge/releases/$FORWARD_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml up -d --no-build --force-recreate
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the complete external Step 11 smoke again. Only after it passes:
@@ -2057,21 +2085,21 @@ Test each container restart explicitly from the VM:
 export ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"
 export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"
 cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml restart relay
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml restart relay
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the complete external Step 11 smoke, then repeat for Caddy:
 
 ~~~bash
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml restart caddy
-docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml restart caddy
+docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps
 ~~~
 
 Rerun the complete external Step 11 smoke. Finally request a controlled VM reboot from the Mac and wait up to five minutes for SSH to return:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_RESERVED_PUBLIC_IPV4'
+export OCI_SSH_TARGET='opc@146.235.216.172'
 PRE_BOOT_ID="$(ssh "$OCI_SSH_TARGET" 'cat /proc/sys/kernel/random/boot_id')"
 test -n "$PRE_BOOT_ID"
 ssh "$OCI_SSH_TARGET" 'sudo systemctl reboot'
@@ -2090,7 +2118,7 @@ if test "$VM_READY" != 1; then
   printf 'VM did not return with a new boot ID and working Docker within five minutes.\n' >&2
   exit 1
 fi
-ssh "$OCI_SSH_TARGET" 'set -eu; ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"; export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"; cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"; docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps'
+ssh "$OCI_SSH_TARGET" 'set -eu; ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"; export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"; cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml ps'
 ~~~
 
 Rerun the complete external Step 11 smoke and confirm Docker's enabled service plus each container's `restart: unless-stopped` policy restored the stack.
@@ -2627,8 +2655,8 @@ codesign -d --entitlements :- build/Build/Products/Release/ClickBridgeMac.app
 Because local Docker is optional, perform the final Compose-model verification on the active OCI release:
 
 ~~~bash
-export OCI_SSH_TARGET='ACTUAL_SSH_USER@ACTUAL_RESERVED_PUBLIC_IPV4'
-ssh "$OCI_SSH_TARGET" 'set -eu; ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"; export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"; cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"; docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --quiet; docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --services; docker compose -p click-bridge --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --images'
+export OCI_SSH_TARGET='opc@146.235.216.172'
+ssh "$OCI_SSH_TARGET" 'set -eu; ACTIVE_RELEASE="$(cat /opt/click-bridge/current-release)"; export CLICK_BRIDGE_RELEASE="$ACTIVE_RELEASE"; cd "/opt/click-bridge/releases/$ACTIVE_RELEASE"; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --quiet; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --services; docker compose -p oci --env-file /opt/click-bridge/shared/secrets.env -f deploy/oci/compose.yaml config --images'
 ~~~
 
 Expected: tests pass, the Release app verifies, App Sandbox is absent, Compose contains no database, and only one relay replica is configured. This gate is required whether or not the optional Mac container smoke ran.
@@ -2720,7 +2748,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 
 - [ ] Existing us-sanjose-1 VM architecture is recorded.
 - [ ] Docker Engine and Compose pass the documented runtime gate; missing Docker on an unsupported OS stops without mutation.
-- [ ] A reserved public IPv4 is attached to the instance VNIC and the hostname A record resolves only to it.
+- [ ] The hostname A record resolves only to the selected attached OCI IPv4; when it is ephemeral, replacement/DuckDNS recovery is documented and tested.
 - [ ] The VNIC is in a public subnet with an Internet Gateway route and an attached NSG allowing stateful TCP 80/443.
 - [ ] Exactly one relay and one Caddy service run.
 - [ ] Caddy uses the tracked read-only Caddyfile mount and persistent data/config volumes.
@@ -2780,7 +2808,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 | --- | --- | --- | --- |
 | Primary relay | OCI us-sanjose-1 capacity using the existing VM when it passes the runtime gate | Fly.io | Already owned, fixed placement, controllable warm process |
 | Deployment runtime | Verified Docker Engine plus Compose; Ubuntu 22.04/24.04 is the only installation path | Installing RHEL packages on Oracle Linux as if officially supported | Reuses a proven existing runtime without making an unsupported installation claim |
-| Public address | OCI reserved IPv4 plus owned/DuckDNS hostname | Ephemeral address or permanent bare IP | DNS remains stable across instance recovery and Caddy manages hostname TLS |
+| Public address | Attached OCI IPv4 plus dedicated DuckDNS hostname; reserved IPv4 optional later | Permanent bare-IP TLS | The current ephemeral address is sufficient for one personal instance, while DuckDNS supplies the stable user-facing name and recovery path |
 | Public edge | VNIC NSG plus Caddy on 80/443 | Public relay port 8080 | Only the TLS edge is host-published; relay stays Compose-private |
 | Relay runtime | Node 24 LTS, exact tested patches | Node 26 Current during Milestone 1 | Prefer the stable LTS line; reconsider after Node 26 enters LTS |
 | Alternative relay | None initially | Cloudflare Durable Object | Cannot pin to SJC and wake/placement latency must be measured |
