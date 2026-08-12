@@ -357,6 +357,43 @@ function shellCommandSubstitutionBodies(source) {
   return bodies;
 }
 
+function shellWithoutLineContinuations(source) {
+  let normalized = "";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (
+      quote !== "'" &&
+      character === "\\" &&
+      (source[index + 1] === "\n" ||
+        (source[index + 1] === "\r" && source[index + 2] === "\n"))
+    ) {
+      index += source[index + 1] === "\r" ? 2 : 1;
+      continue;
+    }
+    normalized += character;
+    if (quote === "'") {
+      if (character === "'") quote = "";
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '"') quote = "";
+      else if (character === "\\" && index + 1 < source.length) {
+        normalized += source[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+    } else if (character === "\\" && index + 1 < source.length) {
+      normalized += source[index + 1];
+      index += 1;
+    }
+  }
+  return normalized;
+}
+
 function shellSecretParameterExpansions(source) {
   const secretNames = new Set(["PHONE_TOKEN", "MAC_TOKEN"]);
   const expansions = [];
@@ -384,7 +421,9 @@ function shellSecretParameterExpansions(source) {
 }
 
 function validateDeploymentSecretFlow(source) {
-  const secretExpansions = shellSecretParameterExpansions(source);
+  const secretExpansions = shellSecretParameterExpansions(
+    shellWithoutLineContinuations(source),
+  );
   for (const secretName of ["PHONE_TOKEN", "MAC_TOKEN"]) {
     const references = secretExpansions.filter(({ name }) => name === secretName);
     assert.equal(

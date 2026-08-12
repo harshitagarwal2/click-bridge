@@ -554,6 +554,7 @@ for (const [shape, mutation] of [
   );
 }
 
+const shellLineContinuation = String.fromCharCode(92, 10);
 for (const [shape, expansion, redirection] of [
   ["braced PHONE_TOKEN substring", "${PHONE_TOKEN:0}", ""],
   ["braced MAC_TOKEN default", "${MAC_TOKEN:-fallback}", ">&2"],
@@ -570,6 +571,36 @@ for (const [shape, expansion, redirection] of [
   ["braced PHONE_TOKEN transformation", "${PHONE_TOKEN@Q}", ""],
   ["unbraced MAC_TOKEN stdout", "$MAC_TOKEN", ""],
   ["exact braced PHONE_TOKEN stderr", "${PHONE_TOKEN}", ">&2"],
+  [
+    "PHONE_TOKEN split after dollar",
+    `$${shellLineContinuation}PHONE_TOKEN`,
+    "",
+  ],
+  [
+    "MAC_TOKEN split after dollar",
+    `$${shellLineContinuation}MAC_TOKEN`,
+    ">&2",
+  ],
+  [
+    "PHONE_TOKEN split inside unbraced name",
+    `$PHONE_${shellLineContinuation}TOKEN`,
+    ">&2",
+  ],
+  [
+    "MAC_TOKEN split inside unbraced name",
+    `$MAC_${shellLineContinuation}TOKEN`,
+    "",
+  ],
+  [
+    "PHONE_TOKEN split inside braced name",
+    `\${PHONE_${shellLineContinuation}TOKEN}`,
+    "",
+  ],
+  [
+    "MAC_TOKEN split inside braced name",
+    `\${MAC_${shellLineContinuation}TOKEN}`,
+    ">&2",
+  ],
 ]) {
   assert.throws(
     () =>
