@@ -217,6 +217,21 @@ const STATIC_FILES = new Map([
   ['/icons/apple-touch-icon-180.png', ['icons/apple-touch-icon-180.png', 'image/png']],
 ]);
 
+const PAIRING_DISABLED_META = '<meta name="clickbridge-pairing" content="off">';
+const PAIRING_ENABLED_META = '<meta name="clickbridge-pairing" content="on">';
+
+function renderIndex(body, pairingEnabled) {
+  const html = body.toString('utf8');
+  const disabledMarkers = html.split(PAIRING_DISABLED_META).length - 1;
+  const enabledMarkers = html.split(PAIRING_ENABLED_META).length - 1;
+  if (disabledMarkers !== 1 || enabledMarkers !== 0) {
+    throw new Error('index.html has an invalid pairing capability marker');
+  }
+  return pairingEnabled
+    ? Buffer.from(html.replace(PAIRING_DISABLED_META, PAIRING_ENABLED_META))
+    : body;
+}
+
 function isValidToken(token) {
   return typeof token === 'string'
     && token.length === TOKEN_HEX_LENGTH
@@ -294,7 +309,7 @@ export function createHttpHandler({
     }
     if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web')) {
       try {
-        const body = await readFile(join(publicDir, 'pair.html'));
+        const body = renderIndex(await readFile(join(publicDir, 'index.html')), true);
         writeResponse(res, 200, {
           ...securityHeaders,
           'Content-Type': 'text/html; charset=utf-8',
@@ -333,7 +348,8 @@ export function createHttpHandler({
     }
     const [relativePath, contentType] = staticFile;
     try {
-      const body = await readFile(join(publicDir, relativePath));
+      const file = await readFile(join(publicDir, relativePath));
+      const body = relativePath === 'index.html' ? renderIndex(file, pairingEnabled) : file;
       writeResponse(res, 200, {
         ...securityHeaders,
         'Content-Type': contentType,
@@ -345,7 +361,7 @@ export function createHttpHandler({
       writeResponse(res, status, {
         ...securityHeaders,
         'Content-Type': 'text/plain; charset=utf-8',
-      }, status === 404 ? 'not found' : 'internal error');
+      }, status === 404 && req.method !== 'HEAD' ? 'not found' : '');
     }
   };
 }

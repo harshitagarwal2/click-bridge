@@ -7,6 +7,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -90,6 +92,55 @@ async function requestStatic(pathname) {
     );
   });
 }
+
+async function requestFrom(publicDir, { method, pathname, pairingEnabled }) {
+  return new Promise((resolve) => {
+    const response = {
+      status: null,
+      headers: null,
+      body: '',
+      writeHead(status, headers) { this.status = status; this.headers = headers; },
+      end(body = '') { this.body = body.toString(); resolve(this); },
+    };
+    createHttpHandler({ publicDir, clickBridgeDomain: 'localhost', pairingEnabled })(
+      { method, url: pathname }, response,
+    );
+  });
+}
+
+test('malformed pairing capability markers fail closed for every index route and method', async () => {
+  const malformed = new Map([
+    ['missing', '<!doctype html><title>Click Bridge</title>'],
+    ['duplicate disabled', [
+      '<meta name="clickbridge-pairing" content="off">',
+      '<meta name="clickbridge-pairing" content="off">',
+    ].join('\n')],
+    ['pre-enabled only', '<meta name="clickbridge-pairing" content="on">'],
+    ['mixed disabled and enabled', [
+      '<meta name="clickbridge-pairing" content="off">',
+      '<meta name="clickbridge-pairing" content="on">',
+    ].join('\n')],
+  ]);
+
+  for (const [name, index] of malformed) {
+    const publicDir = await mkdtemp(join(tmpdir(), 'click-bridge-index-'));
+    try {
+      await writeFile(join(publicDir, 'index.html'), index);
+      for (const pairingEnabled of [false, true]) {
+        const paths = pairingEnabled ? ['/', '/pair'] : ['/'];
+        for (const pathname of paths) {
+          for (const method of ['GET', 'HEAD']) {
+            const response = await requestFrom(publicDir, { method, pathname, pairingEnabled });
+            assert.equal(response.status, 500, `${name}: ${method} ${pathname}`);
+            assert.equal(response.body, '', `${name}: malformed HTML must never be served`);
+          }
+        }
+      }
+    } finally {
+      await rm(publicDir, { recursive: true, force: true });
+    }
+  }
+});
 
 test('legacy protocol-lite asset is unreferenced and unavailable over HTTP', async () => {
   assert.equal(existsSync(join(PUBLIC, 'protocol-lite.js')), false, 'duplicate parser shim must not ship');
