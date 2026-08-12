@@ -113,26 +113,3 @@ struct PhoneState: Equatable, Sendable {
         }
     }
 }
-
-extension ResultReason {
-    var userFacingDescription: String {
-        switch self {
-        case .ok:
-            "The click was posted."
-        case .permissionRequired:
-            "Mac Accessibility permission is required."
-        case .remoteDisabled:
-            "Remote control is disabled on the Mac."
-        case .idConflict:
-            "The click request conflicted with an earlier request."
-        case .expired:
-            "The click request expired before it could be posted."
-        case .capacityExceeded:
-            "The relay is busy. Try again."
-        case .eventCreationFailed:
-            "The Mac could not create the click event."
-        case .invalidRequest:
-            "The relay rejected the click request."
-        }
-    }
-}

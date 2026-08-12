@@ -219,6 +219,16 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertFalse(harness.model.canTriggerClick)
     }
 
+    func testRejectedMacOfflineActionPhasePresentsReadableOutcome() throws {
+        let harness = try Harness()
+
+        harness.model.applyActionPhase(.rejected(actionID: harness.actionID,
+                                                 reason: .macOffline,
+                                                 elapsedMilliseconds: 12))
+
+        XCTAssertEqual(harness.model.state.lastActionOutcome, "The Mac went offline.")
+    }
+
     func testIntentRequestIsDiscardedAfterEveryUnacceptedAttempt() {
         for disposition in [ActionDisposition.ignoredNotReady, .ignoredPending, .sendFailed] {
             let subject = PhoneClickIntentRouter()

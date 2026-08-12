@@ -265,7 +265,7 @@ The screen exposes a readiness-gated **Trigger 3 Clicks** button and App Shortcu
 
 ## Test Strategy
 
-All domain behavior uses deterministic fakes. XCTest runs on the generated iOS test target; existing JSON contract fixtures are included as test resources. The current full Simulator suite passes 83/83 tests, including the original ten SwiftUI correction tests and two accessibility-focus transition regressions.
+All domain behavior uses deterministic fakes. XCTest runs on the generated iOS test target; existing JSON contract fixtures are included as test resources. The current full Simulator suite passes 90/90 tests, including the current SwiftUI correction coverage and three accessibility-focus transition regressions.
 
 | Area | Required deterministic cases |
 | --- | --- |
