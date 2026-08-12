@@ -14,6 +14,10 @@ enum PhoneProtocolV1 {
     static let clockExchangeTimeout: TimeInterval = 3.5
     static let clockRefreshInterval: TimeInterval = 300
     static let clockSkewToleranceMilliseconds: Double = 1_000
+    static let pairingVersion = 1
+    static let pairingTTL: TimeInterval = 300
+    static let credentialReplacedCloseCode = 4_004
+    static let credentialReplacedCloseReason = "credential_replaced"
 }
 
 enum PermissionState: String, Codable, Sendable { case ready, required, unknown }
@@ -21,6 +25,25 @@ enum ResultStatus: String, Codable, Sendable { case posted, rejected }
 enum ActionIngress: String, Codable, Sendable { case oci, tailscale }
 enum RelayAckStatus: String, Codable, Sendable { case forwarded, macOffline = "mac_offline", rejected }
 enum RelayAckReason: String, Codable, Sendable { case ok, macOffline = "mac_offline", expired, invalidRequest = "invalid_request" }
+enum PairingClientKind: String, Codable, Sendable { case ios, pwa }
+enum PhonePairingReceiveState: String, Sendable {
+    case claiming
+    case awaitingCredential = "awaiting_credential"
+    case awaitingActivation = "awaiting_activation"
+}
+struct PhonePairingReceiveContext: Equatable, Sendable {
+    let claimID: UUID
+    let generation: UInt64
+    let state: PhonePairingReceiveState
+}
+enum PairingFailureReason: String, Codable, Sendable, CaseIterable {
+    case expired, used, cancelled, denied
+    case macOffline = "mac_offline"
+    case storageFailed = "storage_failed"
+    case activationFailed = "activation_failed"
+    case invalidRequest = "invalid_request"
+    case replaced, unsupported
+}
 
 enum ResultReason: String, Codable, Sendable, CaseIterable {
     case ok
@@ -272,11 +295,103 @@ struct ActionResult: Codable, Equatable, Sendable {
     }
 }
 
+struct PairClaim: Codable, Equatable, Sendable {
+    var type = "pair.claim"
+    var v = PhoneProtocolV1.version
+    let reference: String
+    let claimID: UUID
+    let sessionNonce: String
+    var pairingVersion = PhoneProtocolV1.pairingVersion
+    let clientKind: PairingClientKind
+
+    enum CodingKeys: String, CodingKey {
+        case type, v, reference, sessionNonce, pairingVersion, clientKind
+        case claimID = "claimId"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard type == "pair.claim",
+              v == PhoneProtocolV1.version,
+              pairingVersion == PhoneProtocolV1.pairingVersion,
+              isCanonicalPairingReference(reference),
+              isLowercaseHex64(sessionNonce) else { throw PhoneWireError.invalidValue }
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(type, forKey: .type)
+        try values.encode(v, forKey: .v)
+        try values.encode(reference, forKey: .reference)
+        try values.encode(claimID.uuidString.lowercased(), forKey: .claimID)
+        try values.encode(sessionNonce, forKey: .sessionNonce)
+        try values.encode(pairingVersion, forKey: .pairingVersion)
+        try values.encode(clientKind, forKey: .clientKind)
+    }
+}
+
+struct PairCredentialAcknowledgement: Codable, Equatable, Sendable {
+    var type = "pair.credential.ack"
+    var v = PhoneProtocolV1.version
+    let claimID: UUID
+    let credentialVersion: Int
+    let proof: String
+
+    enum CodingKeys: String, CodingKey { case type, v, credentialVersion, proof; case claimID = "claimId" }
+
+    func encode(to encoder: Encoder) throws {
+        guard type == "pair.credential.ack",
+              v == PhoneProtocolV1.version,
+              credentialVersion > 0,
+              credentialVersion <= 9_007_199_254_740_991,
+              isLowercaseHex64(proof) else { throw PhoneWireError.invalidValue }
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(type, forKey: .type)
+        try values.encode(v, forKey: .v)
+        try values.encode(claimID.uuidString.lowercased(), forKey: .claimID)
+        try values.encode(credentialVersion, forKey: .credentialVersion)
+        try values.encode(proof, forKey: .proof)
+    }
+}
+
+struct PairCancelClaim: Codable, Equatable, Sendable {
+    var type = "pair.cancel.claim"
+    var v = PhoneProtocolV1.version
+    let claimID: UUID
+
+    enum CodingKeys: String, CodingKey { case type, v; case claimID = "claimId" }
+
+    func encode(to encoder: Encoder) throws {
+        guard type == "pair.cancel.claim",
+              v == PhoneProtocolV1.version else { throw PhoneWireError.invalidValue }
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(type, forKey: .type)
+        try values.encode(v, forKey: .v)
+        try values.encode(claimID.uuidString.lowercased(), forKey: .claimID)
+    }
+}
+
+struct PairClaimedPhone: Codable, Equatable, Sendable {
+    var type = "pair.claimed.phone"; var v = PhoneProtocolV1.version; let claimId: String
+    let confirmationCode: String; let expiresAtUnixMs: Int
+}
+struct PairCredential: Codable, Equatable, Sendable {
+    var type = "pair.credential"; var v = PhoneProtocolV1.version; let claimId: String
+    let credential: String; let credentialVersion: Int
+}
+struct PairActive: Codable, Equatable, Sendable {
+    var type = "pair.active"; var v = PhoneProtocolV1.version; let claimId: String
+    let activePhoneCredentialVersion: Int
+}
+struct PairFailedClaimant: Codable, Equatable, Sendable {
+    var type = "pair.failed"; var v = PhoneProtocolV1.version; let claimId: String
+    let reason: PairingFailureReason
+}
+
 enum PhoneClientMessage: Equatable, Sendable {
     case hello(Hello)
     case heartbeatRequest(HeartbeatRequest)
     case timeSyncRequest(TimeSyncRequest)
     case actionRequest(ActionRequest)
+    case pairClaim(PairClaim)
+    case pairCredentialAcknowledgement(PairCredentialAcknowledgement)
+    case pairCancelClaim(PairCancelClaim)
 
     var actionID: UUID? {
         guard case .actionRequest(let request) = self else { return nil }
@@ -289,6 +404,9 @@ enum PhoneClientMessage: Equatable, Sendable {
         case .heartbeatRequest(let message): return try PhoneWireEncoder.encode(message)
         case .timeSyncRequest(let message): return try PhoneWireEncoder.encode(message)
         case .actionRequest(let message): return try PhoneWireEncoder.encode(message)
+        case .pairClaim(let message): return try PhoneWireEncoder.encode(message)
+        case .pairCredentialAcknowledgement(let message): return try PhoneWireEncoder.encode(message)
+        case .pairCancelClaim(let message): return try PhoneWireEncoder.encode(message)
         }
     }
 }
@@ -301,6 +419,10 @@ enum PhoneServerMessage: Equatable, Sendable {
     case actionResult(ActionResult)
     case diagnosticsCounters(DiagnosticsCounters)
     case timeSyncResponse(TimeSyncResponse)
+    case pairClaimedPhone(PairClaimedPhone)
+    case pairCredential(PairCredential)
+    case pairActive(PairActive)
+    case pairFailed(PairFailedClaimant)
 }
 
 enum PhoneWireError: Error, Equatable {
@@ -338,4 +460,26 @@ private func decodeUUID<Key: CodingKey>(
         throw PhoneWireError.invalidValue
     }
     return value
+}
+
+private func isCanonicalPairingReference(_ value: String) -> Bool {
+    guard value.count == 43,
+          value.unicodeScalars.allSatisfy({
+              (65...90).contains($0.value) || (97...122).contains($0.value)
+                  || (48...57).contains($0.value) || $0 == "-" || $0 == "_"
+          }) else { return false }
+    let standard = value.replacingOccurrences(of: "-", with: "+")
+        .replacingOccurrences(of: "_", with: "/") + "="
+    guard let decoded = Data(base64Encoded: standard), decoded.count == 32 else { return false }
+    let canonical = decoded.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    return canonical == value
+}
+
+private func isLowercaseHex64(_ value: String) -> Bool {
+    value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+        (48...57).contains(byte) || (97...102).contains(byte)
+    }
 }

@@ -12,6 +12,11 @@ enum Constants {
     static let completedActionCap = 4_096
     static let clickGapMs = 0
     static let clickRepetitions = 3
+    static let pairingVersion = 1
+    static let pairingTTL: TimeInterval = 300
+    static let legacyPhoneCredentialVersion = 0
+    static let credentialReplacedCloseCode = 4_004
+    static let credentialReplacedCloseReason = "credential_replaced"
 }
 
 enum PermissionState: String, Codable, Sendable { case ready, required, unknown }
@@ -29,6 +34,16 @@ enum ResultReason: String, Codable, Sendable {
 enum RelayAckStatus: String, Codable, Sendable { case forwarded, macOffline = "mac_offline", rejected }
 enum RelayAckReason: String, Codable, Sendable { case ok, macOffline = "mac_offline", expired, invalidRequest = "invalid_request" }
 enum WireRole: String, Sendable { case phone, mac }
+enum PairingClientKind: String, Codable, Sendable { case ios, pwa }
+enum PairingEnrollmentState: String, Codable, Sendable { case legacy, paired }
+enum PairingFailureReason: String, Codable, Sendable {
+    case expired, used, cancelled, denied
+    case macOffline = "mac_offline"
+    case storageFailed = "storage_failed"
+    case activationFailed = "activation_failed"
+    case invalidRequest = "invalid_request"
+    case replaced, unsupported
+}
 
 struct Hello: Codable, Equatable, Sendable { var type = "hello"; var v = 1; var role: String; var token: String }
 struct HelloOK: Codable, Equatable, Sendable { var type = "hello.ok"; var v = 1; var role: String }
@@ -62,6 +77,192 @@ struct ActionResult: Codable, Equatable, Sendable {
     var reason: ResultReason; var acceptedVia: ActionIngress; var macProcessingUs: Double
     var mouseDownPostedUnixMs: Double?
 }
+struct PairCreate: Codable, Equatable, Sendable {
+    var type = "pair.create"; var v = 1; var requestId: String; var pairingVersion = Constants.pairingVersion
+}
+struct PairStatusRequest: Codable, Equatable, Sendable {
+    var type = "pair.status.request"; var v = 1; var requestId: String
+    var pairingVersion = Constants.pairingVersion
+}
+struct PairCreated: Codable, Equatable, Sendable {
+    var type = "pair.created"; var v = 1; var requestId: String; var reference: String; var expiresAtUnixMs: Int
+}
+struct PairStatus: Codable, Equatable, Sendable {
+    var type = "pair.status"; var v = 1; var requestId: String
+    var enrollmentState: PairingEnrollmentState; var activePhoneCredentialVersion: Int
+
+    var requiresReplacementConfirmation: Bool {
+        switch enrollmentState {
+        case .legacy, .paired: true
+        }
+    }
+}
+struct PairCancel: Codable, Equatable, Sendable { var type = "pair.cancel"; var v = 1; var requestId: String }
+struct PairClaimedMac: Codable, Equatable, Sendable {
+    var type = "pair.claimed.mac"; var v = 1; var requestId: String; var claimId: String
+    var confirmationCode: String; var expiresAtUnixMs: Int; var clientKind: PairingClientKind
+}
+struct PairApprove: Codable, Equatable, Sendable {
+    var type = "pair.approve"; var v = 1; var requestId: String; var claimId: String
+}
+struct PairDeny: Codable, Equatable, Sendable {
+    var type = "pair.deny"; var v = 1; var requestId: String; var claimId: String
+}
+struct PairCompleted: Codable, Equatable, Sendable {
+    var type = "pair.completed"; var v = 1; var requestId: String; var claimId: String
+    var activePhoneCredentialVersion: Int
+}
+struct PairFailed: Codable, Equatable, Sendable {
+    var type = "pair.failed"; var v = 1; var requestId: String?; var claimId: String?
+    var reason: PairingFailureReason
+}
+
+private protocol WireEncodingValidatable {
+    func validateForWireEncoding() throws
+}
+
+private enum PairingWireEncoding {
+    static let maximumSafeInteger = 9_007_199_254_740_991
+
+    static func envelope(type: String, expectedType: String, version: Int) throws {
+        guard type == expectedType, version == Constants.protocolVersion else {
+            throw WireError.invalidValue
+        }
+    }
+
+    static func uuid(_ value: String) throws {
+        guard UUID(uuidString: value)?.uuidString.lowercased() == value else {
+            throw WireError.invalidValue
+        }
+    }
+
+    static func positiveSafeInteger(_ value: Int) throws {
+        guard value > 0, value <= maximumSafeInteger else { throw WireError.invalidValue }
+    }
+
+    static func nonNegativeSafeInteger(_ value: Int) throws {
+        guard value >= 0, value <= maximumSafeInteger else { throw WireError.invalidValue }
+    }
+
+    static func pairingVersion(_ value: Int) throws {
+        guard value == Constants.pairingVersion else { throw WireError.invalidValue }
+    }
+
+    static func confirmationCode(_ value: String) throws {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 7,
+              bytes[3] == 32,
+              bytes.enumerated().allSatisfy({ index, byte in
+                  index == 3 || (48...57).contains(byte)
+              }) else { throw WireError.invalidValue }
+    }
+
+    static func reference(_ value: String) throws {
+        guard value.count == 43,
+              value.unicodeScalars.allSatisfy({
+                  (65...90).contains($0.value) || (97...122).contains($0.value)
+                      || (48...57).contains($0.value) || $0 == "-" || $0 == "_"
+              }) else { throw WireError.invalidValue }
+        let standard = value.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/") + "="
+        guard let decoded = Data(base64Encoded: standard), decoded.count == 32 else {
+            throw WireError.invalidValue
+        }
+        let canonical = decoded.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        guard canonical == value else { throw WireError.invalidValue }
+    }
+}
+
+extension PairCreate: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.create", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.pairingVersion(pairingVersion)
+    }
+}
+
+extension PairStatusRequest: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.status.request", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.pairingVersion(pairingVersion)
+    }
+}
+
+extension PairCreated: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.created", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.reference(reference)
+        try PairingWireEncoding.positiveSafeInteger(expiresAtUnixMs)
+    }
+}
+
+extension PairStatus: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.status", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.nonNegativeSafeInteger(activePhoneCredentialVersion)
+        let isConsistent = enrollmentState == .legacy
+            ? activePhoneCredentialVersion == Constants.legacyPhoneCredentialVersion
+            : activePhoneCredentialVersion > Constants.legacyPhoneCredentialVersion
+        guard isConsistent else { throw WireError.invalidValue }
+    }
+}
+
+extension PairCancel: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.cancel", version: v)
+        try PairingWireEncoding.uuid(requestId)
+    }
+}
+
+extension PairClaimedMac: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.claimed.mac", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.uuid(claimId)
+        try PairingWireEncoding.confirmationCode(confirmationCode)
+        try PairingWireEncoding.positiveSafeInteger(expiresAtUnixMs)
+    }
+}
+
+extension PairApprove: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.approve", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.uuid(claimId)
+    }
+}
+
+extension PairDeny: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.deny", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.uuid(claimId)
+    }
+}
+
+extension PairCompleted: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.completed", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.uuid(claimId)
+        try PairingWireEncoding.positiveSafeInteger(activePhoneCredentialVersion)
+    }
+}
+
+extension PairFailed: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "pair.failed", version: v)
+        guard requestId != nil || claimId != nil else { throw WireError.invalidValue }
+        if let requestId { try PairingWireEncoding.uuid(requestId) }
+        if let claimId { try PairingWireEncoding.uuid(claimId) }
+    }
+}
 
 enum WireMessage: Equatable, Codable, Sendable {
     case hello(Hello), helloOK(HelloOK)
@@ -70,6 +271,10 @@ enum WireMessage: Equatable, Codable, Sendable {
     case diagnosticsRequest(DiagnosticsRequest), diagnosticsCounters(DiagnosticsCounters)
     case macState(MacState), state(PhoneState), actionRequest(ActionRequest)
     case relayAck(RelayAck), actionResult(ActionResult)
+    case pairCreate(PairCreate), pairStatusRequest(PairStatusRequest), pairCreated(PairCreated)
+    case pairStatus(PairStatus), pairCancel(PairCancel)
+    case pairClaimedMac(PairClaimedMac), pairApprove(PairApprove), pairDeny(PairDeny)
+    case pairCompleted(PairCompleted), pairFailed(PairFailed)
 
     private enum CodingKeys: String, CodingKey { case type }
     private struct Kind: Decodable { let type: String }
@@ -90,6 +295,16 @@ enum WireMessage: Equatable, Codable, Sendable {
         case "action.request": self = .actionRequest(try ActionRequest(from: decoder))
         case "relay.ack": self = .relayAck(try RelayAck(from: decoder))
         case "action.result": self = .actionResult(try ActionResult(from: decoder))
+        case "pair.create": self = .pairCreate(try PairCreate(from: decoder))
+        case "pair.status.request": self = .pairStatusRequest(try PairStatusRequest(from: decoder))
+        case "pair.created": self = .pairCreated(try PairCreated(from: decoder))
+        case "pair.status": self = .pairStatus(try PairStatus(from: decoder))
+        case "pair.cancel": self = .pairCancel(try PairCancel(from: decoder))
+        case "pair.claimed.mac": self = .pairClaimedMac(try PairClaimedMac(from: decoder))
+        case "pair.approve": self = .pairApprove(try PairApprove(from: decoder))
+        case "pair.deny": self = .pairDeny(try PairDeny(from: decoder))
+        case "pair.completed": self = .pairCompleted(try PairCompleted(from: decoder))
+        case "pair.failed": self = .pairFailed(try PairFailed(from: decoder))
         default: throw WireError.unknownType(kind)
         }
     }
@@ -109,6 +324,34 @@ enum WireMessage: Equatable, Codable, Sendable {
         case .actionRequest(let value): try value.encode(to: encoder)
         case .relayAck(let value): try value.encode(to: encoder)
         case .actionResult(let value): try value.encode(to: encoder)
+        case .pairCreate(let value): try value.encode(to: encoder)
+        case .pairStatusRequest(let value): try value.encode(to: encoder)
+        case .pairCreated(let value): try value.encode(to: encoder)
+        case .pairStatus(let value): try value.encode(to: encoder)
+        case .pairCancel(let value): try value.encode(to: encoder)
+        case .pairClaimedMac(let value): try value.encode(to: encoder)
+        case .pairApprove(let value): try value.encode(to: encoder)
+        case .pairDeny(let value): try value.encode(to: encoder)
+        case .pairCompleted(let value): try value.encode(to: encoder)
+        case .pairFailed(let value): try value.encode(to: encoder)
+        }
+    }
+}
+
+extension WireMessage: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        switch self {
+        case .pairCreate(let value): try value.validateForWireEncoding()
+        case .pairStatusRequest(let value): try value.validateForWireEncoding()
+        case .pairCreated(let value): try value.validateForWireEncoding()
+        case .pairStatus(let value): try value.validateForWireEncoding()
+        case .pairCancel(let value): try value.validateForWireEncoding()
+        case .pairClaimedMac(let value): try value.validateForWireEncoding()
+        case .pairApprove(let value): try value.validateForWireEncoding()
+        case .pairDeny(let value): try value.validateForWireEncoding()
+        case .pairCompleted(let value): try value.validateForWireEncoding()
+        case .pairFailed(let value): try value.validateForWireEncoding()
+        default: break
         }
     }
 }
@@ -126,6 +369,9 @@ enum Wire {
 
     static func decode(_ text: String) throws -> WireMessage { try StrictWireDecoder().decodeText(text) }
     static func encode<T: Encodable>(_ value: T) throws -> String {
+        if let validatable = value as? any WireEncodingValidatable {
+            try validatable.validateForWireEncoding()
+        }
         let data = try encoder.encode(value)
         guard data.count <= Constants.maxMessageBytes else { throw WireError.tooLarge }
         return String(decoding: data, as: UTF8.self)

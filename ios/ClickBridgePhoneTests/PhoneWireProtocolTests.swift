@@ -63,6 +63,255 @@ final class PhoneWireProtocolTests: XCTestCase {
         }
     }
 
+    func testCanonicalPairingServerToPhoneFixturesDecode() throws {
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        let fixtures: [(String, PhonePairingReceiveState)] = [
+            ("pair.claimed.phone", .claiming),
+            ("pair.credential", .awaitingCredential),
+            ("pair.active", .awaitingActivation),
+            ("pair.failed.claimant", .claiming),
+        ]
+
+        for (name, state) in fixtures {
+            let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: "json"), name)
+            let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+            let context = PhonePairingReceiveContext(claimID: claimID, generation: 7, state: state)
+            XCTAssertNoThrow(
+                try StrictPhoneWireDecoder().decodePairingText(
+                    text,
+                    context: context,
+                    activeGeneration: 7
+                ),
+                name
+            )
+        }
+    }
+
+    func testPairingServerFramesRejectOrdinaryWrongStateWrongClaimAndStaleGeneration() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: Self.self).url(forResource: "pair.claimed.phone", withExtension: "json")
+        )
+        let text = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        let otherClaimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e3")!
+        let current = PhonePairingReceiveContext(claimID: claimID, generation: 7, state: .claiming)
+
+        XCTAssertThrowsError(try StrictPhoneWireDecoder().decodeText(text))
+        XCTAssertThrowsError(
+            try StrictPhoneWireDecoder().decodePairingText(
+                text,
+                context: PhonePairingReceiveContext(
+                    claimID: claimID,
+                    generation: 7,
+                    state: .awaitingCredential
+                ),
+                activeGeneration: 7
+            )
+        )
+        XCTAssertThrowsError(
+            try StrictPhoneWireDecoder().decodePairingText(
+                text,
+                context: PhonePairingReceiveContext(
+                    claimID: otherClaimID,
+                    generation: 7,
+                    state: .claiming
+                ),
+                activeGeneration: 7
+            )
+        )
+        XCTAssertThrowsError(
+            try StrictPhoneWireDecoder().decodePairingText(
+                text,
+                context: current,
+                activeGeneration: 8
+            )
+        )
+    }
+
+    func testPairingClientMessagesEncodeTheirExactRoleAppropriateShapes() throws {
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        let cases: [(PhoneClientMessage, Set<String>, String)] = [
+            (
+                .pairClaim(PairClaim(
+                    reference: String(repeating: "A", count: 43),
+                    claimID: claimID,
+                    sessionNonce: String(repeating: "b", count: 64),
+                    clientKind: .ios
+                )),
+                ["type", "v", "reference", "claimId", "sessionNonce", "pairingVersion", "clientKind"],
+                "pair.claim"
+            ),
+            (
+                .pairCredentialAcknowledgement(PairCredentialAcknowledgement(
+                    claimID: claimID,
+                    credentialVersion: 1,
+                    proof: String(repeating: "c", count: 64)
+                )),
+                ["type", "v", "claimId", "credentialVersion", "proof"],
+                "pair.credential.ack"
+            ),
+            (
+                .pairCancelClaim(PairCancelClaim(claimID: claimID)),
+                ["type", "v", "claimId"],
+                "pair.cancel.claim"
+            ),
+        ]
+
+        for (message, keys, type) in cases {
+            let object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(try message.encodedText().utf8)) as? [String: Any]
+            )
+            XCTAssertEqual(Set(object.keys), keys)
+            XCTAssertEqual(object["type"] as? String, type)
+        }
+    }
+
+    func testPairingClientEncodersRejectInvalidVersionNonceProofAndTypeBeforeNetwork() throws {
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+
+        for nonce in [String(repeating: "B", count: 64), String(repeating: "b", count: 63)] {
+            let claim = PairClaim(
+                reference: String(repeating: "A", count: 43),
+                claimID: claimID,
+                sessionNonce: nonce,
+                clientKind: .ios
+            )
+            XCTAssertThrowsError(try PhoneClientMessage.pairClaim(claim).encodedText())
+        }
+
+        var wrongPairingVersion = PairClaim(
+            reference: String(repeating: "A", count: 43),
+            claimID: claimID,
+            sessionNonce: String(repeating: "b", count: 64),
+            clientKind: .ios
+        )
+        wrongPairingVersion.pairingVersion = 0
+        XCTAssertThrowsError(try PhoneClientMessage.pairClaim(wrongPairingVersion).encodedText())
+
+        var wrongClaimType = wrongPairingVersion
+        wrongClaimType.pairingVersion = PhoneProtocolV1.pairingVersion
+        wrongClaimType.type = "pair.cancel.claim"
+        XCTAssertThrowsError(try PhoneClientMessage.pairClaim(wrongClaimType).encodedText())
+
+        var wrongClaimWireVersion = wrongPairingVersion
+        wrongClaimWireVersion.pairingVersion = PhoneProtocolV1.pairingVersion
+        wrongClaimWireVersion.v = 2
+        XCTAssertThrowsError(try PhoneClientMessage.pairClaim(wrongClaimWireVersion).encodedText())
+
+        for (version, proof) in [
+            (0, String(repeating: "c", count: 64)),
+            (1, String(repeating: "C", count: 64)),
+            (1, String(repeating: "c", count: 63)),
+            (Int.max, String(repeating: "c", count: 64)),
+        ] {
+            let acknowledgement = PairCredentialAcknowledgement(
+                claimID: claimID,
+                credentialVersion: version,
+                proof: proof
+            )
+            XCTAssertThrowsError(
+                try PhoneClientMessage.pairCredentialAcknowledgement(acknowledgement).encodedText()
+            )
+        }
+
+        var wrongAckType = PairCredentialAcknowledgement(
+            claimID: claimID,
+            credentialVersion: 1,
+            proof: String(repeating: "c", count: 64)
+        )
+        wrongAckType.type = "pair.claim"
+        XCTAssertThrowsError(
+            try PhoneClientMessage.pairCredentialAcknowledgement(wrongAckType).encodedText()
+        )
+
+        var wrongAckWireVersion = wrongAckType
+        wrongAckWireVersion.type = "pair.credential.ack"
+        wrongAckWireVersion.v = 2
+        XCTAssertThrowsError(
+            try PhoneClientMessage.pairCredentialAcknowledgement(wrongAckWireVersion).encodedText()
+        )
+
+        var wrongCancelType = PairCancelClaim(claimID: claimID)
+        wrongCancelType.type = "pair.claim"
+        XCTAssertThrowsError(try PhoneClientMessage.pairCancelClaim(wrongCancelType).encodedText())
+
+        var wrongCancelWireVersion = PairCancelClaim(claimID: claimID)
+        wrongCancelWireVersion.v = 2
+        XCTAssertThrowsError(try PhoneClientMessage.pairCancelClaim(wrongCancelWireVersion).encodedText())
+    }
+
+    func testPairClaimEncodesOnlyCanonicalThirtyTwoByteBase64URLReferences() throws {
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        func claim(reference: String) -> PhoneClientMessage {
+            .pairClaim(PairClaim(
+                reference: reference,
+                claimID: claimID,
+                sessionNonce: String(repeating: "b", count: 64),
+                clientKind: .ios
+            ))
+        }
+
+        XCTAssertNoThrow(try claim(reference: String(repeating: "A", count: 43)).encodedText())
+        for reference in [
+            String(repeating: "A", count: 42) + "B",
+            String(repeating: "A", count: 43) + "=",
+            String(repeating: "A", count: 42) + "+",
+        ] {
+            XCTAssertThrowsError(try claim(reference: reference).encodedText(), reference)
+        }
+    }
+
+    func testPhonePairingDecoderRejectsMacMessagesAndSecretBearingFailures() {
+        let invalid = [
+            #"{"type":"pair.created","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030e1","reference":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expiresAtUnixMs":1786500000000}"#,
+            #"{"type":"pair.failed","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","reason":"expired","credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+            #"{"type":"pair.active","v":1,"claimId":"018F63F5-6F3D-7D21-88BC-9EF561F030E2","activePhoneCredentialVersion":1}"#,
+        ]
+
+        for text in invalid {
+            XCTAssertThrowsError(try StrictPhoneWireDecoder().decodeText(text), text)
+        }
+    }
+
+    func testPairingSafeIntegerOverflowFailsClosedInsteadOfTrapping() {
+        let oversized = #"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","credentialVersion":9223372036854775808}"#
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        let context = PhonePairingReceiveContext(
+            claimID: claimID,
+            generation: 7,
+            state: .awaitingCredential
+        )
+
+        XCTAssertThrowsError(
+            try StrictPhoneWireDecoder().decodePairingText(
+                oversized,
+                context: context,
+                activeGeneration: 7
+            )
+        ) { error in
+            XCTAssertEqual(error as? PhoneWireError, .invalidValue)
+        }
+    }
+
+    func testCredentialRotationRejectsLegacyVersionZero() throws {
+        let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030e2")!
+        let acknowledgement = PhoneClientMessage.pairCredentialAcknowledgement(
+            PairCredentialAcknowledgement(
+                claimID: claimID,
+                credentialVersion: 0,
+                proof: String(repeating: "c", count: 64)
+            )
+        )
+        XCTAssertThrowsError(try acknowledgement.encodedText())
+
+        for text in [
+            #"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","credentialVersion":0}"#,
+            #"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030e2","activePhoneCredentialVersion":0}"#,
+        ] {
+            XCTAssertThrowsError(try StrictPhoneWireDecoder().decodeText(text), text)
+        }
+    }
+
     func testExact4096ByteFramePassesAnd4097Fails() throws {
         let base = #"{"type":"heartbeat.ack","v":1,"sequence":7}"#
         let exact = base + String(repeating: " ", count: PhoneProtocolV1.maximumMessageBytes - base.utf8.count)
