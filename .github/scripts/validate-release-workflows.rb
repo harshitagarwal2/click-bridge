@@ -107,6 +107,68 @@ def require_script_order(script, earlier, later, message)
   fail_contract(message) unless earlier_index && later_index && earlier_index < later_index
 end
 
+def verify_mac_installer_identity_fixtures(signing_script)
+  selection_script = signing_script[/# BEGIN Mac installer identity selection\n(.*?)# END Mac installer identity selection/m, 1]
+  fail_contract("TestFlight signing setup is missing the testable Mac installer identity selection block") unless selection_script
+
+  fixtures = {
+    "legacy installer identity" => [
+      '  1) 80CF878753058CD605E3955D5AAD7DD205A4CA7D "3rd Party Mac Developer Installer: Pulkit Agarwal (EC3R6XQ226)"',
+      true,
+      "3rd Party Mac Developer Installer: Pulkit Agarwal (EC3R6XQ226)"
+    ],
+    "modern installer identity" => [
+      '  1) 0123456789ABCDEF0123456789ABCDEF01234567 "Mac Installer Distribution: Example Developer (ABCDE12345)"',
+      true,
+      "Mac Installer Distribution: Example Developer (ABCDE12345)"
+    ],
+    "missing installer identity" => [
+      '  1) ABCDEF0123456789ABCDEF0123456789ABCDEF01 "Apple Distribution: Example Developer (ABCDE12345)"',
+      false,
+      nil
+    ],
+    "ambiguous installer identities" => [
+      <<~OUTPUT.chomp,
+          1) 80CF878753058CD605E3955D5AAD7DD205A4CA7D "3rd Party Mac Developer Installer: Pulkit Agarwal (EC3R6XQ226)"
+          2) 0123456789ABCDEF0123456789ABCDEF01234567 "Mac Installer Distribution: Example Developer (ABCDE12345)"
+      OUTPUT
+      false,
+      nil
+    ]
+  }
+
+  Dir.mktmpdir("mac-installer-identity") do |directory|
+    fake_security = File.join(directory, "security")
+    File.write(fake_security, <<~SH)
+      #!/bin/sh
+      set -eu
+      test "$1" = "find-identity"
+      printf '%s\n' "${MOCK_IDENTITIES:?}"
+    SH
+    File.chmod(0o755, fake_security)
+
+    fixtures.each do |case_name, (identity_output, expected_success, expected_name)|
+      github_env = File.join(directory, "github-env")
+      FileUtils.rm_f(github_env)
+      environment = {
+        "GITHUB_ENV" => github_env,
+        "MOCK_IDENTITIES" => identity_output,
+        "PATH" => "#{directory}:#{ENV.fetch("PATH")}",
+        "keychain" => File.join(directory, "fixture.keychain-db")
+      }
+      stdout, stderr, status = Open3.capture3(environment, "bash", "-c", selection_script)
+      if status.success? != expected_success
+        fail_contract("TestFlight Mac installer identity selection mishandled #{case_name}: #{stdout}#{stderr}")
+      end
+      next unless expected_success
+
+      published = File.read(github_env)
+      expected_line = "MAC_INSTALLER_CERTIFICATE_NAME=#{expected_name}\n"
+      fail_contract("TestFlight Mac installer identity selection published the wrong name for #{case_name}") unless published == expected_line
+    end
+  end
+end
+
 def verify_xcodegen_generation_guard(filename, step_name, script)
   Dir.mktmpdir("xcodegen-generation-guard") do |directory|
     fake_bin = File.join(directory, "bin")
@@ -313,6 +375,7 @@ fail_contract("TestFlight is missing signing cleanup") unless cleanup_step
 fail_contract("TestFlight signing cleanup must run after failures") unless cleanup_step["if"] == "${{ always() }}"
 signing_script = signing_step.fetch("run")
 cleanup_script = cleanup_step.fetch("run")
+verify_mac_installer_identity_fixtures(signing_script)
 first_secret_write = %(printf '%s' "$IOS_CERTIFICATE_BASE64")
 require_script_order(signing_script, "umask 077", first_secret_write, "TestFlight signing setup must set a restrictive umask before materializing secrets")
 %w[
@@ -333,6 +396,18 @@ require_script_order(signing_script, "umask 077", first_secret_write, "TestFligh
     "TestFlight signing setup must publish #{variable} before materializing secrets"
   )
 end
+require_script_order(
+  signing_script,
+  %(security import "$mac_installer_certificate"),
+  %(security find-identity -v -p basic "$keychain"),
+  "TestFlight signing setup must import the Mac installer identity before resolving its exact name"
+)
+require_script_order(
+  signing_script,
+  %(security find-identity -v -p basic "$keychain"),
+  %(MAC_INSTALLER_CERTIFICATE_NAME=%s),
+  "TestFlight signing setup must resolve the Mac installer identity before publishing its exact name"
+)
 require_script_order(
   signing_script,
   "IOS_SIGNING_PROFILE_PATH=%s",
@@ -466,6 +541,10 @@ ios_lane = fastfile[/platform :ios do.*?(?=platform :mac do)/m]
 mac_lane = fastfile[/platform :mac do.*\z/m]
 fail_contract("Fastfile is missing the iOS TestFlight lane") unless ios_lane
 fail_contract("Fastfile is missing the macOS TestFlight lane") unless mac_lane
+fail_contract("Mac TestFlight lane must require the resolved installer identity") unless mac_lane.include?('mac_installer_certificate_name = ENV.fetch("MAC_INSTALLER_CERTIFICATE_NAME")')
+fail_contract("Mac TestFlight package must use the resolved installer identity") unless mac_lane.scan("installer_cert_name: mac_installer_certificate_name").one?
+fail_contract("Mac TestFlight export must use the resolved installer identity") unless mac_lane.scan("installerSigningCertificate: mac_installer_certificate_name").one?
+fail_contract("Mac TestFlight lane must not use the generic installer identity") if mac_lane.include?('installer_cert_name: "Mac Installer Distribution"') || mac_lane.include?('installerSigningCertificate: "Mac Installer Distribution"')
 fail_contract("Mac TestFlight upload must select macOS") unless fastfile.include?('app_platform: "osx"')
 fail_contract("Mac TestFlight upload must use a pkg") unless fastfile.include?("pkg: output_path")
 mac_output_name = mac_lane[/output_name:\s*"([^"]+)"/, 1]

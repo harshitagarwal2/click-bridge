@@ -101,6 +101,7 @@ platform :mac do
     bundle_id = ENV.fetch("CLICK_BRIDGE_MAC_BUNDLE_ID", "com.clickbridge.mac")
     team_id = ENV.fetch("APPLE_TEAM_ID")
     profile_name = ENV.fetch("MAC_PROVISIONING_PROFILE_NAME")
+    mac_installer_certificate_name = ENV.fetch("MAC_INSTALLER_CERTIFICATE_NAME")
     output_directory = ENV.fetch("RUNNER_TEMP")
     archive_path = File.join(output_directory, "ClickBridgeMac.xcarchive")
 
@@ -123,12 +124,12 @@ platform :mac do
       output_name: "ClickBridgeMac",
       export_method: "app-store",
       skip_package_pkg: false,
-      installer_cert_name: "Mac Installer Distribution",
+      installer_cert_name: mac_installer_certificate_name,
       export_options: {
         method: "app-store",
         signingStyle: "manual",
         teamID: team_id,
-        installerSigningCertificate: "Mac Installer Distribution",
+        installerSigningCertificate: mac_installer_certificate_name,
         provisioningProfiles: {
           bundle_id => profile_name
         }
