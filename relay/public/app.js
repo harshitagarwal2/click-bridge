@@ -4,7 +4,7 @@ import {
   CounterSnapshotRequester, createIdleSchedule,
 } from './benchmark-session.js';
 import { BenchmarkController } from './benchmark-controller.js';
-import { PhoneSettingsStore } from './phone-settings-store.js';
+import { clearTokenChange, PhoneSettingsStore, saveTokenChange } from './phone-settings-store.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
 import { activationDecision, initialState, PHASE, reduce, view } from './state.js';
@@ -286,21 +286,25 @@ element.saveToken.addEventListener('click', () => {
     element.tokenState.textContent = 'Token must be exactly 64 lowercase hex characters.';
     return;
   }
-  settings.setToken(token);
-  element.tokenInput.value = '';
-  benchmarkRequests.cancelAll('token replaced');
-  oci.close('token_replaced');
-  dispatch({ type: 'token.set', token });
-  oci.connect();
+  const outcome = saveTokenChange(settings, token, () => {
+    element.tokenInput.value = '';
+    benchmarkRequests.cancelAll('token replaced');
+    oci.close('token_replaced');
+    dispatch({ type: 'token.set', token });
+    oci.connect();
+  });
+  if (!outcome.ok) element.tokenState.textContent = outcome.message;
 });
 
 element.clearToken.addEventListener('click', () => {
-  settings.clearToken();
-  coordinator.abandon('token_cleared');
-  clockHealth.macNotReady();
-  benchmarkRequests.cancelAll('token cleared');
-  oci.close('token_cleared');
-  dispatch({ type: 'token.cleared' });
+  const outcome = clearTokenChange(settings, () => {
+    coordinator.abandon('token_cleared');
+    clockHealth.macNotReady();
+    benchmarkRequests.cancelAll('token cleared');
+    oci.close('token_cleared');
+    dispatch({ type: 'token.cleared' });
+  });
+  if (!outcome.ok) element.tokenState.textContent = outcome.message;
 });
 
 element.keepWarm.addEventListener('change', () => {

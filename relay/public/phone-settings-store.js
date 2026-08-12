@@ -1,6 +1,28 @@
 const TOKEN_KEY = 'clickbridge.phoneToken';
 const KEEP_WARM_KEY = 'clickbridge.keepWarm';
 
+export function saveTokenChange(settings, token, onSaved) {
+  if (!settings.setToken(token)) {
+    return {
+      ok: false,
+      message: 'Could not save the token. Check browser storage settings and try again.',
+    };
+  }
+  onSaved();
+  return { ok: true };
+}
+
+export function clearTokenChange(settings, onCleared) {
+  if (!settings.clearToken()) {
+    return {
+      ok: false,
+      message: 'Could not clear the token. Check browser storage settings and try again.',
+    };
+  }
+  onCleared();
+  return { ok: true };
+}
+
 export class PhoneSettingsStore {
   constructor(storage) {
     this.storage = storage;

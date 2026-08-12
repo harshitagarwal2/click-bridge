@@ -55,8 +55,6 @@ final class AppState: ObservableObject {
 
     var remoteToggleEnabled: Bool { true }
 
-    func start() { reconnect() }
-
     func reconnect() {
         Task {
             do {

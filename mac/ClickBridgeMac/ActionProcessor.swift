@@ -14,7 +14,7 @@ protocol PostEventPermissionChecking: Sendable { func isGranted() -> Bool }
 
 actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
     private enum Entry {
-        case processing(fingerprint: String)
+        case processing
         case completed(fingerprint: String, result: ActionResult, completedAtMilliseconds: Double)
     }
 
@@ -62,10 +62,8 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
         let fingerprint = request.fingerprint
         if let existing = entries[request.actionId] {
             switch existing {
-            case .processing(let existingFingerprint):
-                return rejected(request.actionId,
-                                existingFingerprint == fingerprint ? .idConflict : .idConflict,
-                                ingress, started)
+            case .processing:
+                return rejected(request.actionId, .idConflict, ingress, started)
             case .completed(let existingFingerprint, let cached, _):
                 guard existingFingerprint == fingerprint else {
                     return rejected(request.actionId, .idConflict, ingress, started)
@@ -78,7 +76,7 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
             return rejected(request.actionId, .capacityExceeded, ingress, started)
         }
 
-        entries[request.actionId] = .processing(fingerprint: fingerprint)
+        entries[request.actionId] = .processing
         order.append(request.actionId)
 
         let result: ActionResult

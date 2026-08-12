@@ -290,7 +290,7 @@ ssh "$OCI_SSH_TARGET" 'sudo install -d -m 0700 -o "$USER" -g "$(id -gn)" /opt/cl
 ```
 
 Configure the phone with `PHONE_TOKEN` and the Mac Keychain with `MAC_TOKEN`.
-Do not generate `DIRECT_TOKEN` unless Task 10 begins.
+Do not generate `DIRECT_TOKEN` unless Task 11 begins.
 
 ## 8. Transfer one immutable release
 

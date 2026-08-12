@@ -86,6 +86,15 @@ test('legacy protocol-lite asset is unreferenced and unavailable over HTTP', asy
   assert.equal(response.body, 'not found');
 });
 
+test('removed browser modules stay unavailable with the ordinary 404 response', async () => {
+  for (const name of ['constants-lite.js', 'direct-transport.js']) {
+    assert.equal(existsSync(join(PUBLIC, name)), false, `${name} must not ship`);
+    const response = await requestStatic(`/${name}`);
+    assert.equal(response.status, 404);
+    assert.equal(response.body, 'not found');
+  }
+});
+
 test('the manifest is installable', () => {
   const m = JSON.parse(readFileSync(join(PUBLIC, 'manifest.webmanifest'), 'utf8'));
   assert.equal(m.display, 'standalone');

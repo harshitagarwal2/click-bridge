@@ -15,14 +15,3 @@ protocol ActionRequestSink: Sendable {
 protocol DiagnosticCounterReading: Sendable {
     func diagnosticPostCounts() async -> InputPostCounts
 }
-
-struct RejectingActionSink: ActionRequestSink {
-    func receive(_ request: ActionRequest, via ingress: ActionIngress) async -> ActionResult {
-        ActionResult(actionId: request.actionId, status: .rejected, reason: .remoteDisabled,
-                     acceptedVia: ingress, macProcessingUs: 0, mouseDownPostedUnixMs: nil)
-    }
-}
-
-struct ZeroDiagnosticCounterReader: DiagnosticCounterReading {
-    func diagnosticPostCounts() async -> InputPostCounts { .zero }
-}
