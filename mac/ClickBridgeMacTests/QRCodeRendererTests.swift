@@ -25,6 +25,37 @@ final class QRCodeRendererTests: XCTestCase {
         ))
     }
 
+    func testWebInvitationMapsCanonicalNativeInvitationWithoutChangingReference() throws {
+        let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let native = URL(string: "https://relay.example:8443/pair#v=1&r=\(reference)")!
+
+        let web = try PairingLink.makeWebInvitation(from: native)
+
+        XCTAssertEqual(web.absoluteString,
+                       "https://relay.example:8443/pair/web#v=1&r=\(reference)")
+        XCTAssertEqual(web.fragment, native.fragment)
+        XCTAssertEqual(native.absoluteString,
+                       "https://relay.example:8443/pair#v=1&r=\(reference)")
+    }
+
+    func testWebInvitationRejectsHostileOrNonCanonicalSources() {
+        let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let invalidLinks = [
+            "http://relay.example/pair#v=1&r=\(reference)",
+            "https://relay.example/pair/web#v=1&r=\(reference)",
+            "https://relay.example/pair?token=secret#v=1&r=\(reference)",
+            "https://user@relay.example/pair#v=1&r=\(reference)",
+            "https://relay.example/pair#v=1&r=\(reference)&token=secret",
+            "https://relay.example/pair#v=1&r=A"
+        ]
+
+        for rawValue in invalidLinks {
+            XCTAssertThrowsError(try PairingLink.makeWebInvitation(
+                from: URL(string: rawValue)!
+            ), rawValue)
+        }
+    }
+
     func testRendererRejectsAnythingExceptTheCanonicalInvitationURL() {
         let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         let invalidLinks = [

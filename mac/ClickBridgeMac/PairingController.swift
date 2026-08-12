@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 protocol PairingTransport: Sendable {
@@ -59,6 +60,21 @@ enum PairingLink {
             throw PairingLinkError.invalidRelayURL
         }
         return canonical
+    }
+
+    static func makeWebInvitation(from invitation: URL) throws -> URL {
+        let canonical = try validateInvitation(invitation)
+        var components = URLComponents()
+        components.scheme = canonical.scheme
+        components.host = canonical.host
+        components.port = canonical.port
+        components.path = "/pair/web"
+        components.fragment = canonical.fragment
+        guard let webInvitation = components.url,
+              webInvitation.absoluteString.utf8.count <= 512 else {
+            throw PairingLinkError.invalidRelayURL
+        }
+        return webInvitation
     }
 
     private static func isCanonicalReference(_ value: String) -> Bool {
@@ -275,6 +291,21 @@ final class PairingController: ObservableObject {
             retryAction = .status
             reset(to: .cancelFailed)
         }
+    }
+
+    @discardableResult
+    func copyWebInvitation(
+        _ expected: Invitation,
+        to pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        guard case .invitation(let current) = state,
+              current == expected,
+              now() < current.expiresAt,
+              let webInvitation = try? PairingLink.makeWebInvitation(from: current.url) else {
+            return false
+        }
+        pasteboard.clearContents()
+        return pasteboard.setString(webInvitation.absoluteString, forType: .string)
     }
 
     func refreshExpiry() async {
