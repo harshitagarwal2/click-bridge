@@ -279,11 +279,11 @@ assert_file_equals() {
 }
 
 assert_log_contains() {
-  grep -F "$1" "$FAKE_DOCKER_LOG" >/dev/null || fail "docker log missing: $1"
+  grep -F -- "$1" "$FAKE_DOCKER_LOG" >/dev/null || fail "docker log missing: $1"
 }
 
 assert_log_not_contains() {
-  if grep -F "$1" "$FAKE_DOCKER_LOG" >/dev/null; then
+  if grep -F -- "$1" "$FAKE_DOCKER_LOG" >/dev/null; then
     fail "docker log unexpectedly contained: $1"
   fi
 }
@@ -498,10 +498,12 @@ assert_log_not_contains 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 : > "$FAKE_DOCKER_LOG"
 run_deploy "$root" "$SHA_A" PHONE_TOKEN=inherited-phone MAC_TOKEN=inherited-mac
+root_real="$(cd "$root" && pwd -P)"
 assert_file_equals "$root/current-release" "$SHA_A"
 test ! -e "$root/previous-release" || fail 'first deployment created previous-release'
 assert_log_contains "release=$SHA_A docker compose"
 assert_log_contains 'docker run --detach --name click-bridge-relay-candidate'
+assert_log_contains "--volume $root_real/shared/auth:/var/lib/click-bridge/auth"
 assert_log_contains 'scripts/smoke-relay.mjs'
 assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e'
 assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test --env PHONE_TOKEN --env MAC_TOKEN --volume'
