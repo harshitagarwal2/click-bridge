@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Click Bridge">
+<meta name="clickbridge-pairing" content="off">
 <title>Click Bridge</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png">
@@ -30,27 +31,51 @@
   </button>
 </header>
 
-<main class="stage">
+<main id="remote-stage" class="stage">
   <button id="click-button" class="click" type="button" disabled>3 CLICKS</button>
   <p class="hint">Three ordinary clicks at the Mac's current cursor</p>
   <p id="status" class="result" role="status" aria-live="polite">Starting…</p>
   <button id="clock-retry" class="btn retry" type="button" hidden>Retry clock check</button>
 </main>
 
+<section id="pairing-panel" class="pairing" aria-labelledby="pairing-title" hidden>
+  <div class="pairing-mark" aria-hidden="true"><span></span><span></span></div>
+  <p class="pairing-kicker">Click Bridge handshake</p>
+  <h1 id="pairing-title" tabindex="-1">Pair this browser</h1>
+  <p id="pairing-message" class="pairing-message" aria-live="polite">Open a pairing link from your Mac, or paste it here.</p>
+  <p id="pairing-alert" class="pairing-alert" role="alert" hidden></p>
+  <output id="pairing-code" class="pairing-code" aria-label="Confirmation code" hidden></output>
+  <div class="pairing-actions">
+    <button id="pairing-paste" class="btn primary pairing-action" type="button">Paste pairing link</button>
+    <button id="pairing-cancel" class="btn pairing-action" type="button" hidden>Cancel</button>
+  </div>
+  <p class="pairing-privacy">The link is used once and removed from this page immediately.</p>
+</section>
+
 <dialog id="settings" class="sheet" aria-labelledby="settings-title">
   <form method="dialog" class="sheet-form">
     <h2 id="settings-title">Settings</h2>
 
-    <label class="field" for="token-input">Phone token</label>
-    <input id="token-input" class="input" type="text" inputmode="latin"
-           autocomplete="off" autocapitalize="none" spellcheck="false"
-           placeholder="64 hex characters">
-    <p id="token-state" class="muted">No token stored.</p>
-
+    <p id="pairing-paired-state" class="muted">This browser is not paired.</p>
     <div class="row">
-      <button id="token-save" class="btn primary" type="button">Save / replace</button>
-      <button id="token-clear" class="btn danger" type="button">Clear</button>
+      <button id="pair-again" class="btn primary pairing-action" type="button" hidden>Pair Again</button>
+      <button id="pairing-forget" class="btn danger pairing-action" type="button" hidden>Forget this browser</button>
     </div>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="advanced-body">
+        <label class="field" for="token-input">Legacy phone token</label>
+        <input id="token-input" class="input" type="password" inputmode="latin"
+               autocomplete="off" autocapitalize="none" spellcheck="false"
+               placeholder="64 hex characters">
+        <p id="token-state" class="muted">No token stored.</p>
+        <div class="row">
+          <button id="token-save" class="btn primary" type="button">Save / replace</button>
+          <button id="token-clear" class="btn danger" type="button">Clear</button>
+        </div>
+      </div>
+    </details>
 
     <h3 class="sub">Diagnostics</h3>
     <label class="check">

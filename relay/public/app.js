@@ -1,16 +1,27 @@
 import { ClockHealthController } from './clock-health-controller.js';
-import { CredentialLifecycleController } from './credential-lifecycle-controller.js';
+import {
+  authenticateCredentialProbe, CredentialLifecycleController, PairingRecoveryGate,
+} from './credential-lifecycle-controller.js';
 import {
   BenchmarkRequestRouter, BenchmarkRunSequence, BenchmarkSession,
   CounterSnapshotRequester, createIdleSchedule,
 } from './benchmark-session.js';
 import { BenchmarkController } from './benchmark-controller.js';
 import { PhoneSettingsStore } from './phone-settings-store.js';
+import { PairingController } from './pairing-controller.js';
+import { parseAndClearPairingFragment } from './pairing-link.js';
+import { createPairingUI } from './pairing-ui.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
 import { activationDecision, initialState, PHASE, reduce, view } from './state.js';
 import { TransportCoordinator } from './transport-coordinator.js';
 import { WakeLockController } from './wake-lock-controller.js';
+
+// Pairing references are URL fragments. Scrub synchronously, before any DOM
+// composition, transport, error reporting, or analytics can observe them.
+let initialPairingInvitation = parseAndClearPairingFragment(
+  window.location, window.history, window.location.host,
+);
 
 const byId = (id) => document.getElementById(id);
 const element = {
@@ -28,9 +39,23 @@ const element = {
   keepWarm: byId('keepwarm'),
   diagnostics: byId('diag'),
   wakeStatus: byId('wake-status'),
+  pairing: {
+    panel: byId('pairing-panel'),
+    remote: byId('remote-stage'),
+    heading: byId('pairing-title'),
+    message: byId('pairing-message'),
+    alert: byId('pairing-alert'),
+    code: byId('pairing-code'),
+    paste: byId('pairing-paste'),
+    cancel: byId('pairing-cancel'),
+    pairedState: byId('pairing-paired-state'),
+    pairAgain: byId('pair-again'),
+    forget: byId('pairing-forget'),
+  },
 };
 
 const settings = new PhoneSettingsStore(window.localStorage, navigator.locks);
+const credentialSnapshot = settings.getSnapshot();
 const scheduler = createRuntimeScheduler(window);
 let state = initialState();
 let lastMacReadyGeneration = null;
@@ -41,6 +66,7 @@ let benchmarkSchedule = [];
 let benchmarkBlockIndex = 0;
 let benchmarkRequests;
 let benchmarkTransportGeneration = null;
+let pairingUI;
 
 function dispatch(event) {
   state = reduce(state, event);
@@ -129,6 +155,7 @@ function handleTransportStatus(status) {
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
   dispatch({ type: status.state === 'taken_over' ? 'transport.taken_over' : 'transport.closed' });
+  if (status.state === 'taken_over') pairingUI?.handleState({ phase: 'replaced' });
 }
 
 const oci = createRelayTransport({
@@ -137,6 +164,45 @@ const oci = createRelayTransport({
   onMessage: handleInbound,
   onStatus: handleTransportStatus,
 });
+
+function authenticateCredential(slot, signal) {
+  return authenticateCredentialProbe(slot, signal, {
+    createTransport: createRelayTransport,
+    location: window.location,
+    scheduler,
+  });
+}
+
+async function startPairedTransport(slot, signal) {
+  return credentialLifecycle.activatePairing(slot, signal);
+}
+
+const pairingEnabled = document.querySelector('meta[name="clickbridge-pairing"]')?.content === 'on';
+const pairingController = new PairingController({
+  location: window.location,
+  settings,
+  authenticateCredential,
+  startTransport: startPairedTransport,
+  onState: (pairingState) => pairingUI?.handleState(pairingState),
+});
+
+pairingUI = createPairingUI({
+  elements: element.pairing,
+  enabled: pairingEnabled,
+  paired: Boolean(credentialSnapshot?.active),
+  expectedHost: window.location.host,
+  startPairing: (reference) => pairingController.start(reference),
+  cancelPairing: () => pairingController.cancel(),
+  forgetPairing: () => {
+    pairingController.retire();
+    return credentialLifecycle.clear();
+  },
+});
+
+if (initialPairingInvitation) {
+  pairingUI.start(initialPairingInvitation);
+  initialPairingInvitation = null;
+}
 
 benchmarkRequests = new BenchmarkRequestRouter({
   send: (message) => oci.send(message),
@@ -393,12 +459,15 @@ function goHidden() {
   clockHealth.macNotReady();
   dispatch({ type: 'visibility', visible: false });
   oci.close('hidden');
+  pairingController.cancel();
   wakeLockController.suspend();
 }
 
+let pairingRecovery;
+
 function goVisible() {
   dispatch({ type: 'visibility', visible: true });
-  credentialLifecycle.visible();
+  pairingRecovery.visible();
   wakeLockController.acquire();
 }
 
@@ -412,7 +481,7 @@ window.addEventListener('pageshow', () => {
 });
 window.addEventListener('online', () => {
   benchmarkController.transportLost('network changed');
-  credentialLifecycle.online();
+  pairingRecovery.online();
 });
 navigator.connection?.addEventListener?.('change', () => {
   if (!benchmarkController.active) return;
@@ -423,7 +492,7 @@ navigator.connection?.addEventListener?.('change', () => {
 
 function applySavedToken(token) {
   element.tokenInput.value = '';
-  benchmarkRequests.cancelAll('token replaced');
+  benchmarkRequests?.cancelAll('token replaced');
   oci.close('token_replaced');
   dispatch({ type: 'token.set', token });
   oci.resume();
@@ -445,8 +514,16 @@ const credentialLifecycle = new CredentialLifecycleController({
   connect: () => oci.connect(),
   reportError: (message) => { element.tokenState.textContent = message; },
 });
+pairingRecovery = new PairingRecoveryGate({
+  needed: pairingEnabled && Boolean(credentialSnapshot?.pending),
+  isVisible: () => document.visibilityState === 'visible',
+  startRecovery: () => pairingUI.startRecovery(),
+  recover: () => pairingController.recover(),
+  visible: () => credentialLifecycle.visible(),
+  online: () => credentialLifecycle.online(),
+});
 
-const savedToken = settings.getToken();
+const savedToken = credentialSnapshot?.active?.credential ?? null;
 if (savedToken) state = reduce(state, { type: 'token.set', token: savedToken });
 element.keepWarm.checked = settings.getKeepWarm();
 oci.setKeepWarm(element.keepWarm.checked);

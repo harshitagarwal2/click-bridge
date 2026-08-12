@@ -47,7 +47,7 @@ body{
   padding:8px;margin:-8px;border-radius:8px;cursor:pointer;
   display:flex;align-items:center;
 }
-.icon-btn:focus-visible,#click-button:focus-visible,.btn:focus-visible{
+.icon-btn:focus-visible,#click-button:focus-visible,.btn:focus-visible,summary:focus-visible{
   outline:3px solid var(--accent);outline-offset:3px;
 }
 
@@ -133,3 +133,47 @@ body{
 
 .check{display:flex;gap:10px;align-items:flex-start;font-size:14px;color:var(--muted)}
 .check input{margin-top:3px;flex:0 0 auto}
+
+/* -- device pairing ----------------------------------------------------- */
+
+.pairing{
+  width:min(100%,34rem);margin:auto;padding:clamp(28px,8vw,56px) 24px;
+  align-self:center;text-align:center;
+}
+
+.pairing-mark{
+  position:relative;width:92px;height:54px;margin:0 auto 26px;
+  filter:drop-shadow(0 10px 24px rgba(61,220,151,.14));
+  transition:transform .35s ease;
+}
+.pairing-mark span{
+  position:absolute;top:8px;width:46px;height:38px;border:2px solid var(--accent);
+  border-radius:20px;
+}
+.pairing-mark span:first-child{left:5px;transform:rotate(-12deg)}
+.pairing-mark span:last-child{right:5px;transform:rotate(12deg)}
+
+.pairing-kicker{
+  margin:0 0 8px;color:var(--accent);font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.14em;text-transform:uppercase;
+}
+.pairing h1{margin:0;font-size:clamp(32px,9vw,48px);line-height:1.04;letter-spacing:-.035em}
+.pairing-message{margin:18px auto 0;color:var(--muted);max-width:29rem}
+.pairing-alert{margin:18px auto 0;color:var(--danger);font-weight:650;max-width:29rem}
+.pairing-code{
+  display:block;margin:28px auto 0;padding:18px 20px;width:min(100%,22rem);
+  border:1px solid var(--accent);border-radius:18px;background:#0e1715;color:var(--accent);
+  font:800 clamp(32px,11vw,52px)/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.13em;font-variant-numeric:tabular-nums;
+}
+.pairing-actions{display:flex;gap:10px;margin:28px auto 0;max-width:24rem}
+.pairing-action{min-height:44px}
+.pairing-privacy{margin:16px auto 0;color:var(--muted);font-size:12px;max-width:24rem}
+
+.advanced{border-top:1px solid var(--line);padding-top:12px}
+.advanced summary{cursor:pointer;color:var(--muted);min-height:44px;display:flex;align-items:center}
+.advanced-body{display:flex;flex-direction:column;gap:12px;padding-top:8px}
+
+@media (prefers-reduced-motion:reduce){
+  .pairing-mark{transition:none}
+}

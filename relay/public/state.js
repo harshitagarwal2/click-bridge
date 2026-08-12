@@ -224,9 +224,9 @@ export function view(state) {
 
   let status;
   switch (phase) {
-    case PHASE.MISSING_TOKEN: status = 'Enter the phone token'; break;
+    case PHASE.MISSING_TOKEN: status = 'Pair this browser'; break;
     case PHASE.HIDDEN: status = 'Paused'; break;
-    case PHASE.TAKEN_OVER: status = 'Another phone took over. Re-save the phone token to reconnect.'; break;
+    case PHASE.TAKEN_OVER: status = 'This browser was replaced. Pair again to reconnect.'; break;
     case PHASE.CONNECTING: status = 'Connecting…'; break;
     case PHASE.MAC_OFFLINE: status = 'Open Click Bridge on the Mac'; break;
     case PHASE.PERMISSION_REQUIRED: status = 'Grant input permission on the Mac'; break;

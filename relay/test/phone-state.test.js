@@ -30,6 +30,7 @@ function readyState() {
 test('missing token', () => {
   assert.equal(phaseOf(initialState()), PHASE.MISSING_TOKEN);
   assert.equal(view(initialState()).enabled, false);
+  assert.equal(view(initialState()).status, 'Pair this browser');
 });
 
 test('connecting', () => {
@@ -46,7 +47,7 @@ test('phone takeover is terminal across lifecycle reconnects until the token is 
   );
   assert.equal(phaseOf(s), PHASE.TAKEN_OVER);
   assert.equal(view(s).enabled, false);
-  assert.equal(view(s).status, 'Another phone took over. Re-save the phone token to reconnect.');
+  assert.equal(view(s).status, 'This browser was replaced. Pair again to reconnect.');
 
   s = reduce(s, { type: 'visibility', visible: false });
   s = reduce(s, { type: 'visibility', visible: true });

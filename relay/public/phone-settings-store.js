@@ -158,8 +158,15 @@ export class PhoneSettingsStore {
       : false);
   }
 
-  async discardPending() {
-    return this.#mutate((current) => ({ ...current, pending: null }));
+  async discardPending(expected, expectedGeneration) {
+    const canonical = canonicalSlot(expected);
+    if (!canonical || !validGeneration(expectedGeneration)) return false;
+    return this.#mutate((current) => current.generation === expectedGeneration
+      && current.pending
+      && current.pending.credential === canonical.credential
+      && current.pending.version === canonical.version
+      ? { ...current, pending: null }
+      : false);
   }
 
   async forget() {

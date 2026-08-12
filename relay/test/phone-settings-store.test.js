@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CredentialLifecycleController } from '../public/credential-lifecycle-controller.js';
+import * as credentialLifecycleModule from '../public/credential-lifecycle-controller.js';
+
+const { CredentialLifecycleController } = credentialLifecycleModule;
 
 import {
   clearTokenChange,
@@ -15,6 +17,16 @@ import {
 const immediateLocks = { request: (_name, _options, callback) => callback() };
 const generation = (store) => store.getSnapshot().generation;
 const fixedEpoch = '00000000-0000-4000-8000-000000000001';
+
+class QueuedWebLocks {
+  constructor() { this.tail = Promise.resolve(); }
+
+  request(_name, _options, callback) {
+    const result = this.tail.then(callback);
+    this.tail = result.catch(() => {});
+    return result;
+  }
+}
 
 test('memory settings store defaults to no token and keep-warm off', () => {
   const store = new MemorySettingsStore();
@@ -314,7 +326,8 @@ function lifecycleHarness(initialToken = 'f'.repeat(64)) {
   const settings = {
     getToken: () => durable.token,
     getSnapshot: () => durable.readable
-      ? { active: durable.token ? { credential: durable.token, version: 0 } : null }
+      ? { active: durable.active ?? (durable.token
+        ? { credential: durable.token, version: 0 } : null), pending: null, generation: 'test' }
       : null,
     setToken(next) {
       return new Promise((resolve) => saves.push((success = true) => {
@@ -342,6 +355,51 @@ function lifecycleHarness(initialToken = 'f'.repeat(64)) {
   return { controller, durable, saves, clears, applied, cleared, connected, errors,
     token: () => token, visible: (next) => { visible = next; }, ready: (next) => { ready = next; } };
 }
+
+test('pairing activation publishes only after the promoted durable snapshot is verified', async () => {
+  const harness = lifecycleHarness();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+
+  assert.equal(await harness.controller.activatePairing(paired, new AbortController().signal), true);
+  assert.deepEqual(harness.applied, [paired.credential]);
+  assert.equal(harness.token(), paired.credential);
+});
+
+test('a newer claimant waits out an older Forget intent and exclusively owns publication', async () => {
+  const harness = lifecycleHarness();
+  const clearing = harness.controller.clear();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+  const activating = harness.controller.activatePairing(paired, new AbortController().signal);
+
+  assert.deepEqual(harness.applied, []);
+  harness.clears.shift()(true);
+  assert.equal(await clearing, true);
+  assert.equal(await activating, true);
+  assert.deepEqual(harness.cleared, []);
+  assert.deepEqual(harness.applied, [paired.credential]);
+});
+
+test('an aborted pairing activation cannot publish or resume the ordinary transport', async () => {
+  const harness = lifecycleHarness();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+  const abort = new AbortController();
+  abort.abort();
+
+  assert.equal(await harness.controller.activatePairing(paired, abort.signal), false);
+  assert.deepEqual(harness.applied, []);
+  assert.deepEqual(harness.connected, []);
+
+  harness.controller.visible();
+  harness.controller.online();
+  assert.deepEqual(harness.applied, []);
+  assert.deepEqual(harness.connected, []);
+});
 
 test('production lifecycle blocks old-token visible and online reconnect until gated save applies', async () => {
   const harness = lifecycleHarness();
@@ -671,7 +729,8 @@ test('cancel before stage advances generation and fences delayed staging', async
     },
   };
   let serialized = JSON.stringify({
-    active: { credential: 'a'.repeat(64), version: 1 }, pending: null,
+    active: { credential: 'a'.repeat(64), version: 1 },
+    pending: { credential: 'b'.repeat(64), version: 2 },
     generation: 4, provenance: 'authoritative',
   });
   const storage = {
@@ -682,11 +741,151 @@ test('cancel before stage advances generation and fences delayed staging', async
   const staging = new PhoneSettingsStore(storage, locks);
   const expectedGeneration = generation(staging);
 
-  assert.equal(await canceling.discardPending(), true);
+  assert.equal(await canceling.discardPending(
+    canceling.getPending(), canceling.getSnapshot().generation,
+  ), true);
   assert.equal(await staging.stage(
     { credential: 'b'.repeat(64), version: 2 }, expectedGeneration,
   ), false);
   assert.equal(staging.getPending(), null);
+});
+
+test('delayed discard cannot clear a newer pending credential from another store', async () => {
+  let serialized = null;
+  const locks = { request: (_name, _options, callback) => callback() };
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const older = { credential: 'b'.repeat(64), version: 2 };
+  const newer = { credential: 'c'.repeat(64), version: 2 };
+  await current.setActive(active, current.getSnapshot().generation);
+  await current.stage(older, current.getSnapshot().generation);
+  const staleGeneration = stale.getSnapshot().generation;
+  await current.discardPending(older, current.getSnapshot().generation);
+  await current.stage(newer, current.getSnapshot().generation);
+
+  assert.equal(await stale.discardPending(older, staleGeneration), false);
+  assert.deepEqual(current.getPending(), newer);
+});
+
+test('two stores under one Web Lock require the exact pending identity even at the current generation', async () => {
+  const locks = new QueuedWebLocks();
+  let serialized = null;
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const older = { credential: 'b'.repeat(64), version: 2 };
+  const newer = { credential: 'c'.repeat(64), version: 2 };
+  await current.setActive(active, generation(current));
+  await current.stage(older, generation(current));
+  await current.discardPending(older, generation(current));
+  await current.stage(newer, generation(current));
+
+  assert.equal(await stale.discardPending(older, generation(stale)), false);
+  assert.deepEqual(current.getPending(), newer);
+});
+
+test('two stores under one Web Lock require the captured generation even when pending identity returns', async () => {
+  const locks = new QueuedWebLocks();
+  let serialized = null;
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const pending = { credential: 'b'.repeat(64), version: 2 };
+  await current.setActive(active, generation(current));
+  await current.stage(pending, generation(current));
+  const capturedGeneration = generation(stale);
+  await current.discardPending(pending, generation(current));
+  await current.stage(pending, generation(current));
+
+  assert.equal(await stale.discardPending(pending, capturedGeneration), false);
+  assert.deepEqual(current.getPending(), pending);
+});
+
+test('initially hidden recovery fences visible and online resume until deferred authentication clears', async () => {
+  const RecoveryGate = credentialLifecycleModule.PairingRecoveryGate;
+  assert.equal(typeof RecoveryGate, 'function');
+  const authentication = (() => {
+    let resolve;
+    const promise = new Promise((next) => { resolve = next; });
+    return { promise, resolve };
+  })();
+  let visible = false;
+  const ordinary = [];
+  const starts = [];
+  const gate = new RecoveryGate({
+    needed: true,
+    isVisible: () => visible,
+    startRecovery: () => starts.push('recovery'),
+    recover: () => authentication.promise,
+    visible: () => ordinary.push('visible'),
+    online: () => ordinary.push('online'),
+  });
+
+  gate.visible();
+  visible = true;
+  gate.visible();
+  gate.online();
+  assert.deepEqual(starts, ['recovery']);
+  assert.deepEqual(ordinary, []);
+
+  authentication.resolve(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  gate.online();
+  assert.deepEqual(ordinary, ['online']);
+});
+
+test('credential probe clears its deadline after transport authentication settles', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  assert.equal(typeof authenticate, 'function');
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  let status;
+  const probe = { close() {}, connect() {} };
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, new AbortController().signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: (options) => { status = options.onStatus; return probe; },
+    },
+  );
+
+  status({ state: 'ready' });
+  assert.equal(await result, true);
+  assert.equal(scheduler.tasks.size, 0);
+});
+
+test('page hide abort closes the real credential probe transport', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  assert.equal(typeof authenticate, 'function');
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  const lifecycleTarget = new EventTarget();
+  const abort = new AbortController();
+  const closes = [];
+  const probe = { close: (reason) => closes.push(reason), connect() {} };
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, abort.signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: () => probe,
+    },
+  );
+  lifecycleTarget.addEventListener('pagehide', () => abort.abort());
+
+  lifecycleTarget.dispatchEvent(new Event('pagehide'));
+  await assert.rejects(result, /pairing_probe_cancelled/);
+  assert.deepEqual(closes, ['pairing_probe_complete']);
 });
 
 test('versioned mutations reject lower and equal versions without changing stored slots', async () => {
@@ -810,9 +1009,10 @@ test('discard and forget clear only their intended recoverable slots', async () 
   const store = new MemorySettingsStore();
   const active = { credential: 'a'.repeat(64), version: 1 };
   await store.setActive(active, generation(store));
-  await store.stage({ credential: 'b'.repeat(64), version: 2 }, generation(store));
+  const pending = { credential: 'b'.repeat(64), version: 2 };
+  await store.stage(pending, generation(store));
 
-  assert.equal(await store.discardPending(), true);
+  assert.equal(await store.discardPending(pending, generation(store)), true);
   assert.deepEqual(store.getActive(), active);
   assert.equal(store.getPending(), null);
   assert.equal(await store.forget(), true);
@@ -860,7 +1060,7 @@ test('every credential mutator is atomic when its single record write fails', as
     ['promotePending', { active, pending, generation: 7, provenance: 'authoritative' },
       (store) => store.promotePending(pending, 7)],
     ['discardPending', { active, pending, generation: 7, provenance: 'authoritative' },
-      (store) => store.discardPending()],
+      (store) => store.discardPending(pending, 7)],
     ['forget', { active, pending, generation: 7, provenance: 'authoritative' },
       (store) => store.forget()],
   ];
@@ -897,7 +1097,7 @@ test('a present malformed embedded epoch fails closed across mutators', async ()
     () => store.setActive(next, token),
     () => store.stage(next, token),
     () => store.promotePending(next, token),
-    () => store.discardPending(),
+    () => store.discardPending(next, token),
   ]) {
     assert.equal(await mutate(), false);
     assert.equal(serialized, original);
