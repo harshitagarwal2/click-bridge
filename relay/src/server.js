@@ -96,6 +96,7 @@ function rejectUpgradeForCapacity(socket) {
 }
 
 function destroyRejectedWebSocket(ws) {
+  if (ws) ws.__clickBridgeTerminal = true;
   try {
     if (typeof ws?.terminate === 'function') ws.terminate();
     else if (typeof ws?.close === 'function') ws.close();
@@ -104,18 +105,29 @@ function destroyRejectedWebSocket(ws) {
   }
 }
 
-function closeWithDeadline(ws, code, reason, deadlineMs) {
-  if (ws.__clickBridgeCloseTimer || ws.readyState === ws.CLOSED) return;
+function terminateWebSocket(ws) {
+  if (!ws) return;
+  ws.__clickBridgeTerminal = true;
+  try {
+    if (ws.readyState !== ws.CLOSED) ws.terminate();
+  } catch {
+    // The socket is already terminal; teardown is best-effort.
+  }
+}
+
+function closeWithDeadline(ws, code, reason, deadlineMs, scheduleDeadline = setTimeout) {
+  if (ws.__clickBridgeTerminal || ws.readyState === ws.CLOSED) return;
+  ws.__clickBridgeTerminal = true;
   try {
     ws.close(code, reason);
   } catch {
-    ws.terminate();
+    terminateWebSocket(ws);
     return;
   }
   if (ws.readyState === ws.CLOSED) return;
-  const timer = setTimeout(() => {
+  const timer = scheduleDeadline(() => {
     ws.__clickBridgeCloseTimer = null;
-    if (ws.readyState !== ws.CLOSED) ws.terminate();
+    terminateWebSocket(ws);
   }, deadlineMs);
   timer.unref?.();
   ws.__clickBridgeCloseTimer = timer;
@@ -236,6 +248,8 @@ export function attachWebSocketServer({
   pingIntervalMs = SERVER_PING_INTERVAL_MS,
   pongTimeoutMs = SERVER_PONG_TIMEOUT_MS,
   terminalCloseDeadlineMs = TERMINAL_CLOSE_DEADLINE_MS,
+  scheduleAuthTimeout = setTimeout,
+  scheduleTerminalClose = setTimeout,
   maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
   performWebSocketUpgrade,
@@ -277,16 +291,19 @@ export function attachWebSocketServer({
     socket.once('close', () => admission.releaseAll());
     socket.once('error', () => admission.releaseAll());
     socket.setNoDelay?.(true);
+    let acceptedWebSocket = null;
     try {
       upgrade(req, socket, head, (ws) => {
         if (!admission.acceptCallback()) {
           destroyRejectedWebSocket(ws);
           return;
         }
+        acceptedWebSocket = ws;
         try {
           ws.__clickBridgeAdmission = admission;
           wss.emit('connection', ws, req);
         } catch {
+          destroyRejectedWebSocket(ws);
           admission.releaseAll();
           socket.destroy();
           log.info?.(JSON.stringify({
@@ -295,6 +312,7 @@ export function attachWebSocketServer({
         }
       });
     } catch {
+      destroyRejectedWebSocket(acceptedWebSocket);
       admission.releaseAll();
       socket.destroy();
       log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code: 'upgrade_throw' }));
@@ -307,10 +325,12 @@ export function attachWebSocketServer({
     let role = null;
     let connection = null;
     ws.__clickBridgePongTimer = null;
-    const authTimer = setTimeout(() => {
+    const authTimer = scheduleAuthTimeout(() => {
       if (role === null) {
         log.info?.(JSON.stringify({ event: 'auth_timeout' }));
-        closeWithDeadline(ws, 4001, 'auth timeout', terminalCloseDeadlineMs);
+        closeWithDeadline(
+          ws, 4001, 'auth timeout', terminalCloseDeadlineMs, scheduleTerminalClose,
+        );
       }
     }, authTimeoutMs);
     authTimer.unref?.();
@@ -321,6 +341,7 @@ export function attachWebSocketServer({
     });
 
     ws.on('message', (data, isBinary) => {
+      if (ws.__clickBridgeTerminal) return;
       const raw = isBinary ? data : data.toString('utf8');
       if (role === null) {
         let message;
@@ -329,10 +350,14 @@ export function attachWebSocketServer({
         } catch (error) {
           if (error instanceof ProtocolError) {
             log.info?.(JSON.stringify({ event: 'auth_rejected', code: error.code }));
-            closeWithDeadline(ws, 4003, 'bad hello', terminalCloseDeadlineMs);
+            closeWithDeadline(
+              ws, 4003, 'bad hello', terminalCloseDeadlineMs, scheduleTerminalClose,
+            );
           } else {
             log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'parser_failure' }));
-            closeWithDeadline(ws, 1011, 'internal error', terminalCloseDeadlineMs);
+            closeWithDeadline(
+              ws, 1011, 'internal error', terminalCloseDeadlineMs, scheduleTerminalClose,
+            );
           }
           return;
         }
@@ -341,10 +366,13 @@ export function attachWebSocketServer({
           log.info?.(JSON.stringify({
             event: 'auth_rejected', code: 'bad_token', role: message.role,
           }));
-          closeWithDeadline(ws, 4003, 'bad token', terminalCloseDeadlineMs);
+          closeWithDeadline(
+            ws, 4003, 'bad token', terminalCloseDeadlineMs, scheduleTerminalClose,
+          );
           return;
         }
 
+        if (ws.__clickBridgeTerminal) return;
         role = message.role;
         clearTimeout(authTimer);
         admission.releaseUnauthenticated();
@@ -369,7 +397,9 @@ export function attachWebSocketServer({
           log.info?.(JSON.stringify({
             event: 'message_internal_error', role, code: 'parser_failure',
           }));
-          closeWithDeadline(ws, 1011, 'internal error', terminalCloseDeadlineMs);
+          closeWithDeadline(
+            ws, 1011, 'internal error', terminalCloseDeadlineMs, scheduleTerminalClose,
+          );
         }
         return;
       }
@@ -391,12 +421,13 @@ export function attachWebSocketServer({
       }
     });
     ws.on('error', (error) => {
+      ws.__clickBridgeTerminal = true;
       admission.releaseAll();
       log.info?.(JSON.stringify({
         event: 'socket_error', role: role ?? 'unauthenticated',
         code: typeof error?.code === 'string' ? error.code : 'socket_error',
       }));
-      if (ws.readyState !== ws.CLOSED) ws.terminate();
+      terminateWebSocket(ws);
     });
   });
 
@@ -408,12 +439,12 @@ export function attachWebSocketServer({
         ws.ping();
         const deadline = setTimeout(() => {
           ws.__clickBridgePongTimer = null;
-          ws.terminate();
+          terminateWebSocket(ws);
         }, pongTimeoutMs);
         deadline.unref?.();
         ws.__clickBridgePongTimer = deadline;
       } catch {
-        ws.terminate();
+        terminateWebSocket(ws);
       }
     }
   }, pingIntervalMs);
@@ -426,7 +457,7 @@ export function attachWebSocketServer({
       httpServer.off('upgrade', onUpgrade);
       for (const ws of wss.clients) {
         if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
-        ws.terminate();
+        terminateWebSocket(ws);
       }
       await new Promise((resolve) => wss.close(resolve));
     },
