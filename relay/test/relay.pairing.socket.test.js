@@ -147,8 +147,28 @@ test('disabled pairing preserves legacy auth and rejects pairing entry points', 
   const { port } = server.httpServer.address();
   const url = `ws://127.0.0.1:${port}/ws`;
   try {
-    assert.equal((await fetch(`http://127.0.0.1:${port}/pair`)).status, 404);
-    assert.equal((await fetch(`http://127.0.0.1:${port}/pair/web`)).status, 404);
+    for (const path of ['/pair', '/pair/web']) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`);
+      assert.equal(response.status, 404);
+      assert.equal(await response.text(), 'not found');
+      const head = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'HEAD' });
+      assert.equal(head.status, 404);
+      assert.equal(await head.text(), '');
+    }
+    for (const path of ['/', '/index.html']) {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`);
+      const body = await response.text();
+      assert.equal(response.status, 200);
+      assert.equal(
+        (body.match(/<meta name="clickbridge-pairing" content="off">/g) ?? []).length,
+        1,
+      );
+      assert.equal(body.includes('name="clickbridge-pairing" content="on"'), false);
+      const head = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'HEAD' });
+      assert.equal(head.status, 200);
+      assert.equal(Number(head.headers.get('content-length')), Buffer.byteLength(body));
+      assert.equal(await head.text(), '');
+    }
     assert.equal((await fetch(
       `http://127.0.0.1:${port}/.well-known/apple-app-site-association`,
     )).status, 404);
@@ -171,21 +191,47 @@ test('disabled pairing preserves legacy auth and rejects pairing entry points', 
   }
 });
 
-test('pairing HTTP routes are no-store/no-referrer and AASA excludes web fallback', async () => {
+test('enabled PWA routes expose pairing without duplicating the canonical index', async () => {
   const { server, base } = await boot();
   try {
-    for (const path of ['/pair', '/pair/web']) {
-      const response = await fetch(`${base}${path}`);
+    const invitation = `${base}/pair#v=1&r=${REFERENCE}`;
+    for (const path of ['/', '/index.html', '/pair', '/pair/web']) {
+      const response = await fetch(path === '/pair' ? invitation : `${base}${path}`);
       assert.equal(response.status, 200);
-      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(
+        response.headers.get('cache-control'),
+        path === '/pair' || path === '/pair/web' ? 'no-store' : 'no-cache',
+      );
       assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
-      assert.match(await response.text(), /Click Bridge/);
+      assert.match(response.headers.get('content-security-policy'), /script-src 'self'/);
+      const body = await response.text();
+      assert.match(body, /<title>Click Bridge<\/title>/);
+      assert.equal(
+        (body.match(/<meta name="clickbridge-pairing" content="on">/g) ?? []).length,
+        1,
+      );
+      assert.equal(body.includes('name="clickbridge-pairing" content="off"'), false);
+      assert.equal(body.includes(REFERENCE), false, 'fragment reference must not enter HTML');
+      for (const [, value] of response.headers) {
+        assert.equal(value.includes(REFERENCE), false, 'fragment reference must not enter headers');
+      }
+      assert.equal(Number(response.headers.get('content-length')), Buffer.byteLength(body));
+
       const head = await fetch(`${base}${path}`, { method: 'HEAD' });
       assert.equal(head.status, 200);
-      assert.equal(head.headers.get('cache-control'), 'no-store');
+      assert.equal(
+        head.headers.get('cache-control'),
+        path === '/pair' || path === '/pair/web' ? 'no-store' : 'no-cache',
+      );
       assert.equal(head.headers.get('referrer-policy'), 'no-referrer');
+      assert.equal(
+        head.headers.get('content-security-policy'),
+        response.headers.get('content-security-policy'),
+      );
+      assert.equal(Number(head.headers.get('content-length')), Buffer.byteLength(body));
       assert.equal(await head.text(), '');
     }
+
     const response = await fetch(`${base}/.well-known/apple-app-site-association`);
     assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
     assert.equal(response.headers.get('cache-control'), 'no-store');

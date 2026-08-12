@@ -217,6 +217,18 @@ const STATIC_FILES = new Map([
   ['/icons/apple-touch-icon-180.png', ['icons/apple-touch-icon-180.png', 'image/png']],
 ]);
 
+const PAIRING_DISABLED_META = '<meta name="clickbridge-pairing" content="off">';
+const PAIRING_ENABLED_META = '<meta name="clickbridge-pairing" content="on">';
+
+function renderIndex(body, pairingEnabled) {
+  if (!pairingEnabled) return body;
+  const html = body.toString('utf8');
+  if (html.split(PAIRING_DISABLED_META).length !== 2) {
+    throw new Error('index.html must contain exactly one disabled pairing capability marker');
+  }
+  return Buffer.from(html.replace(PAIRING_DISABLED_META, PAIRING_ENABLED_META));
+}
+
 function isValidToken(token) {
   return typeof token === 'string'
     && token.length === TOKEN_HEX_LENGTH
@@ -294,7 +306,7 @@ export function createHttpHandler({
     }
     if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web')) {
       try {
-        const body = await readFile(join(publicDir, 'pair.html'));
+        const body = renderIndex(await readFile(join(publicDir, 'index.html')), true);
         writeResponse(res, 200, {
           ...securityHeaders,
           'Content-Type': 'text/html; charset=utf-8',
@@ -333,7 +345,8 @@ export function createHttpHandler({
     }
     const [relativePath, contentType] = staticFile;
     try {
-      const body = await readFile(join(publicDir, relativePath));
+      const file = await readFile(join(publicDir, relativePath));
+      const body = relativePath === 'index.html' ? renderIndex(file, pairingEnabled) : file;
       writeResponse(res, 200, {
         ...securityHeaders,
         'Content-Type': contentType,
