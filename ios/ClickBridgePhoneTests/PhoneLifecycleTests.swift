@@ -96,6 +96,232 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertNotNil(pairing.replacementAuthorizations.first ?? nil)
     }
 
+    func testCancelledReplacementRestoresExactlyOneActiveForegroundSession() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        pairing.emit(.init(phase: .cancelled))
+        pairing.emit(.init(phase: .failed, failure: "late_failure"))
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testDeniedExpiredAndDisconnectedReplacementRestoreForegroundSession() throws {
+        for failure in ["pairing_denied", "pairing_expired", "pairing_disconnected"] {
+            let harness = try Harness()
+            let pairing = FakePairingCoordinator()
+            harness.model.installPairingClient(pairing)
+            harness.model.scenePhaseChanged(.active)
+            let priorConfiguration = try XCTUnwrap(harness.transport.configurations.last)
+
+            harness.model.handlePairingInvitation(try replacementInvitation())
+            harness.model.confirmPairAgain()
+            pairing.emit(.init(phase: .failed, failure: failure))
+
+            XCTAssertEqual(harness.source.startCount, 2, failure)
+            XCTAssertEqual(harness.transport.configurations, [priorConfiguration, priorConfiguration], failure)
+            XCTAssertTrue(harness.model.state.foregroundSessionActive, failure)
+        }
+    }
+
+    func testReplacedClaimantRestoresForegroundSessionWhenActive() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        pairing.emit(.init(phase: .replaced))
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testCancelledReplacementDefersForegroundRestoreUntilSceneIsActive() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        harness.model.scenePhaseChanged(.background)
+        pairing.emit(.init(phase: .cancelled))
+
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertFalse(harness.model.state.foregroundSessionActive)
+
+        harness.model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testFailedPendingReplacementRecoveryRestoresOnceAndIgnoresStaleActive() async throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator(recoveryResult: .authenticationRejected)
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        let priorConfiguration = try XCTUnwrap(harness.transport.configurations.last)
+        let replacementAuthorization = try XCTUnwrap(harness.settings.replacementAuthorization())
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        _ = try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws")),
+            replacementAuthorization: replacementAuthorization
+        )
+        pairing.emit(.init(phase: .awaitingActivation))
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        for _ in 0..<20 where harness.source.startCount < 2 { await Task.yield() }
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertEqual(harness.transport.configurations, [priorConfiguration, priorConfiguration])
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+
+        pairing.emit(.init(phase: .active))
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertEqual(harness.transport.configurations.count, 2)
+    }
+
+    func testForegroundWhileReplacementAwaitsCredentialDoesNotStartOldSession() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        pairing.emit(.init(phase: .awaitingCredential))
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertFalse(harness.model.state.foregroundSessionActive)
+
+        pairing.emit(.init(phase: .active))
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertEqual(harness.transport.configurations.count, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testLateCancelledRecoveryCannotClearOrSupersedeCurrentRecovery() async throws {
+        let harness = try Harness()
+        let recoveryGate = PairingRecoveryGate()
+        let pairing = FakePairingCoordinator(recoveryGate: recoveryGate,
+                                             emitsCancellationState: false)
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        let replacementAuthorization = try XCTUnwrap(harness.settings.replacementAuthorization())
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        _ = try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws")),
+            replacementAuthorization: replacementAuthorization
+        )
+        pairing.emit(.init(phase: .awaitingActivation))
+
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        await recoveryGate.waitUntilCallCount(1)
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        await recoveryGate.waitUntilCallCount(2)
+
+        recoveryGate.complete(call: 0, with: .authenticationRejected)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertEqual(harness.model.pairingState.phase, .awaitingActivation)
+
+        pairing.emit(.init(phase: .active))
+        recoveryGate.complete(call: 1, with: .recovered)
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertEqual(recoveryGate.callCount, 2)
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertEqual(harness.transport.configurations.count, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testReplacementAuthorizationReadFailureRestoresForegroundSession() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        harness.secret.readError = NSError(domain: "Keychain", code: -1)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+
+        XCTAssertEqual(harness.model.pairingState,
+                       .init(phase: .failed, failure: "secure_storage_unavailable"))
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testFailedForgetPreservesCredentialAndRestoresActiveForegroundSession() throws {
+        let harness = try Harness()
+        let token = try XCTUnwrap(harness.secret.value)
+        harness.model.scenePhaseChanged(.active)
+        harness.secret.writeError = NSError(domain: "Keychain", code: -1)
+
+        XCTAssertThrowsError(try harness.model.forgetMac())
+
+        XCTAssertEqual(harness.secret.value, token)
+        XCTAssertTrue(harness.settings.hasToken)
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testFailedForgetWhileBackgroundedDefersRestoreUntilActive() throws {
+        let harness = try Harness()
+        let token = try XCTUnwrap(harness.secret.value)
+        harness.model.scenePhaseChanged(.active)
+        harness.model.scenePhaseChanged(.background)
+        harness.secret.writeError = NSError(domain: "Keychain", code: -1)
+
+        XCTAssertThrowsError(try harness.model.forgetMac())
+
+        XCTAssertEqual(harness.secret.value, token)
+        XCTAssertEqual(harness.source.startCount, 1)
+
+        harness.model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(harness.source.startCount, 2)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testFirstEnrollmentFailureDoesNotStartForegroundSession() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        pairing.emit(.init(phase: .failed, failure: "pairing_denied"))
+
+        XCTAssertEqual(harness.source.startCount, 0)
+        XCTAssertFalse(harness.model.state.foregroundSessionActive)
+    }
+
+    private func replacementInvitation() throws -> URL {
+        let reference = String(repeating: "A", count: 43)
+        return try XCTUnwrap(URL(
+            string: "https://clickbridge-sjc.duckdns.org/pair/web#v=1&r=\(reference)"
+        ))
+    }
+
     func testActiveInactiveBackgroundOwnsOneForegroundSession() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.inactive)
@@ -555,15 +781,21 @@ private final class FakePairingCoordinator: PhonePairingCoordinating {
     let recoveryResult: PhonePairingRecoveryResult
     let emitsActiveDuringRecovery: Bool
     let beforeRecoveryResult: (() throws -> Void)?
+    let recoveryGate: PairingRecoveryGate?
+    let emitsCancellationState: Bool
 
     init(state: PhonePairingState = .init(),
          recoveryResult: PhonePairingRecoveryResult = .noPending,
          emitsActiveDuringRecovery: Bool = false,
-         beforeRecoveryResult: (() throws -> Void)? = nil) {
+         beforeRecoveryResult: (() throws -> Void)? = nil,
+         recoveryGate: PairingRecoveryGate? = nil,
+         emitsCancellationState: Bool = true) {
         self.state = state
         self.recoveryResult = recoveryResult
         self.emitsActiveDuringRecovery = emitsActiveDuringRecovery
         self.beforeRecoveryResult = beforeRecoveryResult
+        self.recoveryGate = recoveryGate
+        self.emitsCancellationState = emitsCancellationState
     }
 
     func start(_ link: PhonePairingLink,
@@ -576,11 +808,18 @@ private final class FakePairingCoordinator: PhonePairingCoordinating {
 
     func cancel() {
         cancelCount += 1
+        guard emitsCancellationState else { return }
         state = .init(phase: .cancelled)
         onState?(state)
     }
 
+    func emit(_ state: PhonePairingState) {
+        self.state = state
+        onState?(state)
+    }
+
     func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult {
+        if let recoveryGate { return await recoveryGate.wait() }
         do { try beforeRecoveryResult?() }
         catch { return .promotionFailed }
         if emitsActiveDuringRecovery {
@@ -591,14 +830,49 @@ private final class FakePairingCoordinator: PhonePairingCoordinating {
     }
 }
 
+@MainActor
+private final class PairingRecoveryGate {
+    private var continuations: [CheckedContinuation<PhonePairingRecoveryResult, Never>?] = []
+    private var callCountContinuations: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    var callCount: Int { continuations.count }
+
+    func wait() async -> PhonePairingRecoveryResult {
+        let call = continuations.count
+        continuations.append(nil)
+        resumeCallCountContinuations()
+        return await withCheckedContinuation { continuations[call] = $0 }
+    }
+
+    func waitUntilCallCount(_ count: Int) async {
+        if callCount >= count { return }
+        await withCheckedContinuation { callCountContinuations.append((count, $0)) }
+    }
+
+    func complete(call: Int, with result: PhonePairingRecoveryResult) {
+        continuations[call]?.resume(returning: result)
+        continuations[call] = nil
+    }
+
+    private func resumeCallCountContinuations() {
+        let ready = callCountContinuations.filter { callCount >= $0.0 }
+        callCountContinuations.removeAll { callCount >= $0.0 }
+        ready.forEach { $0.1.resume() }
+    }
+}
+
 private final class LifecycleSecretStore: SecretStoring, @unchecked Sendable {
     var value: String?
-    let writeError: Error?
+    var readError: Error?
+    var writeError: Error?
     init(value: String?, writeError: Error? = nil) {
         self.value = value
         self.writeError = writeError
     }
-    func read(account: String) throws -> String? { value }
+    func read(account: String) throws -> String? {
+        if let readError { throw readError }
+        return value
+    }
     func write(_ value: String, account: String) throws {
         if let writeError { throw writeError }
         self.value = value

@@ -46,6 +46,10 @@ final class PhoneClickIntentRouter {
 final class PhoneAppModel {
     enum PresentedFlow: Equatable { case settings, pairing, replacement }
 
+    private struct PairingAttempt {
+        let priorConfiguration: RelayConfiguration?
+    }
+
     private(set) var state: PhoneState
     private(set) var pairingState = PhonePairingState()
     var presentedFlow: PresentedFlow?
@@ -65,11 +69,14 @@ final class PhoneAppModel {
     private let actions: PhoneActionCoordinator
     private let intentRouter: PhoneClickIntentRouter
     @ObservationIgnored private var foregroundGeneration: Int?
+    @ObservationIgnored private var foregroundConfiguration: RelayConfiguration?
     @ObservationIgnored private var generationCounter = 0
     @ObservationIgnored private var sceneIsActive = false
     @ObservationIgnored private var pairingClient: (any PhonePairingCoordinating)?
     @ObservationIgnored private var pendingReplacementLink: PhonePairingLink?
     @ObservationIgnored private var pairingRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var pairingRecoveryGeneration: UInt64 = 0
+    @ObservationIgnored private var pairingAttempt: PairingAttempt?
 
     convenience init(settings: PhoneSettingsStore,
                      volumeController: VolumeDeltaController,
@@ -196,8 +203,16 @@ final class PhoneAppModel {
 
     func forgetMac() throws {
         cancelPairing()
+        let priorConfiguration = foregroundConfiguration
         endForegroundSession(reason: "forgot_mac")
-        try settings.clearPhoneToken()
+        do {
+            try settings.clearPhoneToken()
+        } catch {
+            if let priorConfiguration, sceneIsActive {
+                startForegroundSession(configurationOverride: priorConfiguration)
+            }
+            throw error
+        }
         state = PhoneState()
         pairingState = .init()
         presentedFlow = nil
@@ -284,29 +299,37 @@ final class PhoneAppModel {
         }
     }
 
-    private func startForegroundSession(connectTransport: Bool = true) {
+    private func startForegroundSession(
+        connectTransport: Bool = true,
+        configurationOverride: RelayConfiguration? = nil
+    ) {
         guard !state.phoneTakenOver else { return }
-        let token: String
-        do {
-            guard let storedToken = try settings.phoneToken() else { return }
-            token = storedToken
-        } catch {
-            state.issue = .secureStorageUnavailable
-            return
-        }
-
         let configuration: RelayConfiguration
-        do {
-            configuration = try RelayConfiguration.validated(urlString: settings.relayURLString,
-                                                              token: token)
-        } catch {
-            state.issue = .invalidSettings
-            return
+        if let configurationOverride {
+            configuration = configurationOverride
+        } else {
+            let token: String
+            do {
+                guard let storedToken = try settings.phoneToken() else { return }
+                token = storedToken
+            } catch {
+                state.issue = .secureStorageUnavailable
+                return
+            }
+
+            do {
+                configuration = try RelayConfiguration.validated(urlString: settings.relayURLString,
+                                                                  token: token)
+            } catch {
+                state.issue = .invalidSettings
+                return
+            }
         }
 
         generationCounter += 1
         let generation = generationCounter
         foregroundGeneration = generation
+        foregroundConfiguration = configuration
         state.foregroundSessionActive = true
         state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
         if connectTransport { transport.connect(configuration: configuration) }
@@ -326,26 +349,36 @@ final class PhoneAppModel {
             pairingState = .init(phase: .failed, failure: "pairing_unavailable")
             return
         }
+        let attempt = PairingAttempt(priorConfiguration: foregroundConfiguration)
+        pairingAttempt = attempt
         endForegroundSession(reason: "pairing_started")
-        pairingRecoveryTask?.cancel()
-        pairingRecoveryTask = nil
+        invalidatePairingRecovery()
         do {
             pairingClient.start(link, replacementAuthorization: try settings.replacementAuthorization())
         } catch {
-            pairingState = .init(phase: .failed, failure: "secure_storage_unavailable")
+            pairingDidChange(.init(phase: .failed, failure: "secure_storage_unavailable"))
         }
     }
 
     private func pairingDidChange(_ newState: PhonePairingState) {
         pairingState = newState
-        guard newState.phase == .active, sceneIsActive, pairingRecoveryTask == nil else { return }
-        startForegroundSession(connectTransport: false)
+        guard let attempt = pairingAttempt else { return }
+        switch newState.phase {
+        case .active:
+            pairingAttempt = nil
+            guard sceneIsActive, pairingRecoveryTask == nil else { return }
+            startForegroundSession(connectTransport: false)
+        case .cancelled, .failed, .replaced:
+            pairingAttempt = nil
+            restorePriorForegroundSession(from: attempt)
+        default:
+            break
+        }
     }
 
     private func cancelPairingForBackgroundIfNeeded() {
         let recovering = pairingRecoveryTask != nil
-        pairingRecoveryTask?.cancel()
-        pairingRecoveryTask = nil
+        invalidatePairingRecovery()
         if recovering || PhonePairingPresentation.shouldCancelOnBackground(pairingState.phase) {
             pairingClient?.cancel()
         }
@@ -360,28 +393,51 @@ final class PhoneAppModel {
             return
         }
         guard let pending, let pairingClient else {
+            if pairingAttempt != nil { return }
             startForegroundSession()
             return
         }
+        pairingRecoveryGeneration &+= 1
+        let recoveryGeneration = pairingRecoveryGeneration
         pairingRecoveryTask = Task { [weak self] in
             let result = await pairingClient.recoverPending(relayWebSocketURL: pending.relayWebSocketURL)
-            guard let self else { return }
+            guard let self, pairingRecoveryGeneration == recoveryGeneration else { return }
             pairingRecoveryTask = nil
             guard sceneIsActive, !Task.isCancelled else { return }
             if result == .recovered {
+                pairingAttempt = nil
                 pairingState = .init(phase: .active)
                 startForegroundSession(connectTransport: false)
             } else if result == .noPending || result == .superseded {
-                startForegroundSession()
+                if let attempt = pairingAttempt {
+                    pairingAttempt = nil
+                    restorePriorForegroundSession(from: attempt)
+                } else {
+                    startForegroundSession()
+                }
             } else {
-                pairingState = .init(phase: .failed, failure: "pending_recovery_failed")
+                pairingDidChange(.init(phase: .failed, failure: "pending_recovery_failed"))
             }
         }
+    }
+
+    private func invalidatePairingRecovery() {
+        pairingRecoveryGeneration &+= 1
+        pairingRecoveryTask?.cancel()
+        pairingRecoveryTask = nil
+    }
+
+    private func restorePriorForegroundSession(from attempt: PairingAttempt) {
+        guard let priorConfiguration = attempt.priorConfiguration,
+              sceneIsActive,
+              foregroundGeneration == nil else { return }
+        startForegroundSession(configurationOverride: priorConfiguration)
     }
 
     private func endForegroundSession(reason: String) {
         guard foregroundGeneration != nil else { return }
         foregroundGeneration = nil
+        foregroundConfiguration = nil
         state.foregroundSessionActive = false
         volumeController.stop()
         clockHealth.stop()
