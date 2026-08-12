@@ -4,6 +4,50 @@ import XCTest
 
 @MainActor
 final class PhoneLifecycleTests: XCTestCase {
+    func testUniversalLinkStartsClaimantWithoutShowingInvitationValue() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        let reference = String(repeating: "A", count: 43)
+
+        harness.model.handlePairingInvitation(try XCTUnwrap(URL(
+            string: "https://clickbridge-sjc.duckdns.org/pair#v=1&r=\(reference)"
+        )))
+
+        XCTAssertEqual(pairing.startedLinks.count, 1)
+        XCTAssertTrue(harness.model.pairingSheetPresented)
+        XCTAssertFalse(PhonePairingPresentation(state: harness.model.pairingState).detail.contains(reference))
+    }
+
+    func testBackgroundCancelsInFlightClaimant() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator(state: .init(phase: .awaitingApproval,
+                                                          confirmationCode: "123 456"))
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.background)
+
+        XCTAssertEqual(pairing.cancelCount, 1)
+    }
+
+    func testExistingCredentialRequiresExplicitReplacementBeforeStarting() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        let reference = String(repeating: "A", count: 43)
+        let url = try XCTUnwrap(URL(
+            string: "https://clickbridge-sjc.duckdns.org/pair/web#v=1&r=\(reference)"
+        ))
+
+        harness.model.handlePairingInvitation(url)
+        XCTAssertTrue(harness.model.replacementConfirmationPresented)
+        XCTAssertTrue(pairing.startedLinks.isEmpty)
+
+        harness.model.confirmPairAgain()
+        XCTAssertEqual(pairing.startedLinks.count, 1)
+        XCTAssertNotNil(pairing.replacementAuthorizations.first ?? nil)
+    }
+
     func testActiveInactiveBackgroundOwnsOneForegroundSession() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.inactive)
@@ -450,6 +494,35 @@ final class PhoneLifecycleTests: XCTestCase {
                                     value: .state(.init(macOnline: true, remoteEnabled: true, permission: .ready))))
             model.applyClockHealth(.init(status: .healthy, offsetMilliseconds: 0, uncertaintyMilliseconds: 1))
         }
+    }
+}
+
+@MainActor
+private final class FakePairingCoordinator: PhonePairingCoordinating {
+    var state: PhonePairingState
+    var onState: (@MainActor (PhonePairingState) -> Void)?
+    private(set) var startedLinks: [PhonePairingLink] = []
+    private(set) var replacementAuthorizations: [PhonePairingReplacementAuthorization?] = []
+    private(set) var cancelCount = 0
+
+    init(state: PhonePairingState = .init()) { self.state = state }
+
+    func start(_ link: PhonePairingLink,
+               replacementAuthorization: PhonePairingReplacementAuthorization?) {
+        startedLinks.append(link)
+        replacementAuthorizations.append(replacementAuthorization)
+        state = .init(phase: .connecting)
+        onState?(state)
+    }
+
+    func cancel() {
+        cancelCount += 1
+        state = .init(phase: .cancelled)
+        onState?(state)
+    }
+
+    func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult {
+        .noPending
     }
 }
 

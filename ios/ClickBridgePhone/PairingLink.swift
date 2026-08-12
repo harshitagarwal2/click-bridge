@@ -19,7 +19,7 @@ struct PhonePairingLink: Equatable, Sendable {
               components.user == nil,
               components.password == nil,
               components.port == nil,
-              components.path == "/pair",
+              ["/pair", "/pair/web"].contains(components.path),
               components.query == nil,
               let fragment = components.fragment,
               fragment.hasPrefix("v=1&r="),

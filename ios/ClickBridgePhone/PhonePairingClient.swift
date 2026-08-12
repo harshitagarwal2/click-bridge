@@ -22,7 +22,7 @@ struct PhonePairingState: Equatable, Sendable {
 }
 
 @MainActor
-final class PhonePairingClient {
+final class PhonePairingClient: PhonePairingCoordinating {
     private let socketFactory: any PhoneWebSocketFactory
     private let settings: PhoneSettingsStore
     private let normalTransport: any PhoneActionTransport

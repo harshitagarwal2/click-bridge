@@ -41,11 +41,17 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            DashboardView(state: model.state,
-                          canTriggerClick: model.canTriggerClick,
-                          triggerClick: model.triggerClick,
-                          retryClockCheck: model.retryClockCheck,
-                          reconnectAfterTakeover: model.reconnectAfterTakeover)
+            Group {
+                if model.settings.hasToken {
+                    DashboardView(state: model.state,
+                                  canTriggerClick: model.canTriggerClick,
+                                  triggerClick: model.triggerClick,
+                                  retryClockCheck: model.retryClockCheck,
+                                  reconnectAfterTakeover: model.reconnectAfterTakeover)
+                } else {
+                    UnpairedView(connect: model.showPairingClaimant)
+                }
+            }
                 .navigationTitle("Click Bridge")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -62,8 +68,130 @@ struct ContentView: View {
             SettingsView(initialRelayURL: model.settings.relayURLString,
                          hasStoredToken: model.settings.hasToken,
                          initialError: model.state.issue?.settingsMessage,
+                         pairAgain: model.showPairingClaimant,
+                         forget: model.forgetMac,
                          save: model.saveSettings)
         }
+        .sheet(isPresented: Binding(get: { model.pairingSheetPresented },
+                                    set: { model.pairingSheetPresented = $0 })) {
+            PairingClaimantView(model: model)
+        }
+        .confirmationDialog("Replace this phone’s saved connection?",
+                            isPresented: Binding(get: { model.replacementConfirmationPresented },
+                                                 set: { if !$0 { model.rejectPairAgain() } }),
+                            titleVisibility: .visible) {
+            Button("Replace Connection", role: .destructive, action: model.confirmPairAgain)
+            Button("Cancel", role: .cancel, action: model.rejectPairAgain)
+        } message: {
+            Text("The current connection remains saved unless the new pairing is approved and activated.")
+        }
+    }
+}
+
+private struct UnpairedView: View {
+    let connect: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Connect to your Mac", systemImage: "macbook.and.iphone")
+        } description: {
+            Text("Use a short-lived pairing code from Click Bridge on your Mac.")
+        } actions: {
+            Button("Connect to your Mac", action: connect)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minHeight: 44)
+                .accessibilityHint("Opens the pairing code scanner")
+                .accessibilityIdentifier("pairing.connect")
+        }
+    }
+}
+
+private struct PairingClaimantView: View {
+    @Environment(\.dismiss) private var dismiss
+    let model: PhoneAppModel
+
+    private var presentation: PhonePairingPresentation {
+        PhonePairingPresentation(state: model.pairingState)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    if model.pairingState.phase == .idle {
+                        PairingScannerView(receive: model.submitPairingInvitation)
+                        PasteButton(payloadType: String.self) { values in
+                            guard let value = values.first else { return }
+                            model.submitPairingInvitation(value)
+                        }
+                        .buttonBorderShape(.roundedRectangle)
+                        .accessibilityLabel("Paste pairing link")
+                        .accessibilityHint("Uses a Click Bridge invitation copied from your Mac")
+                        .accessibilityIdentifier("pairing.paste")
+                    } else {
+                        Image(systemName: iconName)
+                            .font(.system(size: 52))
+                            .foregroundStyle(iconColor)
+                            .accessibilityHidden(true)
+                        Text(presentation.title)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                            .accessibilityAddTraits(.isHeader)
+                        if let code = presentation.confirmationCode {
+                            Text(code)
+                                .font(.system(.largeTitle, design: .monospaced).weight(.bold))
+                                .monospacedDigit()
+                                .accessibilityLabel(presentation.confirmationAccessibilityLabel ?? "Confirmation code")
+                                .accessibilityIdentifier("pairing.confirmationCode")
+                        }
+                        Text(presentation.detail)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        if presentation.showsProgress { ProgressView() }
+                        if presentation.canTryAgain {
+                            Button("Scan a New Code") { model.showPairingClaimant() }
+                                .buttonStyle(.borderedProminent)
+                                .frame(minHeight: 44)
+                        }
+                        if model.pairingState.phase == .active {
+                            Button("Done") {
+                                model.pairingSheetPresented = false
+                                dismiss()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(minHeight: 44)
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Scan Pairing Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        model.cancelPairing()
+                        model.pairingSheetPresented = false
+                        dismiss()
+                    }
+                    .accessibilityIdentifier("pairing.cancel")
+                }
+            }
+        }
+        .interactiveDismissDisabled(PhonePairingPresentation.shouldCancelOnBackground(model.pairingState.phase))
+    }
+
+    private var iconName: String {
+        switch model.pairingState.phase {
+        case .active: "checkmark.circle.fill"
+        case .failed, .replaced: "exclamationmark.triangle.fill"
+        default: "macbook.and.iphone"
+        }
+    }
+
+    private var iconColor: Color {
+        model.pairingState.phase == .active ? .green : .accentColor
     }
 }
 
@@ -207,20 +335,43 @@ private struct SettingsView: View {
     @AccessibilityFocusState private var errorFocused: Bool
 
     let save: (_ relayURL: String, _ token: String) throws -> Void
+    let pairAgain: () -> Void
+    let forget: () throws -> Void
 
     init(initialRelayURL: String,
          hasStoredToken: Bool,
          initialError: String? = nil,
+         pairAgain: @escaping () -> Void,
+         forget: @escaping () throws -> Void,
          save: @escaping (_ relayURL: String, _ token: String) throws -> Void) {
         _draft = State(initialValue: RelaySettingsDraft(initialRelayURL: initialRelayURL,
                                                         hasStoredToken: hasStoredToken,
                                                         initialError: initialError))
         self.save = save
+        self.pairAgain = pairAgain
+        self.forget = forget
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if draft.hasStoredToken {
+                    Section("Connection") {
+                        Button("Pair Again") {
+                            dismiss()
+                            pairAgain()
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("settings.pairAgain")
+                        Button("Forget This Mac", role: .destructive) {
+                            do { try forget(); dismiss() }
+                            catch { draft.errorMessage = error.localizedDescription }
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("settings.forget")
+                    }
+                }
+
                 Section {
                     TextField("Relay WSS URL",
                               text: $draft.relayURL,
@@ -251,10 +402,10 @@ private struct SettingsView: View {
                             : "Phone token")
                         .accessibilityIdentifier("settings.token")
                 } header: {
-                    Text("Relay")
+                    Text("Advanced Legacy")
                 } footer: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Use a wss:// URL ending in /ws. The phone token is 64 lowercase hexadecimal characters.")
+                        Text("Manual relay URL and token setup is only for legacy deployments. Pairing is recommended.")
                         if draft.hasStoredToken {
                             Text("Leave the token blank to keep the saved token.")
                         }
@@ -272,7 +423,7 @@ private struct SettingsView: View {
                 }
 
                 Section("Usage") {
-                    Text("The native app and PWA are fallback clients. Use only one live phone client at a time.")
+                    Text("Only one phone can be active. Pairing again replaces this phone’s saved connection only after Mac approval succeeds.")
                 }
             }
             .formStyle(.grouped)
@@ -368,11 +519,13 @@ private extension PhoneState {
 }
 
 #Preview("Settings - First setup") {
-    SettingsView(initialRelayURL: "", hasStoredToken: false) { _, _ in }
+    SettingsView(initialRelayURL: "", hasStoredToken: false,
+                 pairAgain: {}, forget: {}, save: { _, _ in })
 }
 
 #Preview("Settings - Stored token error") {
     SettingsView(initialRelayURL: "wss://relay.example/ws",
                  hasStoredToken: true,
-                 initialError: PhoneAppIssue.secureStorageUnavailable.message) { _, _ in }
+                 initialError: PhoneAppIssue.secureStorageUnavailable.message,
+                 pairAgain: {}, forget: {}, save: { _, _ in })
 }

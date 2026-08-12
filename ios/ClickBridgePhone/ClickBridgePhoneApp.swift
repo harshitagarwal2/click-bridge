@@ -33,6 +33,12 @@ enum PhoneComposition {
                                   transport: transport,
                                   clockHealth: clockHealth,
                                   actions: actions)
+        let pairing = PhonePairingClient(socketFactory: URLSessionPhoneWebSocketFactory(),
+                                         settings: settings,
+                                         normalTransport: transport,
+                                         clock: clock,
+                                         scheduler: scheduler)
+        model.installPairingClient(pairing)
         modelBox.model = model
         return model
     }
@@ -44,7 +50,10 @@ struct ClickBridgePhoneApp: App {
     @State private var model = PhoneComposition.makeModel()
 
     var body: some Scene {
-        WindowGroup { ContentView(model: model) }
+        WindowGroup {
+            ContentView(model: model)
+                .onOpenURL(perform: model.handlePairingInvitation)
+        }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 model.scenePhaseChanged(phase)
             }

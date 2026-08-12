@@ -59,6 +59,16 @@ protocol PhoneWebSocketFactory: AnyObject {
     func makeSocket() -> any PhoneWebSocket
 }
 
+@MainActor
+protocol PhonePairingCoordinating: AnyObject {
+    var state: PhonePairingState { get }
+    var onState: (@MainActor (PhonePairingState) -> Void)? { get set }
+    func start(_ link: PhonePairingLink,
+               replacementAuthorization: PhonePairingReplacementAuthorization?)
+    func cancel()
+    func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult
+}
+
 struct SystemPhoneClock: PhoneClock {
     func nowUnixMilliseconds() -> Double { Date().timeIntervalSince1970 * 1_000 }
     func nowMonotonicMilliseconds() -> Double { ProcessInfo.processInfo.systemUptime * 1_000 }

@@ -27,12 +27,16 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: Scan a Click Bridge pairing code shown on your Mac.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.phone
+        # Deployment-specific: update the entitlement, PhoneAppModel.pairingHost,
+        # and the relay's apple-app-site-association file together for another host.
+        CODE_SIGN_ENTITLEMENTS: ClickBridgePhone/ClickBridgePhone.entitlements
         TARGETED_DEVICE_FAMILY: "1"
   ClickBridgePhoneTests:
     type: bundle.unit-test
