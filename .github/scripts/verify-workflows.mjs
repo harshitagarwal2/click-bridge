@@ -365,14 +365,15 @@ const dockerRunOptionsWithValues = new Set([
 const dockerRunBooleanOptions = new Set(["--detach", "--rm"]);
 
 function dockerRunImageAndCommand(tokens) {
+  const args = shellCommandBeforeRedirect(tokens);
   let index = 0;
-  while (index < tokens.length) {
-    const token = tokens[index];
+  while (index < args.length) {
+    const token = args[index];
     if (token === "--") {
-      return { image: tokens[index + 1], command: shellCommandBeforeRedirect(tokens.slice(index + 2)) };
+      return { args, image: args[index + 1] };
     }
     if (!token.startsWith("-")) {
-      return { image: token, command: shellCommandBeforeRedirect(tokens.slice(index + 1)) };
+      return { args, image: token };
     }
     if (dockerRunBooleanOptions.has(token)) {
       index += 1;
@@ -393,7 +394,7 @@ function dockerRunImageAndCommand(tokens) {
     );
     index += 2;
   }
-  return { image: undefined, command: [] };
+  return { args, image: undefined };
 }
 
 function shellCommandBeforeRedirect(tokens) {
@@ -591,11 +592,11 @@ function deployDockerRuns(source) {
     );
     subcommands.push(subcommand);
     if (subcommand !== "run") continue;
-    const { image, command } = dockerRunImageAndCommand(
+    const { args, image } = dockerRunImageAndCommand(
       segment.slice(commandIndex + 2).map(({ value }) => value),
     );
     runs.push({
-      command: command.slice(0, 2).join(" "),
+      args,
       executable,
       image,
     });
@@ -628,11 +629,68 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
   assert.deepEqual(
     deployRuns,
     [
-      { command: "", executable: "docker", image: "click-bridge-relay:$release" },
-      { command: "node -e", executable: "docker", image: reviewedNode },
-      { command: "sh -euc", executable: "docker", image: reviewedNode },
+      {
+        args: [
+          "--detach",
+          "--name",
+          "$CANDIDATE_CONTAINER_NAME",
+          "--publish",
+          "127.0.0.1:18080:8080",
+          "--env-file",
+          "$SHARED_ENV",
+          "--env",
+          "PORT=8080",
+          "--env",
+          "HOST=0.0.0.0",
+          "click-bridge-relay:$release",
+        ],
+        executable: "docker",
+        image: "click-bridge-relay:$release",
+      },
+      {
+        args: [
+          "--rm",
+          "--network",
+          "host",
+          "--add-host",
+          "$CLICK_BRIDGE_DOMAIN:127.0.0.1",
+          "--env",
+          "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN",
+          reviewedNode,
+          "node",
+          "-e",
+          'fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))',
+        ],
+        executable: "docker",
+        image: reviewedNode,
+      },
+      {
+        args: [
+          "--rm",
+          "--network",
+          "host",
+          "--add-host",
+          "$CLICK_BRIDGE_DOMAIN:127.0.0.1",
+          "--env",
+          "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN",
+          "--env",
+          "PHONE_TOKEN",
+          "--env",
+          "MAC_TOKEN",
+          "--volume",
+          "$directory/relay:/workspace:ro",
+          "--workdir",
+          "/tmp/smoke",
+          reviewedNode,
+          "sh",
+          "-euc",
+          'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"',
+        ],
+        executable: "docker",
+        image: reviewedNode,
+      },
     ],
-    "deploy script docker run images must be the candidate and both verifier containers with the reviewed Node digest",
+    "deploy script docker run arguments must match the exact candidate and verifier containers with the reviewed Node digest",
   );
 }
 

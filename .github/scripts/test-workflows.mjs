@@ -30,17 +30,30 @@ function verifierDeployScript(healthImage, smokeImage) {
   return `#!/usr/bin/env bash
 docker compose config
 docker rm candidate
-docker run --detach click-bridge-relay:$release
+CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
+  --name "$CANDIDATE_CONTAINER_NAME" \\
+  --publish 127.0.0.1:18080:8080 \\
+  --env-file "$SHARED_ENV" \\
+  --env PORT=8080 \\
+  --env HOST=0.0.0.0 \\
+  "click-bridge-relay:$release" >/dev/null
 docker exec candidate true
 docker logs candidate
-docker run --rm \\
-  --env CLICK_BRIDGE_DOMAIN \\
-  ${healthImage} node -e 'process.exit(0)'
-docker run --rm \\
-  --env CLICK_BRIDGE_DOMAIN \\
+CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \\
+  --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
+  --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
+  ${healthImage} node -e \\
+  'fetch(\`https://\${process.env.CLICK_BRIDGE_DOMAIN}/healthz\`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" MAC_TOKEN="$MAC_TOKEN" \\
+  docker run --rm --network host \\
+  --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
+  --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
   --env PHONE_TOKEN \\
   --env MAC_TOKEN \\
-  ${smokeImage} sh -euc 'exit 0'
+  --volume "$directory/relay:/workspace:ro" \\
+  --workdir /tmp/smoke \\
+  ${smokeImage} sh -euc \\
+  'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://\${CLICK_BRIDGE_DOMAIN}/ws"'
 `;
 }
 const validDeployScript = verifierDeployScript(reviewedNode, reviewedNode);
@@ -295,12 +308,41 @@ for (const [shape, option] of [
         dockerfile: validDockerfile,
         compose: validCompose,
         deployScript: validDeployScript.replace(
-          "docker run --rm \\\n  --env CLICK_BRIDGE_DOMAIN",
-          `docker run --rm ${option} \\\n  --env CLICK_BRIDGE_DOMAIN`,
+          "docker run --rm --network host \\\n",
+          `docker run --rm --network host ${option} \\\n`,
         ),
       }),
     /unsupported docker run option/,
     `an inline ${shape} option must be rejected`,
+  );
+}
+for (const [shape, from, to] of [
+  ["health network", "--network host", "--network none"],
+  [
+    "health add-host",
+    '"$CLICK_BRIDGE_DOMAIN:127.0.0.1"',
+    '"other.invalid:127.0.0.1"',
+  ],
+  [
+    "smoke token forwarding",
+    "  --env PHONE_TOKEN \\\n  --env MAC_TOKEN \\\n",
+    "",
+  ],
+  [
+    "smoke relay mount",
+    '"$directory/relay:/workspace:ro"',
+    '"$directory/other:/workspace:rw"',
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: validDeployScript.replace(from, to),
+      }),
+    /docker run|contract|verifier containers|reviewed Node digest/,
+    `a changed ${shape} must be rejected`,
   );
 }
 for (const [shape, deployScript] of [
