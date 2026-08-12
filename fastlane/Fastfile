@@ -150,7 +150,7 @@ platform :mac do
       app_identifier: bundle_id,
       app_platform: "osx",
       pkg: output_path,
-      changelog: File.read("fastlane/metadata/en-US/release_notes.txt").strip,
+      changelog: File.read("mac/TestFlight/WhatToTest.en-US.txt").strip,
       skip_submission: true,
       skip_waiting_for_build_processing: true,
       distribute_external: false,

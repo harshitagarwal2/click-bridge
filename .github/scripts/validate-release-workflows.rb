@@ -55,6 +55,65 @@ rescue REXML::ParseException => error
   fail_contract("Mac App Store Info.plist is invalid XML: #{error.message}")
 end
 
+def validate_mac_testflight_notes(notes_path)
+  title = "Please test the complete iPhone-to-Mac click path:"
+  contracts = {
+    "Setup and action paths:" => [
+      /\A1\. Manually configure both clients with the same relay URL: use PHONE_TOKEN on the iPhone and MAC_TOKEN on the Mac\.\z/,
+      /\A2\. Set Mac Remote control ON\. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled\.\z/,
+      /\A3\. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready\.\z/,
+      /\A4\. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control\.\z/,
+      /\A5\. Physical iPhone acceptance: NOT RUN unless actually performed\. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes\. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source\.\z/,
+      /\A6\. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised\. Apply the same source-agnostic output-volume observation rule\.\z/,
+      /\A7\. Trigger an action with the App Shortcut\.\z/,
+      /\A8\. For each accepted success from steps 4-7, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic\. Octo \+3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed\.\z/
+    ],
+    "Outcome contract:" => [
+      /\A- Relay forwarding acknowledgement: This is not a terminal result and produces no haptic\.\z/,
+      /\A- Ignored before send: Expect no terminal result, no haptic, and no clicks\.\z/,
+      /\A- Forwarded, then rejected before event posting: Expect terminal Rejected, an error haptic, and zero clicks\. This includes remote control disabled, missing Accessibility permission, or event creation failure before posting\.\z/,
+      /\A- Post-execution result loss: Expect Unknown and no haptic\. Exactly three clicks may already have completed; inspect authoritative counter or receiver evidence\. Never blindly retry or reuse the action ID \(actionId\)\.\z/
+    ],
+    "Recovery:" => [
+      /\A- Fault injection: Exercise a relay disconnect, invalid credential or revocation, clock mismatch, and taken-over state\. Each condition must close the readiness gate\. Require a terminal result only if the action was actually sent or forwarded\.\z/,
+      /\A- Taken-over state: Verify the terminal taken-over state and that the client does not auto-reconnect\. Recovery requires the user to explicitly re-save or reconnect\.\z/,
+      /\A- Return to ready: Restore, reconnect, or reconfigure as appropriate; confirm the Mac is Connected and the iPhone is Ready, then confirm a newly accepted action produces exactly three clicks with a terminal Succeeded result and success haptic\.\z/
+    ]
+  }.freeze
+
+  lines = File.readlines(notes_path, chomp: true).map(&:strip).reject(&:empty?)
+  fail_contract("Mac TestFlight notes must start with the receiver test title") unless lines.shift == title
+
+  sections = {}
+  current_heading = nil
+  lines.each do |line|
+    if contracts.key?(line)
+      fail_contract("Mac TestFlight notes repeat #{line}") if sections.key?(line)
+
+      current_heading = line
+      sections[current_heading] = []
+    else
+      fail_contract("Mac TestFlight notes have content outside a required section") unless current_heading
+
+      sections.fetch(current_heading) << line
+    end
+  end
+
+  fail_contract("Mac TestFlight notes must contain the required sections in order") unless sections.keys == contracts.keys
+  contracts.each do |heading, patterns|
+    actual_lines = sections.fetch(heading)
+    fail_contract("Mac TestFlight notes #{heading} has the wrong number of contract entries") unless actual_lines.length == patterns.length
+
+    patterns.zip(actual_lines).each_with_index do |(pattern, actual), index|
+      next if pattern.match?(actual)
+
+      fail_contract("Mac TestFlight notes #{heading} entry #{index + 1} violates the release evidence contract")
+    end
+  end
+rescue Errno::ENOENT => error
+  fail_contract("Mac TestFlight notes are unavailable: #{error.message}")
+end
+
 def workflow_trigger(document)
   document["on"] || document[true]
 end
@@ -304,6 +363,13 @@ if ARGV.first == "--validate-mac-app-store-category"
   exit(0)
 end
 
+if ARGV.first == "--validate-mac-testflight-notes"
+  fail_contract("Mac TestFlight notes validation requires one notes path") unless ARGV.length == 2
+  validate_mac_testflight_notes(ARGV.fetch(1))
+  puts("Validated Mac TestFlight notes contract.")
+  exit(0)
+end
+
 WORKFLOWS.each do |filename, expected|
   path = File.join(WORKFLOW_DIR, filename)
   text = File.read(path)
@@ -541,6 +607,11 @@ ios_lane = fastfile[/platform :ios do.*?(?=platform :mac do)/m]
 mac_lane = fastfile[/platform :mac do.*\z/m]
 fail_contract("Fastfile is missing the iOS TestFlight lane") unless ios_lane
 fail_contract("Fastfile is missing the macOS TestFlight lane") unless mac_lane
+ios_changelog_path = ios_lane[/changelog:\s*File\.read\("([^"]+)"\)\.strip/, 1]
+mac_changelog_path = mac_lane[/changelog:\s*File\.read\("([^"]+)"\)\.strip/, 1]
+fail_contract("iOS TestFlight lane must consume its release notes") unless ios_changelog_path == "fastlane/metadata/en-US/release_notes.txt"
+fail_contract("Mac TestFlight lane must consume mac/TestFlight/WhatToTest.en-US.txt") unless mac_changelog_path == "mac/TestFlight/WhatToTest.en-US.txt"
+validate_mac_testflight_notes(File.join(ROOT, mac_changelog_path))
 fail_contract("Mac TestFlight lane must require the resolved installer identity") unless mac_lane.include?('mac_installer_certificate_name = ENV.fetch("MAC_INSTALLER_CERTIFICATE_NAME")')
 fail_contract("Mac TestFlight package must use the resolved installer identity") unless mac_lane.scan("installer_cert_name: mac_installer_certificate_name").one?
 fail_contract("Mac TestFlight export must use the resolved installer identity") unless mac_lane.scan("installerSigningCertificate: mac_installer_certificate_name").one?
