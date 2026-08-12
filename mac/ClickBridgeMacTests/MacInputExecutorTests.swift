@@ -15,12 +15,13 @@ final class MacInputExecutorTests: XCTestCase {
             clickGapMs: 7,
             constructEvents: { trace.append("construct-both"); return ClickEventPair.testing },
             postEvent: { trace.append("post-\($0.phase.rawValue)") },
-            sleepMicroseconds: { trace.append("sleep-\($0)") }
+            sleepMicroseconds: { trace.append("sleep-\($0)") },
+            wallClockMilliseconds: { 1_234.5 }
         )
         guard case .posted(let timestamp) = executor.postLeftClickAtCurrentCursor() else {
             return XCTFail("expected posted")
         }
-        XCTAssertGreaterThan(timestamp, 0)
+        XCTAssertEqual(timestamp, 1_234.5)
         XCTAssertEqual(trace.snapshot(), ["construct-both", "post-down", "sleep-7000", "post-up"])
         XCTAssertEqual(executor.diagnosticPostCounts(), InputPostCounts(mouseDownPostCount: 1, mouseUpPostCount: 1))
     }

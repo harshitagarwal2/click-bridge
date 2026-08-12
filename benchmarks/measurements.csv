@@ -1,0 +1,1 @@
+runId,condition,blockIndex,sampleIndex,network,scheduledIdleSeconds,actualIdleMs,keepWarm,normalHeartbeat,tailscaleRoute,pathsSent,actionId,activationUnixMs,mouseDownPostedUnixMs,clockOffsetMs,clockRttMs,clockUncertaintyMs,estimatedActuationMs,ackMs,confirmationMs,relayProcessingUs,macProcessingUs,acceptedVia,firstResultVia,lateResultCount,status,reason
