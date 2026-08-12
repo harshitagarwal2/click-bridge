@@ -1,4 +1,5 @@
 require "json"
+require "fileutils"
 require "open3"
 require "tmpdir"
 require "yaml"
@@ -78,6 +79,109 @@ def verify_guard_fixtures(filename, guard_script, environment_name)
   end
 end
 
+def require_script_order(script, earlier, later, message)
+  earlier_index = script.index(earlier)
+  later_index = script.index(later)
+  fail_contract(message) unless earlier_index && later_index && earlier_index < later_index
+end
+
+def verify_testflight_cleanup(cleanup_script)
+  Dir.mktmpdir("testflight-cleanup") do |runner_temp|
+    home = File.join(runner_temp, "home")
+    fake_bin = File.join(runner_temp, "fake-bin")
+    installed_profiles = [
+      File.join(home, "Library", "MobileDevice", "Provisioning Profiles", "fixture-ios.mobileprovision"),
+      File.join(home, "Library", "MobileDevice", "Provisioning Profiles", "fixture-mac.provisionprofile")
+    ]
+    secret_files = %w[
+      click-bridge-signing.keychain-db
+      ios-apple-distribution.p12
+      click-bridge-ios.mobileprovision
+      click-bridge-ios-profile.plist
+      mac-apple-distribution.p12
+      mac-installer-distribution.p12
+      click-bridge-mac.provisionprofile
+      click-bridge-mac-profile.plist
+      click-bridge-app-store-connect-key.p8
+      ClickBridgePhone.ipa
+      ClickBridgePhone.app.dSYM.zip
+      ClickBridgeMac.pkg
+      ClickBridgeMac.app.dSYM.zip
+    ].map { |name| File.join(runner_temp, name) }
+    archive_directories = %w[
+      ClickBridgePhone.xcarchive
+      ClickBridgeMac.xcarchive
+      ClickBridgeMac.app
+    ].map { |name| File.join(runner_temp, name) }
+    cleanup_paths = secret_files + archive_directories + installed_profiles
+
+    FileUtils.mkdir_p(fake_bin)
+    fake_security = File.join(fake_bin, "security")
+    File.write(fake_security, <<~SH)
+      #!/bin/sh
+      set -eu
+      if [ "${FAKE_SECURITY_FAIL:-0}" = "1" ]; then
+        exit 42
+      fi
+      test "$1" = "delete-keychain"
+      rm -f -- "$2"
+    SH
+    File.chmod(0o755, fake_security)
+
+    materialize = lambda do
+      (secret_files + installed_profiles).each do |path|
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "fixture")
+      end
+      archive_directories.each do |path|
+        FileUtils.mkdir_p(path)
+        File.write(File.join(path, "fixture"), "archive")
+      end
+    end
+    environment = {
+      "HOME" => home,
+      "RUNNER_TEMP" => runner_temp,
+      "IOS_SIGNING_PROFILE_PATH" => installed_profiles.fetch(0),
+      "MAC_SIGNING_PROFILE_PATH" => installed_profiles.fetch(1),
+      "PATH" => "#{fake_bin}:#{ENV.fetch("PATH")}"
+    }
+    run_cleanup = lambda do |extra_environment = {}|
+      Open3.capture3(environment.merge(extra_environment), "bash", "-c", cleanup_script)
+    end
+
+    materialize.call
+    stdout, stderr, status = run_cleanup.call
+    fail_contract("TestFlight cleanup failed for materialized fixtures: #{stdout}#{stderr}") unless status.success?
+    leftovers = cleanup_paths.select { |path| File.exist?(path) }
+    fail_contract("TestFlight cleanup retained #{leftovers.join(", ")}") unless leftovers.empty?
+
+    stdout, stderr, status = run_cleanup.call
+    fail_contract("TestFlight cleanup must be idempotent: #{stdout}#{stderr}") unless status.success?
+
+    deterministic_paths = secret_files + archive_directories
+    deterministic_paths.each do |path|
+      if File.extname(path).empty? || path.end_with?(".app", ".xcarchive")
+        FileUtils.mkdir_p(path)
+        File.write(File.join(path, "fixture"), "output")
+      else
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "fixture")
+      end
+    end
+    partial_environment = environment.reject { |key, _| %w[IOS_SIGNING_PROFILE_PATH MAC_SIGNING_PROFILE_PATH].include?(key) }
+    stdout, stderr, status = Open3.capture3(partial_environment, "bash", "-c", cleanup_script)
+    fail_contract("TestFlight cleanup failed before profile-path publication: #{stdout}#{stderr}") unless status.success?
+    leftovers = deterministic_paths.select { |path| File.exist?(path) }
+    fail_contract("TestFlight partial cleanup retained #{leftovers.join(", ")}") unless leftovers.empty?
+
+    materialize.call
+    stdout, stderr, status = run_cleanup.call("FAKE_SECURITY_FAIL" => "1")
+    fail_contract("TestFlight cleanup must report keychain deletion failure") if status.success?
+    leftovers = cleanup_paths.select { |path| File.exist?(path) }
+    fail_contract("TestFlight cleanup failure retained #{leftovers.join(", ")}: #{stdout}#{stderr}") unless leftovers.empty?
+  end
+end
+
 WORKFLOWS.each do |filename, expected|
   path = File.join(WORKFLOW_DIR, filename)
   text = File.read(path)
@@ -141,6 +245,47 @@ WORKFLOWS.each do |filename, expected|
 end
 
 testflight = File.read(File.join(WORKFLOW_DIR, "testflight.yml"))
+testflight_steps = YAML.safe_load(testflight, aliases: true).fetch("jobs").fetch("upload").fetch("steps")
+signing_step = testflight_steps.find { |step| step["name"] == "Configure ephemeral App Store signing" }
+cleanup_step = testflight_steps.find { |step| step["name"] == "Remove ephemeral signing material" }
+fail_contract("TestFlight is missing signing setup") unless signing_step
+fail_contract("TestFlight is missing signing cleanup") unless cleanup_step
+fail_contract("TestFlight signing cleanup must run after failures") unless cleanup_step["if"] == "${{ always() }}"
+signing_script = signing_step.fetch("run")
+cleanup_script = cleanup_step.fetch("run")
+first_secret_write = %(printf '%s' "$IOS_CERTIFICATE_BASE64")
+require_script_order(signing_script, "umask 077", first_secret_write, "TestFlight signing setup must set a restrictive umask before materializing secrets")
+%w[
+  APP_STORE_CONNECT_KEY_PATH
+  SIGNING_KEYCHAIN
+  IOS_SIGNING_CERTIFICATE_PATH
+  IOS_SIGNING_INPUT_PROFILE_PATH
+  IOS_SIGNING_PROFILE_PLIST_PATH
+  MAC_DISTRIBUTION_CERTIFICATE_PATH
+  MAC_INSTALLER_CERTIFICATE_PATH
+  MAC_SIGNING_INPUT_PROFILE_PATH
+  MAC_SIGNING_PROFILE_PLIST_PATH
+].each do |variable|
+  require_script_order(
+    signing_script,
+    "#{variable}=%s",
+    first_secret_write,
+    "TestFlight signing setup must publish #{variable} before materializing secrets"
+  )
+end
+require_script_order(
+  signing_script,
+  "IOS_SIGNING_PROFILE_PATH=%s",
+  %(cp "$ios_profile" "$ios_installed_profile"),
+  "TestFlight signing setup must publish the installed iOS profile path before copying it"
+)
+require_script_order(
+  signing_script,
+  "MAC_SIGNING_PROFILE_PATH=%s",
+  %(cp "$mac_profile" "$mac_installed_profile"),
+  "TestFlight signing setup must publish the installed Mac profile path before copying it"
+)
+verify_testflight_cleanup(cleanup_script)
 fail_contract("TestFlight must not upload an IPA artifact") if testflight.include?("actions/upload-artifact")
 fail_contract("TestFlight must skip submission/distribution") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("skip_submission: true")
 fail_contract("TestFlight must not distribute to testers") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("distribute_external: false")
@@ -179,8 +324,24 @@ end
 
 fastfile = File.read(File.join(ROOT, "fastlane", "Fastfile"))
 fail_contract("Fastfile is missing the macOS TestFlight platform") unless fastfile.include?("platform :mac do")
+ios_lane = fastfile[/platform :ios do.*?(?=platform :mac do)/m]
+mac_lane = fastfile[/platform :mac do.*\z/m]
+fail_contract("Fastfile is missing the iOS TestFlight lane") unless ios_lane
+fail_contract("Fastfile is missing the macOS TestFlight lane") unless mac_lane
 fail_contract("Mac TestFlight upload must select macOS") unless fastfile.include?('app_platform: "osx"')
 fail_contract("Mac TestFlight upload must use a pkg") unless fastfile.include?("pkg: output_path")
+mac_output_name = mac_lane[/output_name:\s*"([^"]+)"/, 1]
+fail_contract("Mac TestFlight package output_name must be a literal") unless mac_output_name
+fail_contract("Mac TestFlight package output_name must resolve to ClickBridgeMac.pkg") unless "#{mac_output_name}.pkg" == "ClickBridgeMac.pkg"
+fail_contract("Mac TestFlight upload must use the package path returned by build_mac_app") unless mac_lane.include?("output_path = build_mac_app(")
+{
+  "iOS" => [ios_lane, "ClickBridgePhone.xcarchive"],
+  "Mac" => [mac_lane, "ClickBridgeMac.xcarchive"]
+}.each do |platform, (lane, archive_name)|
+  expected_path = %(archive_path = File.join(output_directory, "#{archive_name}"))
+  fail_contract("#{platform} TestFlight archive must live under RUNNER_TEMP") unless lane.include?(expected_path)
+  fail_contract("#{platform} TestFlight build must use its explicit archive path") unless lane.scan("archive_path: archive_path").one?
+end
 %w[skip_binary_upload submit_for_review automatic_release].each do |setting|
   fail_contract("Fastfile is missing #{setting}") unless fastfile.include?(setting)
 end
