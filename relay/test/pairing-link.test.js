@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { parseAndClearPairingFragment } from '../public/pairing-link.js';
 
-const REFERENCE = 'A'.repeat(43);
+const REFERENCE = '---_---_---_---_---_---_---_---_---_---_--8';
 
 function subject(url) {
   const parsed = new URL(url);
@@ -22,6 +22,30 @@ test('valid pairing links are scrubbed before their reference is returned', () =
 
   assert.deepEqual(calls, [[history.state, '', '/pair']]);
   assert.deepEqual(result, { pairingVersion: 1, reference: REFERENCE });
+});
+
+test('pairing link validation starts only after the fragment is scrubbed', () => {
+  const calls = [];
+  const location = {
+    href: `https://click.example/pair#v=1&r=${REFERENCE}`,
+    hash: `#v=1&r=${REFERENCE}`,
+    get protocol() {
+      assert.deepEqual(calls, [[null, '', '/pair']]);
+      return 'https:';
+    },
+    host: 'click.example',
+    pathname: '/pair',
+    search: '',
+  };
+  const history = {
+    state: null,
+    replaceState: (...args) => calls.push(args),
+  };
+
+  assert.deepEqual(
+    parseAndClearPairingFragment(location, history, 'click.example'),
+    { pairingVersion: 1, reference: REFERENCE },
+  );
 });
 
 test('browser fallback accepts only the exact HTTPS host and pairing paths', () => {
@@ -65,6 +89,7 @@ test('fragment requires exactly v=1 and one canonical reference field', () => {
     `v=1&v=1&r=${REFERENCE}`,
     `v=2&r=${REFERENCE}`,
     `v=1&r=${'a'.repeat(42)}`,
+    `v=1&r=${'A'.repeat(42)}B`,
     `v=1&r=${'A'.repeat(42)}%2B`,
     `v=1&r=${'A'.repeat(43)}%3D`,
   ]) {

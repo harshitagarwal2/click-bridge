@@ -106,6 +106,28 @@ test('promoting pending atomically installs it as active and clears the pending 
   assert.equal(store.getPending(), null);
 });
 
+test('failed pending promotion leaves both credential slots unchanged', () => {
+  let serialized = null;
+  let failWrites = false;
+  const storage = {
+    getItem(key) { return key === 'clickbridge.phoneToken' ? serialized : null; },
+    setItem(key, value) {
+      if (failWrites) throw new Error('blocked');
+      if (key === 'clickbridge.phoneToken') serialized = value;
+    },
+  };
+  const store = new PhoneSettingsStore(storage);
+  const active = { credential: 'a'.repeat(64), version: 4 };
+  const pending = { credential: 'b'.repeat(64), version: 5 };
+  assert.equal(store.setActive(active), true);
+  assert.equal(store.stage(pending), true);
+  failWrites = true;
+
+  assert.equal(store.promotePending(pending), false);
+  assert.deepEqual(store.getActive(), active);
+  assert.deepEqual(store.getPending(), pending);
+});
+
 test('promotion rejects a same-version pending credential replaced after validation', () => {
   const store = new MemorySettingsStore();
   const expected = { credential: 'b'.repeat(64), version: 5 };
@@ -201,4 +223,20 @@ test('forget overwrites legacy token storage so no shadow credential remains', (
   assert.equal(store.getToken(), legacy);
   assert.equal(store.forget(), true);
   assert.equal([...values.values()].some((value) => value.includes(legacy)), false);
+});
+
+test('staging upgrades legacy token storage without losing the active credential', () => {
+  const legacy = 'a'.repeat(64);
+  const pending = { credential: 'b'.repeat(64), version: 1 };
+  const values = new Map([['clickbridge.phoneToken', legacy]]);
+  const store = new PhoneSettingsStore({
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  });
+
+  assert.equal(store.stage(pending), true);
+  assert.deepEqual(JSON.parse(values.get('clickbridge.phoneToken')), {
+    active: { credential: legacy, version: 0 },
+    pending,
+  });
 });
