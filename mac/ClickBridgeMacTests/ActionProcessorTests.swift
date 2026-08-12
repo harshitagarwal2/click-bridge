@@ -126,6 +126,56 @@ final class ActionProcessorTests: XCTestCase {
         XCTAssertEqual(poster.callCount(), 1)
     }
 
+    func testFutureIssuedRequestAcceptsSkewBoundaryAndRejectsOneMillisecondBeyondIt() async {
+        let poster = LockedPoster()
+        let clock = LockedClock(base)
+        let subject = processor(poster: poster, clock: clock)
+        await subject.setRemoteEnabled(true)
+
+        let boundary = await subject.receive(
+            request(id: "boundary", issued: base + Constants.clockSkewTolerance * 1_000),
+            via: .oci
+        )
+        XCTAssertEqual(boundary.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+
+        let futurePoster = LockedPoster()
+        let futureSubject = processor(poster: futurePoster, clock: clock)
+        await futureSubject.setRemoteEnabled(true)
+        let future = await futureSubject.receive(
+            request(id: "future", issued: base + Constants.clockSkewTolerance * 1_000 + 1),
+            via: .oci
+        )
+        XCTAssertEqual(future.reason, .invalidRequest)
+        XCTAssertEqual(futurePoster.callCount(), 0)
+        let tracked = await futureSubject.trackedActionCount()
+        XCTAssertEqual(tracked, 0)
+    }
+
+    func testFutureIssuedReplayAfterCompletedCacheTTLNeverPosts() async {
+        let poster = LockedPoster()
+        let clock = LockedClock(base)
+        let subject = processor(poster: poster, clock: clock, ttl: 1)
+        await subject.setRemoteEnabled(true)
+        let future = request(
+            id: "future-replay",
+            issued: base + 10_000
+        )
+
+        let first = await subject.receive(future, via: .oci)
+        XCTAssertEqual(first.reason, .invalidRequest)
+        XCTAssertEqual(poster.callCount(), 0)
+        let firstTracked = await subject.trackedActionCount()
+        XCTAssertEqual(firstTracked, 0)
+
+        clock.advance(2_000)
+        let replay = await subject.receive(future, via: .tailscale)
+        XCTAssertEqual(replay.reason, .invalidRequest)
+        XCTAssertEqual(poster.callCount(), 0)
+        let replayTracked = await subject.trackedActionCount()
+        XCTAssertEqual(replayTracked, 0)
+    }
+
     func testOneThousandConcurrentDuplicatesAcrossIngressesPostOnce() async {
         let poster = LockedPoster()
         let subject = processor(poster: poster)

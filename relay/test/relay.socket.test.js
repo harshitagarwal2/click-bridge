@@ -14,7 +14,11 @@ import {
 } from '../src/server.js';
 import { createContentSecurityPolicy } from '../src/csp.js';
 import { parseClientMessage } from '../src/protocol.js';
-import { ACTION_LIFETIME_MS, PROTOCOL_VERSION } from '../src/constants.js';
+import {
+  ACTION_LIFETIME_MS,
+  CLOCK_SKEW_TOLERANCE_MS,
+  PROTOCOL_VERSION,
+} from '../src/constants.js';
 
 const PHONE_TOKEN = '1'.repeat(64);
 const MAC_TOKEN = '2'.repeat(64);
@@ -297,6 +301,42 @@ test('mac_offline and expired acknowledgements never forward or create a route',
       { status: 'rejected', reason: 'expired' },
     );
     assert.equal(mac.inbox.filter((m) => m.actionId === expired.actionId).length, 0);
+    assert.equal(server.state.pendingActions.size, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('future-issued action is rejected before WebSocket routing or reservation', async () => {
+  const now = 1_800_000_000_000;
+  const { server, url } = await boot({ stateOptions: { now: () => now } });
+  try {
+    const phone = client(url);
+    const mac = client(url);
+    await authenticate(phone, 'phone', PHONE_TOKEN);
+    await authenticate(mac, 'mac', MAC_TOKEN);
+
+    const boundary = action({
+      issuedAtUnixMs: now + CLOCK_SKEW_TOLERANCE_MS,
+      expiresAtUnixMs: now + CLOCK_SKEW_TOLERANCE_MS + ACTION_LIFETIME_MS,
+    });
+    phone.send(boundary);
+    await mac.wait((message) => message.type === 'action.request' && message.actionId === boundary.actionId);
+    mac.send(result(boundary.actionId));
+    await phone.wait((message) => message.type === 'action.result' && message.actionId === boundary.actionId);
+
+    const future = action({
+      issuedAtUnixMs: now + CLOCK_SKEW_TOLERANCE_MS + 1,
+      expiresAtUnixMs: now + CLOCK_SKEW_TOLERANCE_MS + ACTION_LIFETIME_MS + 1,
+    });
+    phone.send(future);
+    assert.deepEqual(
+      (({ status, reason }) => ({ status, reason }))(
+        await phone.wait((message) => message.type === 'relay.ack' && message.actionId === future.actionId),
+      ),
+      { status: 'rejected', reason: 'invalid_request' },
+    );
+    assert.equal(mac.inbox.some((message) => message.actionId === future.actionId), false);
     assert.equal(server.state.pendingActions.size, 0);
   } finally {
     await server.close();
