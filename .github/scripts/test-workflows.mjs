@@ -554,6 +554,44 @@ for (const [shape, mutation] of [
   );
 }
 
+for (const [shape, expansion, redirection] of [
+  ["braced PHONE_TOKEN substring", "${PHONE_TOKEN:0}", ""],
+  ["braced MAC_TOKEN default", "${MAC_TOKEN:-fallback}", ">&2"],
+  ["braced PHONE_TOKEN default without colon", "${PHONE_TOKEN-fallback}", ""],
+  ["braced PHONE_TOKEN alternate", "${PHONE_TOKEN:+alternate}", ""],
+  ["braced MAC_TOKEN alternate without colon", "${MAC_TOKEN+alternate}", ">&2"],
+  ["braced MAC_TOKEN error", "${MAC_TOKEN:?missing}", ">&2"],
+  ["braced PHONE_TOKEN error without colon", "${PHONE_TOKEN?missing}", ""],
+  ["braced PHONE_TOKEN assignment", "${PHONE_TOKEN:=replacement}", ""],
+  ["braced MAC_TOKEN assignment without colon", "${MAC_TOKEN=replacement}", ">&2"],
+  ["braced MAC_TOKEN length", "${#MAC_TOKEN}", ">&2"],
+  ["braced PHONE_TOKEN indirect", "${!PHONE_TOKEN}", ""],
+  ["braced MAC_TOKEN replacement", "${MAC_TOKEN/token/replacement}", ">&2"],
+  ["braced PHONE_TOKEN transformation", "${PHONE_TOKEN@Q}", ""],
+  ["unbraced MAC_TOKEN stdout", "$MAC_TOKEN", ""],
+  ["exact braced PHONE_TOKEN stderr", "${PHONE_TOKEN}", ">&2"],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}printf '%s\\n' "${expansion}" ${redirection}\n`,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|environment assignment/,
+    `deployment validation must reject ${shape}`,
+  );
+}
+assert.doesNotThrow(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  "the two exact reviewed smoke-container assignments must remain valid",
+);
+
 function readRequired(relativePath) {
   const absolutePath = path.join(repositoryRoot, relativePath);
   assert.ok(existsSync(absolutePath), `${relativePath} must exist`);

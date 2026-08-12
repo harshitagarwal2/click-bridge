@@ -357,15 +357,45 @@ function shellCommandSubstitutionBodies(source) {
   return bodies;
 }
 
+function shellSecretParameterExpansions(source) {
+  const secretNames = new Set(["PHONE_TOKEN", "MAC_TOKEN"]);
+  const expansions = [];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "$") continue;
+
+    if (source[index + 1] === "{") {
+      let nameStart = index + 2;
+      if (source[nameStart] === "#" || source[nameStart] === "!") {
+        nameStart += 1;
+      }
+      const name = source.slice(nameStart).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+      if (secretNames.has(name)) {
+        expansions.push({ name, syntax: "braced" });
+      }
+      continue;
+    }
+
+    const name = source.slice(index + 1).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (secretNames.has(name)) {
+      expansions.push({ name, syntax: "unbraced" });
+    }
+  }
+  return expansions;
+}
+
 function validateDeploymentSecretFlow(source) {
+  const secretExpansions = shellSecretParameterExpansions(source);
   for (const secretName of ["PHONE_TOKEN", "MAC_TOKEN"]) {
-    const references = source.match(
-      new RegExp(`\\$(?:\\{${secretName}\\}|${secretName}\\b)`, "g"),
-    ) ?? [];
+    const references = secretExpansions.filter(({ name }) => name === secretName);
     assert.equal(
       references.length,
       1,
       `deploy script must use ${secretName} only in the reviewed smoke-container environment assignment`,
+    );
+    assert.equal(
+      references[0].syntax,
+      "unbraced",
+      `deploy script must use ${secretName} only as the exact reviewed unbraced parameter expansion`,
     );
   }
   const credentialSegments = shellCommandSegments(source).filter((segment) => {
