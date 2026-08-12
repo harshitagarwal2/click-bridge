@@ -100,7 +100,13 @@ final class AppState: ObservableObject {
     }
 
     func clearToken() {
-        do { try settings.clearMacToken(); notice = "Token cleared." }
-        catch { notice = settings.storageError }
+        Task {
+            var persistenceError: String?
+            do { try settings.clearMacToken() }
+            catch { persistenceError = settings.storageError }
+
+            await client.clearConfigurationAndStop()
+            notice = persistenceError ?? "Token cleared."
+        }
     }
 }

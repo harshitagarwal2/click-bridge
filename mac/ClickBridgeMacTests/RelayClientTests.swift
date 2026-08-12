@@ -46,11 +46,14 @@ private actor FakeWebSocketTransport: WebSocketTransport {
 private final class TransportFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var transports: [FakeWebSocketTransport]
+    private var makeCount = 0
     init(_ transports: [FakeWebSocketTransport]) { self.transports = transports }
     func make() -> any WebSocketTransport {
         lock.lock(); defer { lock.unlock() }
+        makeCount += 1
         return transports.removeFirst()
     }
+    func count() -> Int { lock.withLock { makeCount } }
 }
 
 private actor GatedSink: ActionRequestSink {
@@ -380,6 +383,71 @@ final class RelayClientTests: XCTestCase {
         XCTAssertTrue(firstResults.isEmpty)
         XCTAssertTrue(secondResults.isEmpty)
         await client.stop()
+    }
+
+    func testClearConfigurationStopsAuthenticatedConnectionAndRequiresReconfiguration() async throws {
+        let first = FakeWebSocketTransport()
+        let second = FakeWebSocketTransport()
+        let factory = TransportFactory([first, second])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await first.push(try Wire.encode(HelloOK(role: "mac")))
+        let connected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(connected)
+
+        await client.clearConfigurationAndStop()
+
+        let closeCount = await first.closes()
+        let clearedStatus = await client.currentStatus()
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(clearedStatus, .disconnected)
+        await client.reconnect()
+        await client.start()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(factory.count(), 1)
+
+        try await client.configure(urlString: "wss://example.com/ws", token: "new-token",
+                                   allowLocalSimulator: false)
+        await client.start()
+        let reconfigured = await eventually { await second.connections() == 1 }
+        XCTAssertTrue(reconfigured)
+        await client.stop()
+    }
+
+    func testClearConfigurationPreventsStaleActionCompletionFromSending() async throws {
+        let transport = FakeWebSocketTransport()
+        let sink = GatedSink()
+        let client = RelayClient(
+            actionSink: sink, diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        await transport.push(try Wire.encode(ActionRequest(actionId: actionID, action: "click",
+                                                           issuedAtUnixMs: 1_786_497_600_000,
+                                                           expiresAtUnixMs: 1_786_497_602_000)))
+        let started = await eventually { await sink.started }
+        XCTAssertTrue(started)
+
+        await client.clearConfigurationAndStop()
+        await sink.release()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        let results = await transport.sentMessages().filter {
+            (try? StrictWireDecoder().decodeText($0))?.isActionResult == true
+        }
+        let closeCount = await transport.closes()
+        XCTAssertTrue(results.isEmpty)
+        XCTAssertEqual(closeCount, 1)
     }
 
     func testTimeSyncUsesReceiptAndSendSamples() async throws {
