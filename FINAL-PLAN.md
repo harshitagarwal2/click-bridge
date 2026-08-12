@@ -4,7 +4,7 @@
 
 **Canonical file:** `FINAL-PLAN.md`. `archive/plans/PLAN-v5.md` and earlier plans are preserved as historical inputs only; implementation status and future edits belong here.
 
-**Goal:** While either foreground phone client is active, one accepted user input produces at most one native left mouse click at the Mac's current cursor position within the running-process reliability boundary. The PWA remains the tap fallback; the native iOS client additionally maps each real output-volume delta to one action through the same OCI relay and unchanged phone protocol. An optional measured Tailscale path follows only after both OCI clients pass.
+**Goal:** While either foreground phone client is active, one accepted input produces one logical action that posts exactly three independent ordinary left clicks at the Mac's current cursor position within the running-process reliability boundary. The PWA remains the tap fallback; the native iOS client additionally maps each real output-volume delta to one action through the same OCI relay and unchanged phone protocol. An optional measured Tailscale path follows only after both OCI clients pass.
 
 **Architecture:** Milestone 1 uses the foreground PWA, one persistent WebSocket to a stateless Node.js relay on the existing OCI us-sanjose-1 VM, and one persistent WebSocket from that relay to a native Swift menu-bar application. The native iOS extension uses one authenticated WSS connection to that same relay and reuses the exact phone wire protocol, action-ID/expiry rules, heartbeat, reconnect, clock-health, and terminal-result handling. Milestone 2 then adds a Tailscale Serve-backed WebSocket directly into the same Mac action processor; optional hedging sends one immutable action ID over both paths and lets the Mac's serialized processor accept the first arrival.
 
@@ -14,17 +14,17 @@
 
 - macOS 13 or newer only.
 - One phone, one Mac, one user, one OCI relay process.
-- The foreground installable PWA remains unchanged and supported as the fallback phone client.
+- The foreground installable PWA remains supported as the fallback phone client; its behavior and wire protocol remain unchanged while its copy truthfully describes the three-click outcome.
 - The native iOS SwiftUI client is an additional foreground-only client and requires a normal signed iPhone build for physical acceptance. Release automation may upload to TestFlight or submit an already processed build for App Store review only through protected manual workflows; it never distributes to testers or releases automatically.
 - Production uses a stable public hostname. Prefer a domain you own; DuckDNS is the no-cost fallback. Do not depend on sslip.io or nip.io for the permanent installation.
-- The only action is one left click at the Mac's current cursor position.
+- The only logical action is `click`; one accepted action posts exactly three independent ordinary left clicks at the Mac's current cursor position.
 - Octo Browser is the required physical target for final click verification; the application is not restricted to Octo.
 - OCI us-sanjose-1 is the primary relay and phone-page host.
 - Deployment requires verified Docker Engine and Compose v2. Ubuntu 22.04/24.04 LTS is the only in-plan installation path. A different OCI OS may continue only when its already-installed Docker Engine, Compose, hello-world run, and reboot persistence all pass; this plan never presents RHEL repository commands as an officially supported Oracle Linux installation.
 - The relay is a Docker container behind a Caddy container.
 - No PostgreSQL, Redis, database, action history, durable queue, offline action queue, retry, or replay.
 - No Windows, Tauri, Electron, Rust, Node desktop receiver, libnut, cliclick, or AppleScript input path.
-- No phone-supplied coordinates, cursor movement, keyboard commands, scrolling, dragging, double click, or right click.
+- No phone-supplied coordinates, cursor movement, keyboard commands, scrolling, dragging, semantic double/triple-click click-state, or right click. The three physical clicks are independent ordinary clicks with click state `1`.
 - No multiple users, accounts, device enrollment, OIDC, audit system, rate-limit service, or security-hardening project.
 - Minimum working protection remains: trusted HTTPS/WSS, three role/path-specific random tokens, a strict click-only protocol, a 4 KiB frame limit, and tokens never placed in URLs or logs.
 - The Mac remote-control toggle defaults off.
@@ -110,7 +110,7 @@ Existing OCI us-sanjose-1 VM
           v
 Native Swift menu-bar app
   shared ActionProcessor actor
-  CGEvent left-down and left-up
+  three CGEvent left-down/left-up pairs
           |
           v
 Octo Browser at the current cursor
@@ -146,7 +146,7 @@ Milestone 2 improves latency and path resilience after both OCI phone clients pa
 |        |                |        |
 |        +----------------+        |
 |                                  |
-|   Clicks at current cursor       |
+|   3 clicks at current cursor     |
 |   Last: Posted - 74 ms - OCI     |
 +----------------------------------+
 ~~~
@@ -180,7 +180,7 @@ The PWA token is its only saved setup. The native client stores the relay WSS UR
 
 Production HTTPS is part of the working architecture, not a hardening project. Installable PWAs and Screen Wake Lock rely on a secure context, and an HTTPS page must use WSS. Wake Lock is best-effort: it prevents dimming while granted but does not guarantee foreground scheduling or keep the radio warm. For an installed iPhone Home Screen web app, require iOS/iPadOS 18.4 or newer before offering the Wake Lock toggle; older versions continue without it.
 
-The native iOS client observes `AVAudioSession.sharedInstance().outputVolume` through its supported KVO surface only while the app is foreground-active. Any real upward or downward delta is one click input. Duplicate callback noise, an unchanged value, a held-button repeat while an action is in flight, lifecycle races, and callbacks from stale observer or socket generations send nothing; there is no queue. The UI shows Ready, Not connected, Mac offline, Clock mismatch, and At volume boundary. At 0% or 100%, it explains that the outward direction cannot create another observable delta. Because the API observes output-volume changes rather than the physical source, changes from Control Center, wired or Bluetooth headsets, and AirPods can also trigger. Haptics occur only after the Mac terminal result, never after `relay.ack`.
+The native iOS client observes `AVAudioSession.sharedInstance().outputVolume` through its supported KVO surface only while the app is foreground-active. Any real upward or downward delta is one logical click input whose accepted action produces three ordinary physical clicks. Duplicate callback noise, an unchanged value, a held-button repeat while an action is in flight, lifecycle races, and callbacks from stale observer or socket generations send nothing; there is no queue. The UI shows Ready, Not connected, Mac offline, Clock mismatch, and At volume boundary. At 0% or 100%, it explains that the outward direction cannot create another observable delta. Because the API observes output-volume changes rather than the physical source, changes from Control Center, wired or Bluetooth headsets, and AirPods can also trigger. Haptics occur only after the one Mac terminal result, never after `relay.ack`.
 
 ### Mac experience
 
@@ -224,7 +224,7 @@ This plan does not add a frontmost-app guard, window inspection, screen capture,
 9. A later identical copy receives the exact cached wire result and posts no input; duplicate-delivery metadata remains local to the phone.
 10. Reusing an actionId with a different payload returns id_conflict and posts no input.
 11. Acknowledgement means transport forwarding only; it never means a click occurred.
-12. Posted means the Mac submitted one mouse-down and one mouse-up event. It does not prove Octo completed a higher-level operation.
+12. Posted means the Mac attempted three mouse-down and three mouse-up `CGEvent.post` calls for one logical action. Core Graphics returns no posting success result, so only a matching Octo `+3` is authoritative physical-target evidence.
 13. The guarantee is at-most-once execution per actionId while the Mac process and in-memory dedup state remain alive.
 14. Absolute exactly-once behavior across a Mac crash is not claimed. No old action is resent after restart.
 
@@ -254,7 +254,7 @@ The completed-action cache retains entries for five minutes and has a safety cap
 | COMPLETED_ACTION_TTL_MS | 300000 | Mac | Duplicate-result retention |
 | COMPLETED_ACTION_CAP | 4096 | Mac | Memory safety bound |
 | DIRECT_LISTENER_PORT | 8787 | Mac | Loopback WebSocket backend for Tailscale Serve |
-| CLICK_GAP_MS | 0 initially | Mac | Calibrate to the smallest value Octo accepts reliably |
+| CLICK_GAP_MS | 0 initially | Mac | Down-to-up delay within each of the three click pairs; calibrate to the smallest value Octo accepts reliably |
 | KEEPWARM_INTERVAL_MS | 5000 | phone diagnostics | Experimental and off by default |
 
 HEARTBEAT_INTERVAL_MS and KEEPWARM_INTERVAL_MS are different controls. Heartbeat detects dead application paths. Keep-warm deliberately generates more radio traffic and remains disabled unless the physical A/B benchmark passes.
@@ -341,7 +341,7 @@ The PWA takes a counter snapshot before and after a physical run:
 {"type":"diagnostics.counters","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030ab","mouseDownPostCount":1000,"mouseUpPostCount":1000}
 ~~~
 
-The counters are cumulative for the current Mac process and increment immediately around the actual CGEvent.post calls. The messages do not create, retry, or acknowledge an action. The relay retains only a three-second request route, and the PWA emits requests only from its visible Diagnostics screen.
+The counters are cumulative for the current Mac process and increment immediately around each attempted `CGEvent.post` call. They do not prove that the target received input because `CGEvent.post(tap:)` returns no success result; a matching Octo delta is authoritative. One Posted logical action requires `mouseDown +3`, `mouseUp +3`, and Octo `+3`; 100 Posted actions require `300/300` counters and 300 Octo increments. The messages do not create, retry, or acknowledge an action. The relay retains only a three-second request route, and the PWA emits requests only from its visible Diagnostics screen.
 
 ### Mac state
 
@@ -1457,13 +1457,13 @@ Tests:
 - remote disabled posts zero times;
 - permission missing posts zero times;
 - event construction failure posts zero times;
-- counter snapshot starts at zero and reflects the exact number of actual down/up post calls;
+- counter snapshot starts at zero and reflects the exact number of attempted down/up `CGEvent.post` calls;
 - completed duplicate returns the exact cached wire result;
 - same ID with different payload returns id_conflict;
 - expired request posts zero times;
 - a cache full of protected entries rejects a new ID with capacity_exceeded;
 - 1,000 concurrent identical requests split across fake OCI and direct ingress call the fake poster once;
-- distinct IDs each post once;
+- distinct IDs each invoke the logical input poster once, producing one three-click burst apiece;
 - cache cleanup respects TTL and cap;
 - no in-flight entry is evicted;
 - cancellation of one caller does not cause a second execution.
@@ -1522,17 +1522,17 @@ Request permission only when the user chooses the menu action. Refresh state on 
 MacInputExecutor must:
 
 - read the current Core Graphics cursor location;
-- create both leftMouseDown and leftMouseUp before posting either;
-- use the same location and left button;
-- set mouseEventClickState to 1 on both;
+- create all three distinct leftMouseDown/leftMouseUp pairs before posting any event;
+- use the same captured location and left button for all six events;
+- set mouseEventClickState to 1 on every event so these remain three independent ordinary clicks;
 - post through cghidEventTap;
-- use the named CLICK_GAP_MS between down and up;
-- return event_creation_failed without posting if either event cannot be created;
+- use the named CLICK_GAP_MS between down and up within each pair, with no separate inter-click delay;
+- return event_creation_failed without posting if any of the six events cannot be created;
 - increment in-memory mouse-down and mouse-up counters immediately around the actual post calls;
 - return counter snapshots only through ActionProcessor so posting and snapshots remain serialized;
 - never spawn a process or use a third-party native-input package.
 
-Inject only three synchronous platform closures: event construction, event posting, and gap sleeping. Production closures call Core Graphics and the selected microsecond sleep; tests use recording fakes. Do not create another actor, input-command hierarchy, or dedup repository. MacInputExecutorTests prove both events are constructed before either post, construction failure posts zero, order is down then up, the configured gap is requested once, and counters surround the actual post calls.
+Inject only three synchronous platform closures: event construction, event posting, and gap sleeping. Production closures call Core Graphics and the selected microsecond sleep; tests use recording fakes. Do not create another actor, input-command hierarchy, or dedup repository. MacInputExecutorTests prove all three distinct pairs are constructed before the first post, any construction failure posts zero, order is down/up repeated three times, the configured gap is requested once per pair, and counters surround all six attempted post calls.
 
 - [ ] **Step 6: Verify**
 
@@ -1564,7 +1564,7 @@ git commit -m "feat: add atomic native click execution"
 **Interfaces:**
 
 - click-target.html exposes a visible count incremented by one normal click.
-- The chosen CLICK_GAP_MS is recorded with the exact Octo and macOS versions.
+- The chosen CLICK_GAP_MS within each click pair is recorded with the exact Octo and macOS versions.
 
 - [ ] **Step 1: Create the harmless target**
 
@@ -1593,10 +1593,10 @@ Start the local relay, connect the Mac app to ws://127.0.0.1:8080/ws, and open t
 
 Required:
 
-- one distinct action ID increments once;
-- a duplicate ID does not increment;
-- remote off does not increment;
-- permission revoked does not increment;
+- one distinct action ID increments the Octo counter three times;
+- a duplicate ID produces no additional increment beyond that one three-click burst;
+- remote off produces zero increments;
+- permission revoked produces zero increments;
 - a lost result produces Unknown and no retry.
 
 A physical phone must not be pointed at Mac localhost. The first physical-phone end-to-end gate is Task 9 through trusted OCI HTTPS/WSS.
@@ -1613,7 +1613,7 @@ Test CLICK_GAP_MS in this order:
 30 ms
 ~~~
 
-For each value, send 100 distinct actions from the desktop simulator with Octo frontmost and the cursor on the counter. Select the first value producing 100 increments from 100 actions. Do not choose a larger gap after the first passing value.
+For each value, send 100 distinct actions from the desktop simulator with Octo frontmost and the cursor on the counter. Select the first value producing Mac `mouseDown +300`/`mouseUp +300` and 300 Octo increments from 100 Posted actions. Do not choose a larger gap after the first passing value. Mac counters are attempted posts; Octo is authoritative because `CGEvent.post(tap:)` returns no success result.
 
 Record raw counts and the selected value in docs/physical-smoke-test.md.
 
@@ -2300,10 +2300,10 @@ BenchmarkSession is created only when the Diagnostics screen starts a run. It as
 
 run-negative-matrix.mjs connects as the one phone using tokens supplied only through environment variables. Its automated tests use a fake relay/Mac; its public run uses the harmless Octo target and explicit operator steps. It must support:
 
-- exact duplicate: send one immutable request twice and assert exact cached result plus one Octo increment;
+- exact duplicate: send one immutable request twice and assert one exact cached result plus one total three-click burst (`+3/+3` attempted Mac posts and Octo `+3`);
 - ID conflict: reuse the ID with another valid issued/expiry pair and assert id_conflict plus no second increment;
 - expired: send a valid already-expired request and assert relay rejection plus no input;
-- result drop: close the phone route after relay.ack, wait for the Mac result, reconnect, and assert no late delivery or replay;
+- result drop: close the phone route after relay.ack, wait for the Mac result, reconnect, and assert one total `+3/+3`/Octo `+3` burst with no late delivery or replay;
 - capacity remains an injected Swift ActionProcessor test with a fake poster and clock; do not flood the public relay or fill the real Mac process for this case.
 
 - [ ] **Step 5: Run the end-to-end correctness matrix**
@@ -2320,9 +2320,9 @@ Required outcomes:
 | Fresh Mac-ready state | Checking clock, then Ready only after five valid time-sync responses |
 | Missing time-sync response | Clock check unavailable within 3.5 seconds; Retry control visible; no action |
 | Retry after time-sync recovery | five new valid responses, then Ready; no action generated by retry |
-| Ready with Octo frontmost | one tap, one counter increment |
-| Duplicate action ID | one total increment and exact cached result |
-| Same ID with changed payload | id_conflict; no second increment |
+| Ready with Octo frontmost | one tap; one logical result, `+3/+3` attempted Mac posts, and Octo `+3` |
+| Duplicate action ID | one total three-click burst and exact cached result |
+| Same ID with changed payload | id_conflict; zero input for the conflicting request |
 | Expired buffered request | expired; no input |
 | Phone hidden with action pending | Unknown; no replay |
 | Phone visible again | reconnect only |
@@ -2405,8 +2405,8 @@ git commit -m "test: accept oci milestone with real latency data"
 - [ ] Phone PWA installs and operates in the foreground.
 - [ ] Native Mac app reconnects, heartbeats, and publishes accurate state.
 - [ ] PostEvent permission is the only input permission requested.
-- [ ] One distinct action ID produces one Octo counter increment.
-- [ ] Concurrent and sequential duplicates produce no second click.
+- [ ] One distinct action ID produces exactly one logical result, `mouseDown +3`/`mouseUp +3`, and three Octo counter increments.
+- [ ] Concurrent and sequential duplicates produce no second three-click burst.
 - [ ] Expired or capacity-rejected actions produce no click.
 - [ ] Relay, container, and VM restart produce no replay.
 - [ ] Cellular physical matrix passes.
@@ -2421,7 +2421,7 @@ This is the PWA/core OCI checkpoint. Continue through Task 10 before final hando
 
 ### Task 10: Native iOS Foreground Volume Client
 
-This task is required before final handoff. It adds a native SwiftUI iPhone client while leaving `relay/public/` unchanged as the fallback and making no wire-protocol change.
+This task is required before final handoff. It adds a native SwiftUI iPhone client while preserving the fallback behavior of `relay/public/` and making no wire-protocol change; later truthful copy may describe the three-click physical outcome.
 
 **Files:**
 
@@ -2461,7 +2461,7 @@ Show `Ready`, `Not connected`, `Mac offline`, `Clock mismatch`, and `At volume b
 
 Document in the UI/help that Control Center, wired or Bluetooth headsets, and AirPods can also trigger because the supported API observes output-volume changes, not the physical button source. Produce haptic feedback only after the matching Mac `action.result`; `relay.ack` changes forwarding state but never produces haptics.
 
-Expose the same click coordinator through a readiness-gated on-screen **Trigger Click** button and an iOS 17 **Trigger Click** App Shortcut. The shortcut may retain only the narrow launch-to-active handoff, makes one immediate attempt once active, and consumes not-ready, pending, failed, or backgrounded requests. It never queues or retries a delayed click.
+Expose the same click coordinator through a readiness-gated on-screen **Trigger 3 Clicks** button and an iOS 17 **Trigger 3 Clicks** App Shortcut. The shortcut may retain only the narrow launch-to-active handoff, makes one immediate logical-action attempt once active, and consumes not-ready, pending, failed, or backgrounded requests. It never queues or retries a delayed action.
 
 - [ ] **Step 4: Prove the coordinator and transport with deterministic tests**
 
@@ -2489,7 +2489,7 @@ xcodebuild -project ClickBridgePhone.xcodeproj -scheme ClickBridgePhone -showdes
 
 Run the `ClickBridgePhone` unit tests on an installed iOS Simulator destination, then build the same shared scheme for a generic iOS device. Record the Xcode, Swift, simulator, SDK, and command results in `docs/ios-acceptance.md`. Simulator tests can prove coordinator, lifecycle, protocol, and UI logic, but simulator volume controls do not prove hardware-volume behavior.
 
-On a physical signed iPhone, with the app foreground-active and the OCI relay/Mac/clock ready, prove Volume Up and Volume Down separately, duplicate/noise suppression, rapid separate presses, a held press while an action is pending, background/foreground revalidation, both volume boundaries, external volume-source disclosure, terminal-result-only haptics, and exactly one harmless Octo counter increment per accepted delta. This physical iPhone gate is mandatory.
+On a physical signed iPhone, with the app foreground-active and the OCI relay/Mac/clock ready, prove Volume Up and Volume Down separately, duplicate/noise suppression, rapid separate presses, a held press while an action is pending, background/foreground revalidation, both volume boundaries, external volume-source disclosure, terminal-result-only haptics, and exactly three harmless Octo counter increments per accepted delta. Also require Mac `mouseDown +3`/`mouseUp +3`; these are attempted-post counts, while Octo is the authoritative physical observation. This physical iPhone gate is mandatory.
 
 - [ ] **Step 6: Commit the native client after all gates pass**
 
@@ -2503,10 +2503,10 @@ git commit -m "feat: add foreground ios volume client"
 
 - [ ] `ios/project.yml` generates the shared `ClickBridgePhone` scheme.
 - [ ] Simulator unit tests and generic iOS device build pass.
-- [ ] The PWA remains unchanged and passes its existing checks.
+- [ ] The PWA behavior and wire protocol remain unchanged, its copy truthfully states the three-click outcome, and its existing checks pass.
 - [ ] The native client uses the existing OCI relay and exact phone wire protocol.
 - [ ] Foreground/background, readiness, generation, expiry, boundary, one-in-flight, no-queue, and result-only haptic tests pass.
-- [ ] Physical iPhone Volume Up and Volume Down each produce exactly one action and exactly one Octo counter increment per accepted delta.
+- [ ] Physical iPhone Volume Up and Volume Down each produce exactly one action ID/result/haptic and exactly three Octo counter increments per accepted delta.
 
 ---
 
@@ -2679,7 +2679,7 @@ Run at least 10,000 randomized test iterations:
 
 - identical immutable request through fake OCI and fake Tailscale ingress;
 - randomized arrival order, scheduling, cancellation, and caller timeout;
-- fake poster called exactly once;
+- fake logical poster called exactly once, representing one three-click burst;
 - every identical caller receives the exact cached ActionResult fields;
 - zero id_conflict for identical fingerprints;
 - changed payload always returns id_conflict;
@@ -2717,12 +2717,12 @@ Take diagnostics.counters snapshots immediately before and after the run and use
 
 - 1,000 hedged logical actions;
 - randomized artificial OCI/Tailscale delays during a separate local run;
-- 1,000 Octo counter increments;
-- exactly 1,000 diagnostic mouse-down posts and 1,000 mouse-up posts;
-- zero second post for any action ID;
+- 3,000 Octo counter increments;
+- exactly 3,000 diagnostic mouse-down post attempts and 3,000 mouse-up post attempts;
+- zero second three-click burst for any action ID;
 - zero automatic retry.
 
-The Octo UI count alone is insufficient; run-evidence.csv must show counter deltas of exactly 1,000 down and 1,000 up.
+The diagnostic counts alone are insufficient because `CGEvent.post(tap:)` returns no success result; run-evidence.csv must show attempted-post deltas of exactly 3,000 down and 3,000 up plus the authoritative Octo delta of 3,000.
 
 - [ ] **Step 5: Collect randomized comparative data**
 
@@ -2795,12 +2795,12 @@ Using the exact Release build and physical phone:
 
 - trusted OCI page and WSS;
 - fresh Mac reconnect and ready state;
-- one click in Octo;
-- duplicate produces no second click;
+- one logical action and three clicks in Octo;
+- duplicate produces no second three-click burst;
 - hidden/visible produces no replay;
 - selected transport mode matches the UI label;
 - diagnostics export contains no secret;
-- the signed native iPhone build separately passes both volume directions, lifecycle revalidation, boundary disclosure, one-in-flight/no-queue behavior, result-only haptics, and exactly one action ID and Octo increment per accepted delta.
+- the signed native iPhone build separately passes both volume directions, lifecycle revalidation, boundary disclosure, one-in-flight/no-queue behavior, result-only haptics, and exactly one action ID/result/haptic plus three Octo increments per accepted delta.
 
 - [ ] **Step 3: Complete the operator README**
 
@@ -2846,9 +2846,9 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - [ ] A successful Retry clock check reaches Ready; an actual skew shows Clock mismatch instead.
 - [ ] One physical activation creates one logical action ID.
 - [ ] One VoiceOver, Switch Control, or keyboard activation while Ready creates exactly one logical action ID.
-- [ ] One accepted distinct action posts one mouse-down and one mouse-up.
-- [ ] The Octo test counter increments exactly once.
-- [ ] Duplicate or conflicting action IDs produce no second click.
+- [ ] One accepted distinct action attempts exactly three mouse-down and three mouse-up posts.
+- [ ] The Octo test counter increments exactly three times.
+- [ ] Duplicate or conflicting action IDs produce no second three-click burst.
 - [ ] relay.ack and action.result remain visibly distinct.
 - [ ] Unknown never triggers automatic retry.
 - [ ] Unknown warns that the click may have occurred and tells the user to check the Mac.
@@ -2860,7 +2860,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - [ ] CGRequestPostEventAccess is invoked only from a user action.
 - [ ] The Mac rejects public plaintext ws relay URLs; loopback ws requires simulator mode.
 - [ ] Input Monitoring and Screen Recording are not requested.
-- [ ] Both events are created before either is posted.
+- [ ] All three distinct down/up event pairs are created before any event is posted.
 - [ ] The smallest empirically reliable Octo down/up gap is recorded.
 - [ ] No libnut, command process, AppleScript, or third-party input injector exists.
 - [ ] Swift and PWA reject oversized, binary, unknown-field, wrong-version, and wrong-role inbound frames.
@@ -2957,7 +2957,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 | Public edge | VNIC NSG plus Caddy on 80/443 | Public relay port 8080 | Only the TLS edge is host-published; relay stays Compose-private |
 | Relay runtime | Node 24 LTS, exact tested patches | Node 26 Current during Milestone 1 | Prefer the stable LTS line; reconsider after Node 26 enters LTS |
 | Alternative relay | None initially | Cloudflare Durable Object | Cannot pin to SJC and wake/placement latency must be measured |
-| Phone clients | Foreground native iOS volume client plus unchanged PWA fallback | Replacing the PWA or changing the relay protocol for iOS | Native KVO supplies the requested volume input while both clients share one proven action contract |
+| Phone clients | Foreground native iOS volume client plus behaviorally unchanged PWA fallback with truthful three-click copy | Replacing the PWA or changing the relay protocol for iOS | Native KVO supplies the requested volume input while both clients share one proven action contract |
 | Mac receiver | Native Swift | Node, Electron, Tauri | Direct Core Graphics APIs and native lifecycle |
 | Input API | Core Graphics CGEvent | libnut, cliclick, AppleScript | No process spawn or stale native add-on |
 | Permission API | CGPreflight/CGRequestPostEventAccess | AXIsProcessTrustedWithOptions | Exact permission surface for posting events |
@@ -3016,10 +3016,10 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 
 ## Stop Conditions
 
-**Milestone 1 stop condition:** A physical phone on cellular opens the OCI-hosted foreground PWA, sees the Mac ready, sends one action, and the installed native Mac app posts exactly one left click into the harmless Octo Browser counter at the current cursor. Every specified protocol, permission, and remote-toggle rejection produces no native input; sleep, lock, restart, and visibility transitions produce no queued replay; and the OCI latency baseline is recorded.
+**Milestone 1 stop condition:** A physical phone on cellular opens the OCI-hosted foreground PWA, sees the Mac ready, sends one logical action, and the installed native Mac app attempts `mouseDown +3`/`mouseUp +3` while the harmless Octo Browser counter at the current cursor visibly increments three times. Every specified protocol, permission, and remote-toggle rejection produces no native input; sleep, lock, restart, and visibility transitions produce no queued replay; and the OCI latency baseline is recorded. The Mac counters are attempted `CGEvent.post` calls; Octo is the authoritative physical-target observation.
 
-**Native iOS stop condition:** The signed `ClickBridgePhone` build on a physical iPhone uses the same OCI relay and phone wire contract; foreground Volume Up and Volume Down each produce exactly one action ID and one harmless Octo increment per accepted delta; duplicate, autorepeat-while-pending, background, stale-generation, expiry, and boundary cases send no unintended action; and haptics occur only after the Mac terminal result. The unchanged PWA still passes as the fallback.
+**Native iOS stop condition:** The signed `ClickBridgePhone` build on a physical iPhone uses the same OCI relay and phone wire contract; foreground Volume Up and Volume Down each produce exactly one action ID/result/haptic, Mac `mouseDown +3`/`mouseUp +3`, and three harmless Octo increments per accepted delta; duplicate, autorepeat-while-pending, background, stale-generation, expiry, and boundary cases send no unintended action; and haptics occur only after the Mac terminal result. The PWA behavior and protocol still pass as the fallback with truthful three-click copy.
 
-**Milestone 2 stop condition:** The PWA physical flow operates through the measured best optional path. If hedging is retained, 1,000 physical actions and 10,000 randomized actor trials produce zero double clicks, and two cellular benchmark runs show the required p95 improvement over the better single path.
+**Milestone 2 stop condition:** The PWA physical flow operates through the measured best optional path. If hedging is retained, 1,000 logical actions produce exactly 3,000 observed physical clicks with no duplicate burst, 10,000 randomized actor trials produce zero duplicate executions, and two cellular benchmark runs show the required p95 improvement over the better single path.
 
 **Final handoff stop condition:** Task 13 reruns relay, macOS, iOS simulator/build, OCI, PWA physical, and native physical-iPhone gates from clean inputs; records every limitation and selected optional transport; and leaves `FINAL-PLAN.md` as the only active plan with no unverified completion claim.

@@ -18,9 +18,9 @@ The SwiftUI app composes these responsibilities:
 - `PhoneRelayClient` owns one authenticated WSS connection, socket generations, heartbeat, reconnect, and strict protocol-v1 message handling.
 - `PhoneClockHealthController` reproduces the five-sample clock-health gate.
 - `PhoneActionCoordinator` permits one action in flight and has no queue. It creates one action ID and one immutable protocol-v1 `click` request for each accepted delta. A distinct delta observed while an action is pending is consumed and not replayed.
-- The on-screen **Trigger Click** button calls the same action coordinator and
+- The on-screen **Trigger 3 Clicks** button calls the same action coordinator and
   is enabled only while the current readiness state can accept an action.
-- `TriggerClickIntent` publishes a **Trigger Click** App Shortcut and opens the
+- `TriggerClickIntent` publishes a **Trigger 3 Clicks** App Shortcut and opens the
   app when invoked. It permits only the launch-to-active handoff, makes one
   immediate attempt through the same foreground/readiness/action boundary, and
   discards not-ready, pending, failed, or backgrounded requests rather than
@@ -54,7 +54,7 @@ The 66 passing automated tests cover the deterministic contracts for:
 - five-sample clock health, timeout, refresh, and stale clock batches;
 - relay URL, token validation, UserDefaults, and Keychain behavior;
 - Ready, Not connected, Mac offline, Clock mismatch, and boundary presentation states;
-- on-screen **Trigger Click** readiness and one-action-in-flight behavior;
+- on-screen **Trigger 3 Clicks** readiness and one-action-in-flight behavior;
 - App Shortcut request routing, foreground delivery, pending-request collapse, and non-reentrant readiness handling;
 - fail-closed Keychain initialization behavior.
 
@@ -103,9 +103,24 @@ At a boundary, only the outward direction becomes undetectable:
 
 **At volume boundary** is therefore an explanation, not a complete disablement of both directions.
 
+## Logical action and physical outcome
+
+Each accepted volume delta, on-screen trigger, or App Shortcut still creates
+exactly one logical action ID, one matching terminal result, and at most one
+terminal-result haptic. The unchanged protocol action string is `click`. A
+Posted action expands on the Mac into exactly three independent ordinary left
+clicks: diagnostic deltas `mouseDown +3` and `mouseUp +3`, with Octo `+3` as
+the required physical observation. Mac counters count attempted
+`CGEvent.post` calls; `CGEvent.post(tap:)` returns no success result, so the
+matching Octo delta is authoritative.
+
 ## PWA fallback
 
-The existing PWA remains unchanged as the tap-based fallback. The native client uses the same phone role and unchanged protocol v1; it adds no iOS-specific relay message or field. Disconnect or background the native client before using the PWA because the product supports one live authenticated phone client.
+The existing PWA behavior remains the tap-based fallback, with truthful
+three-click button copy. The native client uses the same phone role and
+unchanged protocol v1; it adds no iOS-specific relay message or field.
+Disconnect or background the native client before using the PWA because the
+product supports one live authenticated phone client.
 
 ## Physical iPhone acceptance checklist
 
@@ -114,8 +129,8 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 | Status | Physical check | Required evidence |
 | --- | --- | --- |
 | `NOT RUN` | Launch and readiness | Signed app launches on a physical iPhone and reaches **Ready** only after authentication, Mac readiness, and five clock samples. |
-| `NOT RUN` | Volume Up | From a nonboundary volume with no pending action, one real upward `outputVolume` delta sends exactly one relay action ID, receives one matching Mac terminal result, produces one terminal-result haptic, and increments the Octo click count once. |
-| `NOT RUN` | Volume Down | From a nonboundary volume with no pending action, one real downward delta produces the same exactly-once evidence with a new action ID. |
+| `NOT RUN` | Volume Up | From a nonboundary volume with no pending action, one real upward `outputVolume` delta sends exactly one relay action ID, receives one matching Mac terminal result, produces one terminal-result haptic, records Mac `mouseDown +3` and `mouseUp +3`, and increments the Octo click count by three. |
+| `NOT RUN` | Volume Down | From a nonboundary volume with no pending action, one real downward delta produces the same one-action/three-physical-click evidence with a new action ID. |
 | `NOT RUN` | Duplicate and rapid values | An unchanged callback sends nothing; each accepted distinct delta after settlement receives exactly one new action ID; a delta while pending is not queued or replayed. |
 | `NOT RUN` | Held hardware key | Record the actual deltas and actions. Evaluate by distinct accepted deltas, not by assumed physical press count. |
 | `NOT RUN` | Control Center and inactive phase | Opening Control Center preserves the foreground session through transient inactive state, and a real system-volume change can trigger while all readiness gates remain open. |
@@ -126,7 +141,7 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 | `NOT RUN` | Background stop | After the app reaches background, volume changes send no action and produce no haptic. |
 | `NOT RUN` | Reactivation | Returning active creates a fresh session/socket generation and sends nothing until authentication, Mac readiness, and a fresh five-sample clock check complete. |
 | `NOT RUN` | Haptic boundary | A forwarded `relay.ack` does not haptic; exactly one haptic occurs only after the matching Mac `action.result`; timeout, disconnect, stale/duplicate result, and background do not haptic. |
-| `NOT RUN` | PWA fallback | After native disconnect/background, the unchanged PWA connects as the phone client and completes one normal tap action. |
+| `NOT RUN` | PWA fallback | After native disconnect/background, the PWA connects as the phone client and one normal tap completes one logical action with exactly three observed Octo clicks. |
 
 ## Acceptance conclusion
 

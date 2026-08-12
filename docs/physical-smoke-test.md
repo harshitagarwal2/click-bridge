@@ -22,5 +22,13 @@ messages alone.
 - VoiceOver/keyboard activation; two taps while pending; Mac lock/sleep then fresh Ready.
 
 For each row record terminal state, Mac counter delta, Octo counter delta, and replay outcome.
-Exact one-action evidence requires matching before/after Mac down/up counters and the Octo
-counter—not merely a Posted wire result.
+Exact one-action evidence requires one logical action ID/result, Mac
+`mouseDown +3` and `mouseUp +3`, and Octo `+3`—not merely a Posted wire
+result. Duplicate delivery must preserve one total three-click burst and the
+exact cached result; conflict, expiry, remote-off, permission, and event-creation
+failure remain zero-input rows.
+
+Mac diagnostic counters record attempted `CGEvent.post` calls. Core Graphics
+returns no success result from `CGEvent.post(tap:)`, so the matching Octo delta
+is the authoritative physical-target observation. This acceptance remains
+**NOT RUN** until recorded with a real phone and Octo.

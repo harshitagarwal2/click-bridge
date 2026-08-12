@@ -15,6 +15,16 @@ import { createHttpHandler } from '../src/server.js';
 
 const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), '../public');
 const html = readFileSync(join(PUBLIC, 'index.html'), 'utf8');
+const manifest = JSON.parse(readFileSync(join(PUBLIC, 'manifest.webmanifest'), 'utf8'));
+
+test('primary control states the three-click physical outcome', () => {
+  assert.match(html, />3 CLICKS<\/button>/);
+  assert.match(html, /Three ordinary clicks at the Mac's current cursor/);
+  assert.equal(
+    manifest.description,
+    "Post three ordinary left clicks at the Mac's current cursor.",
+  );
+});
 
 test('index.html has no inline script', () => {
   // A <script> tag is fine only when it has a src and no body.

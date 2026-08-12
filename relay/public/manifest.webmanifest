@@ -1,7 +1,7 @@
 {
   "name": "Click Bridge",
   "short_name": "Click",
-  "description": "Post one left click at the Mac's current cursor.",
+"description": "Post three ordinary left clicks at the Mac's current cursor.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -14,7 +14,7 @@ struct ContentView: View {
                 Button {
                     model.triggerClick()
                 } label: {
-                    Label("Trigger Click", systemImage: "cursorarrow.click")
+                    Label("Trigger 3 Clicks", systemImage: "cursorarrow.click")
                         .font(.title2.bold())
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
@@ -22,8 +22,8 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(!model.canTriggerClick)
-                .accessibilityLabel("Trigger Click")
-                .accessibilityHint("Sends one click to the connected Mac")
+                .accessibilityLabel("Trigger 3 Clicks")
+                .accessibilityHint("Sends three ordinary clicks to the connected Mac")
                 if let outcome = model.state.lastActionOutcome {
                     Text(outcome).font(.callout).foregroundStyle(.secondary)
                 }

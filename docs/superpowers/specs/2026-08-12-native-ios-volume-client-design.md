@@ -4,11 +4,11 @@
 
 **Date:** 2026-08-12
 
-**Scope:** Add a native SwiftUI iPhone client to Click Bridge without changing the existing PWA, relay, Mac action semantics, or protocol v1.
+**Scope:** Add a native SwiftUI iPhone client without changing PWA behavior, relay behavior, or protocol v1; the Mac expands the unchanged logical `click` action into three independent ordinary left clicks.
 
 ## Outcome
 
-While the native app has an active foreground session, each distinct observed change to `AVAudioSession.sharedInstance().outputVolume` may produce exactly one `action.request` through the existing OCI relay when every readiness gate is open. Both upward and downward deltas mean click. The client keeps one action in flight, never queues a volume change, never retries an action, and provides haptic feedback only after the Mac sends a matching terminal `action.result`.
+While the native app has an active foreground session, each distinct observed change to `AVAudioSession.sharedInstance().outputVolume` may produce exactly one `action.request` through the existing OCI relay when every readiness gate is open. Both upward and downward deltas mean one logical click action, which the Mac expands into exactly three independent ordinary left clicks. The client keeps one action in flight, never queues a volume change, never retries an action, and provides haptic feedback only after the Mac sends a matching terminal `action.result`.
 
 The PWA remains the sequential fallback. Click Bridge supports one authenticated phone role, so the native client and PWA are not intended to stay connected simultaneously. When another phone authenticates, the relay closes the displaced phone with private WebSocket code `4004`. The displaced client shows `Another phone took over` and stops automatic reconnect until the user explicitly taps `Reconnect this phone` or saves configuration again; normal network loss still uses backoff.
 
@@ -251,7 +251,7 @@ Boundary copy is exact:
 - `0%`: “At volume boundary. Volume Down cannot create another change, so it cannot be detected. Volume Up can still trigger.”
 - `100%`: “At volume boundary. Volume Up cannot create another change, so it cannot be detected. Volume Down can still trigger.”
 
-The screen contains no fake click button. The existing PWA owns tap fallback behavior and remains unchanged.
+The screen exposes a readiness-gated **Trigger 3 Clicks** button and App Shortcut through the same coordinator as volume deltas; neither path bypasses the one-in-flight or lifecycle gates. The existing PWA retains tap fallback behavior with truthful three-click copy.
 
 ## Test Strategy
 
@@ -288,7 +288,7 @@ xcodebuildmcp simulator test \
 The simulator can prove compilation, deterministic behavior, UI state rendering, and protocol compatibility. It cannot prove hardware volume behavior. Completion therefore also requires a signed physical-iPhone acceptance run:
 
 1. Launch the app and wait for `Ready`.
-2. Press Volume Up once at a nonboundary volume and verify exactly one Mac terminal result, one haptic, and one Octo click.
+2. Press Volume Up once at a nonboundary volume and verify exactly one Mac terminal result, one haptic, Mac `mouseDown +3`/`mouseUp +3`, and three Octo clicks. The Mac counters are attempted `CGEvent.post` calls; because posting returns no success result, Octo is the authoritative physical observation.
 3. Wait for the result, press Volume Down once, and verify the same.
 4. Exercise rapid distinct presses, a held key, Control Center, wired/Bluetooth controls when available, and AirPods when available; record observed deltas and terminal action IDs without claiming physical source identity.
 5. Background the app and verify volume changes send nothing; reactivate and verify no send is possible until authentication, Mac state, and all five clock samples complete.

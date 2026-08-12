@@ -1,8 +1,8 @@
 import AppIntents
 
 struct TriggerClickIntent: AppIntent {
-    static var title: LocalizedStringResource = "Trigger Click"
-    static var description = IntentDescription("Open Click Bridge and send one click to the connected Mac.")
+    static var title: LocalizedStringResource = "Trigger 3 Clicks"
+    static var description = IntentDescription("Open Click Bridge and send three ordinary clicks to the connected Mac.")
     static var openAppWhenRun: Bool { true }
 
     @MainActor
@@ -17,10 +17,10 @@ struct ClickBridgeShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: TriggerClickIntent(),
             phrases: [
-                "Trigger a click with \(.applicationName)",
-                "Click using \(.applicationName)",
+                "Trigger three clicks with \(.applicationName)",
+                "Click three times using \(.applicationName)",
             ],
-            shortTitle: "Trigger Click",
+            shortTitle: "Trigger 3 Clicks",
             systemImageName: "cursorarrow.click"
         )
     }
