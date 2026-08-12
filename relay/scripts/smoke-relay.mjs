@@ -10,12 +10,24 @@
 
 import { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { PROTOCOL_VERSION, ACTION_LIFETIME_MS } from '../src/constants.js';
 
 const url = process.argv[2] ?? 'ws://127.0.0.1:8080/ws';
 const PHONE_TOKEN = process.env.PHONE_TOKEN ?? '';
 const MAC_TOKEN = process.env.MAC_TOKEN ?? '';
 
+function actionTrafficCount(inbox, actionId) {
+  return inbox.filter((message) => message.actionId === actionId
+    && (message.type === 'action.request' || message.type === 'action.result')).length;
+}
+
+export function noCompletedActionReplay(inbox, actionId) {
+  return actionTrafficCount(inbox, actionId) === 1
+    && inbox.some((message) => message.type === 'action.result' && message.actionId === actionId);
+}
+
+async function main() {
 if (!/^[0-9a-f]{64}$/.test(PHONE_TOKEN) || !/^[0-9a-f]{64}$/.test(MAC_TOKEN)) {
   console.error('PHONE_TOKEN and MAC_TOKEN must each be 64 lowercase hex characters');
   process.exit(2);
@@ -162,11 +174,8 @@ try {
 
   // Reconnect both roles after completion. A fresh role owner receives only
   // current state/hello traffic, never the completed request or result.
-  const before = phone.inbox.length;
   await new Promise((r) => setTimeout(r, 400));
-  check('no replay after completion',
-    phone.inbox.slice(before).every((m) =>
-      (m.type !== 'action.request' && m.type !== 'action.result') || m.actionId !== request.actionId));
+  check('no replay after completion', noCompletedActionReplay(phone.inbox, request.actionId));
 
   mac3 = connect('mac3');
   await mac3.open();
@@ -192,3 +201,6 @@ try {
 const failed = checks.filter((c) => !c.ok).length;
 console.log(`\n${checks.length - failed}/${checks.length} checks passed`);
 process.exit(failed === 0 ? 0 : 1);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
