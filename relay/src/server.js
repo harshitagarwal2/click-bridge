@@ -270,6 +270,8 @@ export function attachWebSocketServer({
   const upgrade = performWebSocketUpgrade
     ?? ((req, socket, head, done) => wss.handleUpgrade(req, socket, head, done));
   let nextConnectionId = 0;
+  let closing = false;
+  const pendingAttempts = new Set();
 
   const onUpgrade = (req, socket, head) => {
     let pathname;
@@ -288,34 +290,97 @@ export function attachWebSocketServer({
       rejectUpgradeForCapacity(socket);
       return;
     }
-    socket.once('close', () => admission.releaseAll());
-    socket.once('error', () => admission.releaseAll());
     socket.setNoDelay?.(true);
+    let phase = 'invoking';
     let acceptedWebSocket = null;
+    let candidateActive = false;
+    const removeRawGuards = () => {
+      socket.off('close', onRawTerminal);
+      socket.off('error', onRawTerminal);
+    };
+    const removeCandidateGuards = (ws = acceptedWebSocket) => {
+      if (typeof ws?.off !== 'function') return;
+      ws.off('close', onCandidateTerminal);
+      ws.off('error', onCandidateTerminal);
+    };
+    const destroyCandidate = (ws) => {
+      wss.clients.delete(ws);
+      destroyRejectedWebSocket(ws);
+    };
+    const failAttempt = (code = null) => {
+      if (phase === 'failed') return;
+      phase = 'failed';
+      pendingAttempts.delete(attempt);
+      removeRawGuards();
+      removeCandidateGuards();
+      candidateActive = false;
+      admission.releaseAll();
+      destroyCandidate(acceptedWebSocket);
+      if (!socket.destroyed) socket.destroy();
+      if (code) {
+        log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code }));
+      }
+    };
+    function onRawTerminal() {
+      if (phase !== 'committed') failAttempt();
+    }
+    function onCandidateTerminal() {
+      candidateActive = false;
+      if (phase !== 'committed') failAttempt();
+    }
+    const attempt = Object.freeze({ abort: failAttempt });
+    pendingAttempts.add(attempt);
+    socket.once('close', onRawTerminal);
+    socket.once('error', onRawTerminal);
+
+    const activateAcceptedWebSocket = () => {
+      const ws = acceptedWebSocket;
+      if (phase !== 'returned' || !ws) return;
+      if (closing || socket.destroyed || !candidateActive
+          || ws.__clickBridgeTerminal || ws.readyState !== ws.OPEN) {
+        failAttempt();
+        return;
+      }
+      phase = 'committing';
+      if (!admission.acceptCallback()) return failAttempt();
+      pendingAttempts.delete(attempt);
+      removeRawGuards();
+      removeCandidateGuards(ws);
+      candidateActive = false;
+      phase = 'committed';
+      try {
+        ws.__clickBridgeAdmission = admission;
+        wss.emit('connection', ws, req);
+      } catch {
+        failAttempt('connection_callback_failure');
+      }
+    };
     try {
       upgrade(req, socket, head, (ws) => {
-        if (!admission.acceptCallback()) {
-          destroyRejectedWebSocket(ws);
+        if (acceptedWebSocket) {
+          if (ws !== acceptedWebSocket) destroyCandidate(ws);
+          return;
+        }
+        if (phase === 'failed' || phase === 'committed') {
+          destroyCandidate(ws);
+          return;
+        }
+        if (typeof ws?.once !== 'function' || typeof ws?.off !== 'function') {
+          acceptedWebSocket = ws;
+          failAttempt('connection_callback_failure');
           return;
         }
         acceptedWebSocket = ws;
-        try {
-          ws.__clickBridgeAdmission = admission;
-          wss.emit('connection', ws, req);
-        } catch {
-          destroyRejectedWebSocket(ws);
-          admission.releaseAll();
-          socket.destroy();
-          log.info?.(JSON.stringify({
-            event: 'upgrade_internal_error', code: 'connection_callback_failure',
-          }));
-        }
+        candidateActive = ws.readyState === ws.OPEN && !ws.__clickBridgeTerminal;
+        ws.once('close', onCandidateTerminal);
+        ws.once('error', onCandidateTerminal);
+        activateAcceptedWebSocket();
       });
+      if (phase === 'failed') return;
+      phase = 'returned';
+      activateAcceptedWebSocket();
     } catch {
-      destroyRejectedWebSocket(acceptedWebSocket);
-      admission.releaseAll();
-      socket.destroy();
-      log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code: 'upgrade_throw' }));
+      failAttempt('upgrade_throw');
     }
   };
   httpServer.on('upgrade', onUpgrade);
@@ -453,8 +518,10 @@ export function attachWebSocketServer({
   return {
     wss,
     async close() {
+      closing = true;
       clearInterval(pingTimer);
       httpServer.off('upgrade', onUpgrade);
+      for (const attempt of [...pendingAttempts]) attempt.abort();
       for (const ws of wss.clients) {
         if (ws.__clickBridgePongTimer) clearTimeout(ws.__clickBridgePongTimer);
         terminateWebSocket(ws);
