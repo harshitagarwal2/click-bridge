@@ -5,6 +5,19 @@ the event commit (`github.sha`). The required `release_tag` must match the
 shared `MARKETING_VERSION` as `vX.Y` or `vX.Y.Z`, must already exist, and must
 resolve to that exact commit. Never enter a branch or arbitrary ref.
 
+## Distribution ownership
+
+Each product has one distribution surface. Do not duplicate Apple or web
+artifacts merely to populate GitHub's repository sidebar.
+
+| Product | Distribution surface | Published artifact |
+| --- | --- | --- |
+| macOS menu-bar receiver | GitHub Releases | Developer ID-signed, notarized, stapled, attested ZIP plus SHA-256 checksum and generated release notes |
+| Relay and bundled PWA | Private GitHub Container Registry package | Repository-linked `linux/amd64` and `linux/arm64` OCI image, version and commit tags, BuildKit provenance/SBOM, and GitHub provenance attestation |
+| Native iOS app | TestFlight and App Store Connect | Signed IPA uploaded by Fastlane; never a GitHub release asset |
+| Mac App Store build | TestFlight and App Store Connect | Sandboxed installer package uploaded by Fastlane; distinct from the unsandboxed notarized ZIP |
+| OCI production deployment | Protected `production` environment | Exact verified Git commit transferred to the VM and built locally; it does not pull the GHCR package |
+
 ## Version ownership
 
 `Config/Version.xcconfig` owns the default marketing version and build for both
@@ -34,25 +47,31 @@ fails locally. App Store submission takes the exact processed TestFlight build
 and submits both platform records. The notarized Mac workflow uses the shared
 baseline values and checks the built app's Info.plist before notarization.
 
-## Current external blocker
+## Current external gates
 
-Do **not** dispatch the release workflows yet. As verified on 2026-08-12, this
-repository is public and has a `production` environment, but none of the four
-release environments below exists. A missing environment can otherwise be
-created automatically without protection, so each workflow first runs a
-separate read-only job with no `environment:` declaration. That preflight uses
-the documented Get Environment API and fails closed unless the environment
-already has at least one required reviewer and prevents self-review. The
-mutating job depends on that preflight, declares the environment only
-afterward, and repeats the exact guard as its first step so a job-specific rerun
-cannot reuse stale approval configuration.
+As verified on 2026-08-12, `ghcr-private`, `macos-release`, `testflight`,
+`app-store`, and `production` exist. Each requires independent approval from
+`pulkitcs18`, prevents self-review, disables administrator bypass, and uses a
+custom deployment policy: release environments accept only `v*` tags and
+production accepts only `main`. Immutable Releases are enabled, and the active
+`Protect immutable release tags` ruleset rejects updates and deletions under
+`refs/tags/v*`.
 
-Create and protect all four release environments before enabling releases. The
-rendered REST reference does not currently list `can_admins_bypass`, but
-GitHub's live authenticated Get Environment response includes it. The preflight
-therefore requires an exact `false` and deliberately fails if the field is true,
-null, or absent; still verify the setting in GitHub's environment UI during
-setup. Until then, all four release workflows are intentionally non-runnable.
+The release workflows still perform their own preflight before entering an
+environment. A missing environment can otherwise be created automatically
+without protection, so the preflight uses the authenticated Get Environment API
+and fails closed unless the named environment has required reviewers, prevented
+self-review, and `can_admins_bypass == false`. The mutating job repeats the same
+guard as its first step so a job-specific rerun cannot reuse stale approval
+configuration. After checkout, every publication lane also fails closed unless
+the tag resolves to the dispatched SHA, that SHA is reachable from `origin/main`,
+and an exact-SHA `push` run of `CI` on `main` completed successfully.
+
+Do **not** dispatch the Apple workflows until their secrets, App Store Connect
+records, metadata, agreements, and physical acceptance evidence below are
+complete. `ghcr-private` needs no custom secret, but its multi-architecture
+workflow must first be merged and pass CI on the exact commit that will be
+tagged.
 
 Configure these GitHub environments with required reviewers, require prevention of self-review, disable administrator bypass, and restrict deployment tags to `v*`:
 
@@ -61,7 +80,7 @@ Configure these GitHub environments with required reviewers, require prevention 
 | `testflight` | Build and upload aligned iOS and macOS builds; no tester distribution | Secrets `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY_BASE64`, `IOS_DISTRIBUTION_CERTIFICATE_BASE64`, `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`, `MAC_DISTRIBUTION_CERTIFICATE_BASE64`, `MAC_DISTRIBUTION_CERTIFICATE_PASSWORD`, `MAC_INSTALLER_CERTIFICATE_BASE64`, `MAC_INSTALLER_CERTIFICATE_PASSWORD`, `MAC_PROVISIONING_PROFILE_BASE64`; variable `APPLE_TEAM_ID` |
 | `app-store` | Select processed iOS and macOS builds and submit both for review, with automatic release off | App Store Connect API-key secrets above |
 | `macos-release` | Developer ID sign, notarize, staple, verify, and create a draft GitHub release | App Store Connect API-key secrets above; secrets `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`, `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`; variable `APPLE_TEAM_ID` |
-| `ghcr-private` | Build and push version plus SHA tags to GHCR | No custom secret; the job-scoped `GITHUB_TOKEN` receives `actions: read`, `contents: read`, and `packages: write`. Before first approval, create or inspect `click-bridge-relay` and verify its visibility is **Private**. |
+| `ghcr-private` | Build and push version plus SHA tags to GHCR | No custom secret; the job-scoped `GITHUB_TOKEN` receives narrowly scoped package and attestation permissions. Before first approval, create or inspect `click-bridge-relay` and verify its visibility is **Private**. |
 
 After the protected environments are created and configured, set the
 `APPLE_TEAM_ID` environment variable for `testflight` and `macos-release` to
@@ -92,8 +111,29 @@ The iOS and macOS workflows install XcodeGen 2.46.0 directly from the official `
 2. Update `Config/Version.xcconfig`, merge and verify CI, create the matching protected `vX.Y` or `vX.Y.Z` tag on the exact release commit, then dispatch from that tag.
 3. Run TestFlight first. Enter one new build string for both records. It uploads the iOS IPA and then the macOS installer package with the same version/build, creates no GitHub app artifact, and distributes to no testers. The uploads are sequential, not transactional: if one succeeds and the other fails, fix the failure and dispatch a new higher build number instead of reusing the partially uploaded value.
 4. After both App Store Connect records report that exact version/build as processed, dispatch App Store submission with the same values. Fastlane skips binary upload, submits both apps for review, and sets `automatic_release: false`.
-5. The macOS workflow creates only a draft GitHub release and retains the notarized ZIP/checksum plus the notary submission result and JSON log for seven days. The notary audit artifact runs even after failure when either audit file exists. Publishing the draft is a separate human decision.
-6. The GHCR workflow never emits `latest` and never modifies package visibility. Confirm the protected-environment warning before approval. Before building, it queries GHCR and fails closed unless both the version tag and commit-SHA tag are absent; immediately after pushing, it verifies that both names resolve to the action's digest. Treat the pushed artifact digest from the job summary as the canonical deployment identity: GHCR tags are mutable registry pointers, and these checks cannot prevent a different authorized writer from changing them later.
+5. Run and record the applicable physical matrix before publishing a user-facing release. Automated CI, Simulator, unsigned device builds, TestFlight processing, and notarization do not replace the real iPhone, Accessibility, haptic, headset, and Octo observations in `physical-smoke-test.md`.
+6. The GHCR workflow never emits `latest` and never modifies package visibility. It installs a digest-pinned Arm64 QEMU emulator, publishes exactly `linux/amd64` and `linux/arm64`, and adds source/title/description metadata to both platform manifests and the image index so GitHub links the package to this repository. Before building, it queries GHCR and fails closed unless both the version tag and commit-SHA tag are absent. After pushing, it creates a GitHub provenance attestation for the exact image digest and verifies both tag names resolve to that digest.
+7. The macOS workflow creates only a draft GitHub release. It attests the final notarized ZIP, uploads the ZIP/checksum, prepends the notarization notice to generated release notes, and retains the notary result/log and verified assets for seven days. Review the draft, checksum, generated notes, attestation, and physical evidence before the separate publish decision. Immutability begins only when the draft is published.
+
+Treat the pushed GHCR digest from the job summary as the canonical package
+identity: tags are registry pointers even though this workflow refuses to
+overwrite them. A failure after the image push is not safely rerunnable under
+the same version because the tags now exist; diagnose it and release a new
+version instead of deleting or overwriting evidence. The current OCI production
+workflow deliberately remains source-transfer plus local build, so GHCR
+publication does not by itself prove or change the live VM.
+
+Verify the published provenance with the digest recorded by the workflow:
+
+```bash
+printf '%s' "$CR_PAT" | docker login ghcr.io -u harshitagarwal2 --password-stdin
+gh attestation verify \
+  "oci://ghcr.io/harshitagarwal2/click-bridge-relay@sha256:ACTUAL_DIGEST" \
+  --repo harshitagarwal2/click-bridge
+```
+
+`CR_PAT` must be a classic personal access token with `read:packages`; do not
+store it in the repository or paste it into shell history.
 
 The relay Dockerfile and deployment verifier containers pin the official `node:24-alpine` multi-platform OCI index at `sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43`. The OCI Compose stack likewise pins `caddy:2-alpine` at `sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648`. Update each readable tag and digest together in a reviewed change; never float deployment images inside an immutable release commit.
 
