@@ -2,26 +2,19 @@ import Foundation
 
 enum Constants {
     static let protocolVersion = 1
-    static let maxMessageBytes = 4096
-    static let actionLifetimeMs: Double = 2000
-    static let clockSkewTolerance: TimeInterval = 1.0
+    static let maxMessageBytes = 4_096
+    static let actionLifetimeMs: Double = 2_000
+    static let clockSkewTolerance: TimeInterval = 1
     static let heartbeatInterval: TimeInterval = 20
     static let heartbeatTimeout: TimeInterval = 10
     static let macReconnectCap: TimeInterval = 5
     static let completedActionTTL: TimeInterval = 300
-    static let completedActionCap = 4096
-    static let clickGapMs: Int = 0
-    static let directListenerPort: UInt16 = 8787
+    static let completedActionCap = 4_096
+    static let clickGapMs = 0
 }
 
-enum PermissionState: String, Codable, Sendable {
-    case ready, required, unknown
-}
-
-enum ResultStatus: String, Codable, Sendable {
-    case posted, rejected
-}
-
+enum PermissionState: String, Codable, Sendable { case ready, required, unknown }
+enum ResultStatus: String, Codable, Sendable { case posted, rejected }
 enum ResultReason: String, Codable, Sendable {
     case ok
     case permissionRequired = "permission_required"
@@ -32,177 +25,105 @@ enum ResultReason: String, Codable, Sendable {
     case eventCreationFailed = "event_creation_failed"
     case invalidRequest = "invalid_request"
 }
+enum RelayAckStatus: String, Codable, Sendable { case forwarded, macOffline = "mac_offline", rejected }
+enum RelayAckReason: String, Codable, Sendable { case ok, macOffline = "mac_offline", expired, invalidRequest = "invalid_request" }
+enum WireRole: String, Sendable { case phone, mac }
 
-enum RelayAckStatus: String, Codable, Sendable {
-    case forwarded
-    case macOffline = "mac_offline"
-    case rejected
+struct Hello: Codable, Equatable, Sendable { var type = "hello"; var v = 1; var role: String; var token: String }
+struct HelloOK: Codable, Equatable, Sendable { var type = "hello.ok"; var v = 1; var role: String }
+struct HeartbeatRequest: Codable, Equatable, Sendable { var type = "heartbeat.request"; var v = 1; var sequence: Int }
+struct HeartbeatAck: Codable, Equatable, Sendable { var type = "heartbeat.ack"; var v = 1; var sequence: Int }
+struct TimeSyncRequest: Codable, Equatable, Sendable { var type = "time.sync.request"; var v = 1; var syncId: String; var phoneSendUnixMs: Double }
+struct TimeSyncResponse: Codable, Equatable, Sendable {
+    var type = "time.sync.response"; var v = 1; var syncId: String; var phoneSendUnixMs: Double
+    var macReceiveUnixMs: Double; var macSendUnixMs: Double
 }
-
-// MARK: - Payloads
-
-struct Hello: Codable, Equatable, Sendable {
-    var type = "hello"
-    var v = Constants.protocolVersion
-    var role: String
-    var token: String
+struct DiagnosticsRequest: Codable, Equatable, Sendable { var type = "diagnostics.request"; var v = 1; var requestId: String }
+struct DiagnosticsCounters: Codable, Equatable, Sendable {
+    var type = "diagnostics.counters"; var v = 1; var requestId: String
+    var mouseDownPostCount: Int; var mouseUpPostCount: Int
 }
-
-struct HelloOK: Codable, Equatable, Sendable {
-    var type = "hello.ok"
-    var v = Constants.protocolVersion
-    var role: String
-}
-
-struct HeartbeatRequest: Codable, Equatable, Sendable {
-    var type = "heartbeat.request"
-    var v = Constants.protocolVersion
-    var sequence: Int
-}
-
-struct HeartbeatAck: Codable, Equatable, Sendable {
-    var type = "heartbeat.ack"
-    var v = Constants.protocolVersion
-    var sequence: Int
-}
-
-struct MacState: Codable, Equatable, Sendable {
-    var type = "mac.state"
-    var v = Constants.protocolVersion
-    var remoteEnabled: Bool
-    var permission: PermissionState
-}
-
+struct MacState: Codable, Equatable, Sendable { var type = "mac.state"; var v = 1; var remoteEnabled: Bool; var permission: PermissionState }
 struct PhoneState: Codable, Equatable, Sendable {
-    var type = "state"
-    var v = Constants.protocolVersion
-    var macOnline: Bool
-    var remoteEnabled: Bool
-    var permission: PermissionState
+    var type = "state"; var v = 1; var macOnline: Bool; var remoteEnabled: Bool; var permission: PermissionState
 }
-
 struct ActionRequest: Codable, Equatable, Sendable {
-    var type = "action.request"
-    var v = Constants.protocolVersion
-    var actionId: String
-    var action: String
-    var issuedAtUnixMs: Double
-    var expiresAtUnixMs: Double
-
-    /// Deterministic and EXCLUDES actionId: two requests sharing an ID but
-    /// differing here are an id_conflict, not a duplicate.
-    var fingerprint: String {
-        "\(action)|\(issuedAtUnixMs)|\(expiresAtUnixMs)"
-    }
+    var type = "action.request"; var v = 1; var actionId: String; var action: String
+    var issuedAtUnixMs: Double; var expiresAtUnixMs: Double
+    var fingerprint: String { "\(action)|\(issuedAtUnixMs)|\(expiresAtUnixMs)" }
 }
-
 struct RelayAck: Codable, Equatable, Sendable {
-    var type = "relay.ack"
-    var v = Constants.protocolVersion
-    var actionId: String
-    var status: RelayAckStatus
-    var relayProcessingUs: Double
+    var type = "relay.ack"; var v = 1; var actionId: String; var status: RelayAckStatus
+    var reason: RelayAckReason; var relayProcessingUs: Double
 }
-
 struct ActionResult: Codable, Equatable, Sendable {
-    var type = "action.result"
-    var v = Constants.protocolVersion
-    var actionId: String
-    var status: ResultStatus
-    var reason: ResultReason
-    var acceptedVia: ActionIngress
-    var macProcessingUs: Double
+    var type = "action.result"; var v = 1; var actionId: String; var status: ResultStatus
+    var reason: ResultReason; var acceptedVia: ActionIngress; var macProcessingUs: Double
     var mouseDownPostedUnixMs: Double?
 }
 
-struct TimeSyncRequest: Codable, Equatable, Sendable {
-    var type = "time.sync.request"
-    var v = Constants.protocolVersion
-    var syncId: String
-    var phoneSendUnixMs: Double
-}
+enum WireMessage: Equatable, Codable, Sendable {
+    case hello(Hello), helloOK(HelloOK)
+    case heartbeatRequest(HeartbeatRequest), heartbeatAck(HeartbeatAck)
+    case timeSyncRequest(TimeSyncRequest), timeSyncResponse(TimeSyncResponse)
+    case diagnosticsRequest(DiagnosticsRequest), diagnosticsCounters(DiagnosticsCounters)
+    case macState(MacState), state(PhoneState), actionRequest(ActionRequest)
+    case relayAck(RelayAck), actionResult(ActionResult)
 
-struct TimeSyncResponse: Codable, Equatable, Sendable {
-    var type = "time.sync.response"
-    var v = Constants.protocolVersion
-    var syncId: String
-    var phoneSendUnixMs: Double
-    var macReceiveUnixMs: Double
-    var macSendUnixMs: Double
-}
+    private enum CodingKeys: String, CodingKey { case type }
+    private struct Kind: Decodable { let type: String }
 
-// MARK: - Envelope
+    init(from decoder: Decoder) throws {
+        let kind = try Kind(from: decoder).type
+        switch kind {
+        case "hello": self = .hello(try Hello(from: decoder))
+        case "hello.ok": self = .helloOK(try HelloOK(from: decoder))
+        case "heartbeat.request": self = .heartbeatRequest(try HeartbeatRequest(from: decoder))
+        case "heartbeat.ack": self = .heartbeatAck(try HeartbeatAck(from: decoder))
+        case "time.sync.request": self = .timeSyncRequest(try TimeSyncRequest(from: decoder))
+        case "time.sync.response": self = .timeSyncResponse(try TimeSyncResponse(from: decoder))
+        case "diagnostics.request": self = .diagnosticsRequest(try DiagnosticsRequest(from: decoder))
+        case "diagnostics.counters": self = .diagnosticsCounters(try DiagnosticsCounters(from: decoder))
+        case "mac.state": self = .macState(try MacState(from: decoder))
+        case "state": self = .state(try PhoneState(from: decoder))
+        case "action.request": self = .actionRequest(try ActionRequest(from: decoder))
+        case "relay.ack": self = .relayAck(try RelayAck(from: decoder))
+        case "action.result": self = .actionResult(try ActionResult(from: decoder))
+        default: throw WireError.unknownType(kind)
+        }
+    }
 
-enum WireMessage: Equatable, Sendable {
-    case hello(Hello)
-    case helloOK(HelloOK)
-    case heartbeatRequest(HeartbeatRequest)
-    case heartbeatAck(HeartbeatAck)
-    case macState(MacState)
-    case state(PhoneState)
-    case actionRequest(ActionRequest)
-    case relayAck(RelayAck)
-    case actionResult(ActionResult)
-    case timeSyncRequest(TimeSyncRequest)
-    case timeSyncResponse(TimeSyncResponse)
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .hello(let value): try value.encode(to: encoder)
+        case .helloOK(let value): try value.encode(to: encoder)
+        case .heartbeatRequest(let value): try value.encode(to: encoder)
+        case .heartbeatAck(let value): try value.encode(to: encoder)
+        case .timeSyncRequest(let value): try value.encode(to: encoder)
+        case .timeSyncResponse(let value): try value.encode(to: encoder)
+        case .diagnosticsRequest(let value): try value.encode(to: encoder)
+        case .diagnosticsCounters(let value): try value.encode(to: encoder)
+        case .macState(let value): try value.encode(to: encoder)
+        case .state(let value): try value.encode(to: encoder)
+        case .actionRequest(let value): try value.encode(to: encoder)
+        case .relayAck(let value): try value.encode(to: encoder)
+        case .actionResult(let value): try value.encode(to: encoder)
+        }
+    }
 }
 
 enum WireError: Error, Equatable {
-    case tooLarge
-    case notJSON
-    case missingType
-    case unknownType(String)
-    case unsupportedVersion
+    case tooLarge, binaryFrame, notJSONObject, missingType, unsupportedVersion
+    case unknownType(String), unknownKeys([String]), invalidRole(String), messageNotAllowed, invalidValue
     case decodeFailed(String)
 }
 
 enum Wire {
-    static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.outputFormatting = [.withoutEscapingSlashes]
-        return e
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]; return encoder
     }()
 
-    static let decoder = JSONDecoder()
-
-    private struct Envelope: Decodable {
-        let type: String
-        let v: Int
-    }
-
-    static func decode(_ text: String) throws -> WireMessage {
-        guard text.utf8.count <= Constants.maxMessageBytes else { throw WireError.tooLarge }
-        guard let data = text.data(using: .utf8) else { throw WireError.notJSON }
-
-        let envelope: Envelope
-        do {
-            envelope = try decoder.decode(Envelope.self, from: data)
-        } catch {
-            throw WireError.missingType
-        }
-        guard envelope.v == Constants.protocolVersion else { throw WireError.unsupportedVersion }
-
-        func make<T: Decodable>(_ t: T.Type, _ wrap: (T) -> WireMessage) throws -> WireMessage {
-            do { return wrap(try decoder.decode(T.self, from: data)) }
-            catch { throw WireError.decodeFailed(envelope.type) }
-        }
-
-        switch envelope.type {
-        case "hello":               return try make(Hello.self, WireMessage.hello)
-        case "hello.ok":            return try make(HelloOK.self, WireMessage.helloOK)
-        case "heartbeat.request":   return try make(HeartbeatRequest.self, WireMessage.heartbeatRequest)
-        case "heartbeat.ack":       return try make(HeartbeatAck.self, WireMessage.heartbeatAck)
-        case "mac.state":           return try make(MacState.self, WireMessage.macState)
-        case "state":               return try make(PhoneState.self, WireMessage.state)
-        case "action.request":      return try make(ActionRequest.self, WireMessage.actionRequest)
-        case "relay.ack":           return try make(RelayAck.self, WireMessage.relayAck)
-        case "action.result":       return try make(ActionResult.self, WireMessage.actionResult)
-        case "time.sync.request":   return try make(TimeSyncRequest.self, WireMessage.timeSyncRequest)
-        case "time.sync.response":  return try make(TimeSyncResponse.self, WireMessage.timeSyncResponse)
-        default:                    throw WireError.unknownType(envelope.type)
-        }
-    }
-
+    static func decode(_ text: String) throws -> WireMessage { try StrictWireDecoder().decodeText(text) }
     static func encode<T: Encodable>(_ value: T) throws -> String {
         let data = try encoder.encode(value)
         guard data.count <= Constants.maxMessageBytes else { throw WireError.tooLarge }

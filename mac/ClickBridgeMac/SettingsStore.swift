@@ -1,98 +1,58 @@
 import Foundation
-import Security
 
-/// Relay URL and the remote toggle live in UserDefaults; the token lives in
-/// the Keychain and is never echoed back to the UI.
-final class SettingsStore: ObservableObject, @unchecked Sendable {
-
-    private enum Key {
-        static let relayURL = "relayURL"
-        static let remoteEnabled = "remoteEnabled"
-    }
-
-    private let defaults: UserDefaults
-    private let keychain: KeychainStore
-
-    @Published var relayURLString: String {
-        didSet { defaults.set(relayURLString, forKey: Key.relayURL) }
-    }
-
-    /// Defaults to OFF on first launch, then preserves the user's choice.
-    @Published var remoteEnabled: Bool {
-        didSet { defaults.set(remoteEnabled, forKey: Key.remoteEnabled) }
-    }
-
-    init(defaults: UserDefaults = .standard, keychain: KeychainStore = KeychainStore()) {
-        self.defaults = defaults
-        self.keychain = keychain
-        self.relayURLString = defaults.string(forKey: Key.relayURL) ?? ""
-        // Only absence means "first launch" — a stored false must survive.
-        self.remoteEnabled = defaults.object(forKey: Key.remoteEnabled) as? Bool ?? false
-    }
-
-    var relayURL: URL? {
-        guard !relayURLString.isEmpty else { return nil }
-        return URL(string: relayURLString)
-    }
-
-    var hasToken: Bool { (macToken?.isEmpty == false) }
-
-    var macToken: String? {
-        get { keychain.read(account: "macToken") }
-        set {
-            if let newValue, !newValue.isEmpty { keychain.write(newValue, account: "macToken") }
-            else { keychain.delete(account: "macToken") }
-        }
-    }
-
-    /// Milestone 2 only. Never enters the relay environment.
-    var directToken: String? {
-        get { keychain.read(account: "directToken") }
-        set {
-            if let newValue, !newValue.isEmpty { keychain.write(newValue, account: "directToken") }
-            else { keychain.delete(account: "directToken") }
-        }
-    }
+protocol SecretStoring: Sendable {
+    func read(account: String) throws -> String?
+    func write(_ value: String, account: String) throws
+    func delete(account: String) throws
 }
 
-struct KeychainStore: Sendable {
-    var service = "com.clickbridge.mac"
+@MainActor
+final class SettingsStore: ObservableObject {
+    static let relayURLKey = "relayURL"
+    static let remoteEnabledKey = "remoteEnabled"
+    private static let macTokenAccount = "macToken"
 
-    private func query(_ account: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
+    private let defaults: UserDefaults
+    private let secrets: any SecretStoring
+
+    @Published var relayURLString: String {
+        didSet { defaults.set(relayURLString, forKey: Self.relayURLKey) }
+    }
+    @Published var remoteEnabled: Bool {
+        didSet { defaults.set(remoteEnabled, forKey: Self.remoteEnabledKey) }
+    }
+    @Published private(set) var hasToken: Bool
+    @Published private(set) var storageError: String?
+
+    init(defaults: UserDefaults = .standard, secrets: any SecretStoring = KeychainStore()) throws {
+        self.defaults = defaults
+        self.secrets = secrets
+        relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
+        remoteEnabled = defaults.object(forKey: Self.remoteEnabledKey) as? Bool ?? false
+        do { hasToken = try secrets.read(account: Self.macTokenAccount)?.isEmpty == false }
+        catch { throw error }
     }
 
-    func read(account: String) -> String? {
-        var q = query(account)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+    func macToken() throws -> String? {
+        do { return try secrets.read(account: Self.macTokenAccount) }
+        catch { storageError = "Could not read MAC_TOKEN: \(error.localizedDescription)"; throw error }
     }
 
-    func write(_ value: String, account: String) {
-        let data = Data(value.utf8)
-        let q = query(account)
-        let attrs: [String: Any] = [kSecValueData as String: data]
-
-        if SecItemCopyMatching(q as CFDictionary, nil) == errSecSuccess {
-            SecItemUpdate(q as CFDictionary, attrs as CFDictionary)
-        } else {
-            var insert = q
-            insert[kSecValueData as String] = data
-            insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            SecItemAdd(insert as CFDictionary, nil)
+    func saveMacToken(_ value: String) throws {
+        do {
+            try secrets.write(value, account: Self.macTokenAccount)
+            hasToken = true; storageError = nil
+        } catch {
+            storageError = "Could not save MAC_TOKEN: \(error.localizedDescription)"; throw error
         }
     }
 
-    func delete(account: String) {
-        SecItemDelete(query(account) as CFDictionary)
+    func clearMacToken() throws {
+        do {
+            try secrets.delete(account: Self.macTokenAccount)
+            hasToken = false; storageError = nil
+        } catch {
+            storageError = "Could not clear MAC_TOKEN: \(error.localizedDescription)"; throw error
+        }
     }
 }

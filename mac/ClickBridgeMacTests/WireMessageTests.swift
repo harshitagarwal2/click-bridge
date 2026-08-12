@@ -1,98 +1,101 @@
 import XCTest
 @testable import ClickBridgeMac
 
-/// Decodes every canonical fixture from contracts/fixtures so Swift and Node
-/// are provably reading the same contract.
 final class WireMessageTests: XCTestCase {
-
-    private func fixture(_ name: String) throws -> String {
-        // Fixtures are copied into the test bundle as resources.
-        guard let url = Bundle(for: Self.self)
-            .url(forResource: name, withExtension: "json") else {
-            throw XCTSkip("fixture \(name).json missing from the test bundle")
-        }
-        return try String(contentsOf: url, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    private func fixtureURLs() throws -> [URL] {
+        let bundle = Bundle(for: Self.self)
+        return (bundle.urls(forResourcesWithExtension: "json", subdirectory: nil) ?? [])
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    func testDecodesEveryFixture() throws {
-        let names = [
-            "hello.phone", "hello.mac", "hello.ok",
-            "heartbeat.request", "heartbeat.ack",
-            "mac.state", "state",
-            "action.request", "relay.ack",
-            "action.result.posted", "action.result.rejected",
-            "time.sync.request", "time.sync.response",
-        ]
-        for name in names {
-            let raw = try fixture(name)
-            XCTAssertNoThrow(try Wire.decode(raw), "failed to decode \(name)")
-        }
+    private func isInvalidFixture(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return name.hasPrefix("invalid-") || name == "malformed.json" || name == "oversized.json"
+            || name == "unknown-field.json" || name == "wrong-role.json" || name == "wrong-version.json"
+            || name == "binary-descriptor.json"
     }
 
-    func testActionRequestRoundTrips() throws {
-        let raw = try fixture("action.request")
-        guard case .actionRequest(let request) = try Wire.decode(raw) else {
-            return XCTFail("wrong case")
-        }
-        XCTAssertEqual(request.action, "click")
-        XCTAssertEqual(request.expiresAtUnixMs - request.issuedAtUnixMs,
-                       Constants.actionLifetimeMs)
-
-        let encoded = try Wire.encode(request)
-        guard case .actionRequest(let again) = try Wire.decode(encoded) else {
-            return XCTFail("wrong case")
-        }
-        XCTAssertEqual(request, again)
-    }
-
-    func testPostedAndRejectedResults() throws {
-        guard case .actionResult(let posted) = try Wire.decode(fixture("action.result.posted")) else {
-            return XCTFail("wrong case")
-        }
-        XCTAssertEqual(posted.status, .posted)
-        XCTAssertEqual(posted.reason, .ok)
-        XCTAssertNotNil(posted.mouseDownPostedUnixMs)
-
-        guard case .actionResult(let rejected) = try Wire.decode(fixture("action.result.rejected")) else {
-            return XCTFail("wrong case")
-        }
-        XCTAssertEqual(rejected.status, .rejected)
-        XCTAssertNil(rejected.mouseDownPostedUnixMs)
-    }
-
-    func testUnknownTypeIsRejected() {
-        XCTAssertThrowsError(try Wire.decode(#"{"type":"nope","v":1}"#)) { error in
-            XCTAssertEqual(error as? WireError, .unknownType("nope"))
+    func testEveryCanonicalFixtureStrictlyDecodesAndSemanticallyRoundTrips() throws {
+        let urls = try fixtureURLs()
+        XCTAssertFalse(urls.isEmpty)
+        for url in urls where !isInvalidFixture(url) {
+            let data = try Data(contentsOf: url)
+            let decoded = try StrictWireDecoder().decodeText(String(decoding: data, as: UTF8.self))
+            let encoded = try Wire.encode(decoded)
+            XCTAssertEqual(try StrictWireDecoder().decodeText(encoded), decoded, url.lastPathComponent)
         }
     }
 
-    func testWrongVersionIsRejected() {
-        XCTAssertThrowsError(try Wire.decode(#"{"type":"state","v":2}"#)) { error in
-            XCTAssertEqual(error as? WireError, .unsupportedVersion)
+    func testEveryCanonicalInvalidFixtureIsRejectedWhenPresent() throws {
+        let invalid = try fixtureURLs().filter(isInvalidFixture)
+        XCTAssertFalse(invalid.isEmpty)
+        for url in invalid {
+            let descriptorData = try Data(contentsOf: url)
+            let descriptor = try XCTUnwrap(JSONSerialization.jsonObject(with: descriptorData) as? [String: Any])
+            let kind = try XCTUnwrap(descriptor["kind"] as? String)
+            let role = (descriptor["role"] as? String).flatMap(WireRole.init(rawValue:))
+
+            if kind == "binary" {
+                let bytes = try XCTUnwrap(descriptor["bytes"] as? [UInt8])
+                XCTAssertThrowsError(try StrictWireDecoder().rejectBinary(Data(bytes)), url.lastPathComponent)
+                continue
+            }
+
+            let text: String
+            switch kind {
+            case "raw":
+                text = try XCTUnwrap(descriptor["raw"] as? String)
+            case "fixture":
+                let fixture = try XCTUnwrap(descriptor["fixture"] as? String)
+                let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: fixture, withExtension: nil))
+                text = String(decoding: try Data(contentsOf: fixtureURL), as: UTF8.self)
+            case "oversized":
+                let fixture = try XCTUnwrap(descriptor["baseFixture"] as? String)
+                let fixtureURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: fixture, withExtension: nil))
+                var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+                object[try XCTUnwrap(descriptor["field"] as? String)] = String(
+                    repeating: try XCTUnwrap(descriptor["repeat"] as? String),
+                    count: try XCTUnwrap(descriptor["count"] as? Int)
+                )
+                text = String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
+            default:
+                let message = try XCTUnwrap(descriptor["message"] as? [String: Any])
+                text = String(decoding: try JSONSerialization.data(withJSONObject: message), as: UTF8.self)
+            }
+            XCTAssertThrowsError(try StrictWireDecoder().decodeText(text, for: role), url.lastPathComponent)
         }
     }
 
-    func testOversizedFrameIsRejected() {
-        let big = #"{"type":"state","v":1,"pad":""# + String(repeating: "x", count: 5000) + #""}"#
-        XCTAssertThrowsError(try Wire.decode(big)) { error in
+    func testUnknownKeyIsRejectedBeforeCodableDecoding() {
+        let text = #"{"type":"heartbeat.ack","v":1,"sequence":7,"extra":true}"#
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(text)) { error in
+            XCTAssertEqual(error as? WireError, .unknownKeys(["extra"]))
+        }
+    }
+
+    func testHelloRoleSpecificValidationRejectsUnknownRole() {
+        let text = #"{"type":"hello","v":1,"role":"server","token":"abc"}"#
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(text))
+    }
+
+    func testOversizedTextIsRejectedByUTF8ByteCount() {
+        let text = String(repeating: "é", count: 2_049)
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(text)) { error in
             XCTAssertEqual(error as? WireError, .tooLarge)
         }
     }
 
-    func testMalformedJSONIsRejected() {
-        XCTAssertThrowsError(try Wire.decode("{nope"))
+    func testBinaryFrameIsRejected() {
+        XCTAssertThrowsError(try StrictWireDecoder().rejectBinary(Data([1, 2, 3]))) { error in
+            XCTAssertEqual(error as? WireError, .binaryFrame)
+        }
     }
 
-    func testFingerprintExcludesActionId() {
-        let a = ActionRequest(actionId: "a", action: "click",
-                              issuedAtUnixMs: 1000, expiresAtUnixMs: 3000)
-        let b = ActionRequest(actionId: "b", action: "click",
-                              issuedAtUnixMs: 1000, expiresAtUnixMs: 3000)
-        XCTAssertEqual(a.fingerprint, b.fingerprint)
-
-        let c = ActionRequest(actionId: "a", action: "click",
-                              issuedAtUnixMs: 1001, expiresAtUnixMs: 3001)
-        XCTAssertNotEqual(a.fingerprint, c.fingerprint)
+    func testActionFingerprintExcludesOnlyActionID() {
+        let first = ActionRequest(actionId: "a", action: "click", issuedAtUnixMs: 10, expiresAtUnixMs: 2_010)
+        let duplicate = ActionRequest(actionId: "b", action: "click", issuedAtUnixMs: 10, expiresAtUnixMs: 2_010)
+        let conflict = ActionRequest(actionId: "a", action: "click", issuedAtUnixMs: 11, expiresAtUnixMs: 2_011)
+        XCTAssertEqual(first.fingerprint, duplicate.fingerprint)
+        XCTAssertNotEqual(first.fingerprint, conflict.fingerprint)
     }
 }

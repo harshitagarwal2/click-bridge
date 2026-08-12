@@ -1,0 +1,659 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0169646DC1FB647EC589E43E /* hello.ok.json in Resources */ = {isa = PBXBuildFile; fileRef = 7CD07FADD6950866CCC8FA79 /* hello.ok.json */; };
+		061E9132F6535B940086214E /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540A03DF89931A32C0E0A284 /* SettingsStore.swift */; };
+		0996F3CF4CF2FA6796E0989F /* heartbeat.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = C098666411FFC9D056927E6B /* heartbeat.ack.json */; };
+		14076C680E5DBA725DD1DD7C /* ActionProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F56CF837ED2862327D252E /* ActionProcessorTests.swift */; };
+		152F87276EBAE3EAA03978A0 /* WireMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF6446CBBC7E496806FB0B1 /* WireMessageTests.swift */; };
+		1E34F9EDC6DB4672BC2F4DF1 /* RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A644B7BE8E608CF842214238 /* RelayClient.swift */; };
+		1EEDD3CA454F2A409E2BBB61 /* hello.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = 017533A28A12CDE53BBA23B5 /* hello.mac.json */; };
+		22545148581771EB07672148 /* relay.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = 66F55DAA64B97B3AA76D70DC /* relay.ack.json */; };
+		2C3D996E6C15DDE71BDCDBC8 /* PostEventPermissionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956AA383AD3BBC428F257E40 /* PostEventPermissionService.swift */; };
+		2DCE3BF2B14C7CF2E18A51B5 /* ActionIngress.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5719ADDCD7E81E48C8D19F /* ActionIngress.swift */; };
+		336035425C1DC3657A223845 /* action.result.rejected.capacity-exceeded.json in Resources */ = {isa = PBXBuildFile; fileRef = 9399BB6A4E99CA48B3A7620F /* action.result.rejected.capacity-exceeded.json */; };
+		3AE66A38830D2748B8649B34 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D37C3338DFA31BE1969FC671 /* AppState.swift */; };
+		3E7F8A061BF8EBDD422A054A /* invalid-result-status.json in Resources */ = {isa = PBXBuildFile; fileRef = AE924754B8AF076ED4CED4C7 /* invalid-result-status.json */; };
+		41FFD1C3772E69872A80A968 /* PermissionServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */; };
+		429183CC7777F20F7DCDFBAB /* relay.ack.rejected-expired.json in Resources */ = {isa = PBXBuildFile; fileRef = B7DB91B51EA0D7FCE5FFE592 /* relay.ack.rejected-expired.json */; };
+		43195C7FA653A9FE2466D1FD /* relay.ack.mac-offline.json in Resources */ = {isa = PBXBuildFile; fileRef = DC40E437EAFDEC77A42CFC80 /* relay.ack.mac-offline.json */; };
+		47783A5981AF1B30935296E1 /* diagnostics.request.json in Resources */ = {isa = PBXBuildFile; fileRef = E0681E2A95D6ED81C661E41E /* diagnostics.request.json */; };
+		4C9339C67D82AB5B662F7B50 /* MacInputExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */; };
+		55B68500AE170134E77A6179 /* wrong-version.json in Resources */ = {isa = PBXBuildFile; fileRef = 58E4D64A981A0719451B998A /* wrong-version.json */; };
+		5686B03C994AAA34C52FCC9D /* action.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 127059B4336627E5525CBD12 /* action.request.json */; };
+		5961B9F041F5DAE924F9C652 /* hello.phone.json in Resources */ = {isa = PBXBuildFile; fileRef = C7F825B1F263B435D59E832F /* hello.phone.json */; };
+		6279506B599734959BD49198 /* MacInputExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */; };
+		6B79CF040D9683F03D9DED8D /* StrictWireDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D94255A6213060DA1155CAA /* StrictWireDecoder.swift */; };
+		6BF4B1FD1388B226AFCD972E /* wrong-role.json in Resources */ = {isa = PBXBuildFile; fileRef = 861F3720ED5894D9C6086048 /* wrong-role.json */; };
+		6ED89F23E357078177A85A43 /* time.sync.response.json in Resources */ = {isa = PBXBuildFile; fileRef = 94D1F3BFE2816519FB81271E /* time.sync.response.json */; };
+		6F01A7AEADA3895ACDF04888 /* diagnostics.counters.json in Resources */ = {isa = PBXBuildFile; fileRef = B0F80AADAB59457A6928BA0C /* diagnostics.counters.json */; };
+		70A6B6517EABB64ACCC8F29E /* state.json in Resources */ = {isa = PBXBuildFile; fileRef = B7060BA2E6BCD65911E3C8D7 /* state.json */; };
+		7256B7C93559775B2B700F5C /* action.result.rejected.json in Resources */ = {isa = PBXBuildFile; fileRef = D0404E5836A042F8D1D10C07 /* action.result.rejected.json */; };
+		7BFF446C603287AD4D5653D4 /* time.sync.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 8AE65932FEF3C95E4C2E0B66 /* time.sync.request.json */; };
+		85A3E2F054F56F593EFA22D6 /* relay.ack.rejected-invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = C29AC62DCB23E4DF86884E96 /* relay.ack.rejected-invalid-request.json */; };
+		85B142B99D36160D7070F25C /* invalid-relay-ack-pairing.json in Resources */ = {isa = PBXBuildFile; fileRef = F3633E0E907928529DBC627A /* invalid-relay-ack-pairing.json */; };
+		8AA8CAAD897D620028F0E303 /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = 115154FD2482746B63D5AE11 /* unknown-field.json */; };
+		9879C54A918CDFD841EB6548 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */; };
+		99D1ACE3817F7B4D87EE7AE8 /* binary-descriptor.json in Resources */ = {isa = PBXBuildFile; fileRef = A1BE65645CB6F3BE83327EAD /* binary-descriptor.json */; };
+		A2016286AE13AA25971F6202 /* action.result.posted.json in Resources */ = {isa = PBXBuildFile; fileRef = AEB19BE646D6A3606C4EE49A /* action.result.posted.json */; };
+		A4EC4708AAAA25E75D01FF99 /* hello.ok.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = 1CF8333D1013D5B2F5298E1D /* hello.ok.mac.json */; };
+		AE76BDE7458326E01C5AAA82 /* action.result.rejected.permission-required.json in Resources */ = {isa = PBXBuildFile; fileRef = 8E3444FDEB9C1933D8C76695 /* action.result.rejected.permission-required.json */; };
+		B09A3E66040D2BBE6B67A0BC /* RelayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */; };
+		BDEC21571CE1512A736B8C29 /* ActionProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65146BE8CDF80C1E24CFBEFD /* ActionProcessor.swift */; };
+		C7A1BA635D65780755F7253A /* action.result.rejected.invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = BC816C4C3B5F984E255116FB /* action.result.rejected.invalid-request.json */; };
+		C7F547B6F56E2BDFE02DF07B /* ClickBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */; };
+		C9CF76530623C7F6866AB79C /* action.result.rejected.event-creation-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = 8D3B61A060AFE983CBB0160A /* action.result.rejected.event-creation-failed.json */; };
+		E3843EAC84C539850F191B5C /* malformed.json in Resources */ = {isa = PBXBuildFile; fileRef = D9419AB96C7288AC77983339 /* malformed.json */; };
+		E41553ACC38571F90C506CB3 /* WireMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F140BE0D05E21B51C2626D56 /* WireMessage.swift */; };
+		E4702170763A1052039788D0 /* oversized.json in Resources */ = {isa = PBXBuildFile; fileRef = F52CEB9603742F6BE04E56CB /* oversized.json */; };
+		E5E2CF381C91B368EFF6CEBF /* mac.state.json in Resources */ = {isa = PBXBuildFile; fileRef = 53A5A856F766015FE9E0CBA0 /* mac.state.json */; };
+		E6E5D9C56FCC4FECE97779B4 /* heartbeat.request.json in Resources */ = {isa = PBXBuildFile; fileRef = BCC10655CCEFC9D2098A7810 /* heartbeat.request.json */; };
+		E7F123B0BF0D7FAAE769A206 /* SettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1103FB96DB77440AC51FE1E /* SettingsStoreTests.swift */; };
+		EB1F2EB2210EC5C5E0893335 /* action.result.rejected.expired.json in Resources */ = {isa = PBXBuildFile; fileRef = 294B5E7C71D1B5892D1B3A84 /* action.result.rejected.expired.json */; };
+		F1E6DF0F5AD3D415D1D18711 /* invalid-result-reason.json in Resources */ = {isa = PBXBuildFile; fileRef = 1B1BBDA92CDC732407D7EB50 /* invalid-result-reason.json */; };
+		F329D46E6417DCA7C7AFF69B /* action.result.rejected.id-conflict.json in Resources */ = {isa = PBXBuildFile; fileRef = CF27C5C94BA1A20FD783B61A /* action.result.rejected.id-conflict.json */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		454D378721C5712A87488E3A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2DBAE186CC17992E538040F2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FEA6C72CCA94118A72548FB5;
+			remoteInfo = ClickBridgeMac;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		017533A28A12CDE53BBA23B5 /* hello.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.mac.json; sourceTree = "<group>"; };
+		09768FA296120FB0738F01B0 /* ClickBridgeMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClickBridgeMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		115154FD2482746B63D5AE11 /* unknown-field.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "unknown-field.json"; sourceTree = "<group>"; };
+		127059B4336627E5525CBD12 /* action.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.request.json; sourceTree = "<group>"; };
+		1B1BBDA92CDC732407D7EB50 /* invalid-result-reason.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-reason.json"; sourceTree = "<group>"; };
+		1CF8333D1013D5B2F5298E1D /* hello.ok.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.mac.json; sourceTree = "<group>"; };
+		294B5E7C71D1B5892D1B3A84 /* action.result.rejected.expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.expired.json; sourceTree = "<group>"; };
+		2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInputExecutorTests.swift; sourceTree = "<group>"; };
+		42F56CF837ED2862327D252E /* ActionProcessorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionProcessorTests.swift; sourceTree = "<group>"; };
+		53A5A856F766015FE9E0CBA0 /* mac.state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mac.state.json; sourceTree = "<group>"; };
+		540A03DF89931A32C0E0A284 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
+		58E4D64A981A0719451B998A /* wrong-version.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-version.json"; sourceTree = "<group>"; };
+		5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInputExecutor.swift; sourceTree = "<group>"; };
+		65146BE8CDF80C1E24CFBEFD /* ActionProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionProcessor.swift; sourceTree = "<group>"; };
+		6619A4AB88AFCF4E099D06B9 /* ClickBridgeMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClickBridgeMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		66F55DAA64B97B3AA76D70DC /* relay.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = relay.ack.json; sourceTree = "<group>"; };
+		7CD07FADD6950866CCC8FA79 /* hello.ok.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.json; sourceTree = "<group>"; };
+		7D94255A6213060DA1155CAA /* StrictWireDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictWireDecoder.swift; sourceTree = "<group>"; };
+		861F3720ED5894D9C6086048 /* wrong-role.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-role.json"; sourceTree = "<group>"; };
+		8AE65932FEF3C95E4C2E0B66 /* time.sync.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.request.json; sourceTree = "<group>"; };
+		8D3B61A060AFE983CBB0160A /* action.result.rejected.event-creation-failed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.event-creation-failed.json"; sourceTree = "<group>"; };
+		8E3444FDEB9C1933D8C76695 /* action.result.rejected.permission-required.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.permission-required.json"; sourceTree = "<group>"; };
+		9399BB6A4E99CA48B3A7620F /* action.result.rejected.capacity-exceeded.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.capacity-exceeded.json"; sourceTree = "<group>"; };
+		94D1F3BFE2816519FB81271E /* time.sync.response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.response.json; sourceTree = "<group>"; };
+		956AA383AD3BBC428F257E40 /* PostEventPermissionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostEventPermissionService.swift; sourceTree = "<group>"; };
+		97039C3EB866FF4FF20CEF37 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionServiceTests.swift; sourceTree = "<group>"; };
+		9FF6446CBBC7E496806FB0B1 /* WireMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireMessageTests.swift; sourceTree = "<group>"; };
+		A1BE65645CB6F3BE83327EAD /* binary-descriptor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "binary-descriptor.json"; sourceTree = "<group>"; };
+		A644B7BE8E608CF842214238 /* RelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClient.swift; sourceTree = "<group>"; };
+		AB5719ADDCD7E81E48C8D19F /* ActionIngress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionIngress.swift; sourceTree = "<group>"; };
+		AE924754B8AF076ED4CED4C7 /* invalid-result-status.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-status.json"; sourceTree = "<group>"; };
+		AEB19BE646D6A3606C4EE49A /* action.result.posted.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.posted.json; sourceTree = "<group>"; };
+		B0F80AADAB59457A6928BA0C /* diagnostics.counters.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.counters.json; sourceTree = "<group>"; };
+		B1103FB96DB77440AC51FE1E /* SettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStoreTests.swift; sourceTree = "<group>"; };
+		B7060BA2E6BCD65911E3C8D7 /* state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = state.json; sourceTree = "<group>"; };
+		B7DB91B51EA0D7FCE5FFE592 /* relay.ack.rejected-expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-expired.json"; sourceTree = "<group>"; };
+		BC816C4C3B5F984E255116FB /* action.result.rejected.invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.invalid-request.json"; sourceTree = "<group>"; };
+		BCC10655CCEFC9D2098A7810 /* heartbeat.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.request.json; sourceTree = "<group>"; };
+		BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		C098666411FFC9D056927E6B /* heartbeat.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.ack.json; sourceTree = "<group>"; };
+		C29AC62DCB23E4DF86884E96 /* relay.ack.rejected-invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-invalid-request.json"; sourceTree = "<group>"; };
+		C7F825B1F263B435D59E832F /* hello.phone.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.phone.json; sourceTree = "<group>"; };
+		C9EE92FD9E6234B00DBBB0FA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CF27C5C94BA1A20FD783B61A /* action.result.rejected.id-conflict.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.id-conflict.json"; sourceTree = "<group>"; };
+		D0404E5836A042F8D1D10C07 /* action.result.rejected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.json; sourceTree = "<group>"; };
+		D37C3338DFA31BE1969FC671 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		D9419AB96C7288AC77983339 /* malformed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = malformed.json; sourceTree = "<group>"; };
+		DC40E437EAFDEC77A42CFC80 /* relay.ack.mac-offline.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.mac-offline.json"; sourceTree = "<group>"; };
+		E0681E2A95D6ED81C661E41E /* diagnostics.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.request.json; sourceTree = "<group>"; };
+		EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickBridgeApp.swift; sourceTree = "<group>"; };
+		F140BE0D05E21B51C2626D56 /* WireMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireMessage.swift; sourceTree = "<group>"; };
+		F3633E0E907928529DBC627A /* invalid-relay-ack-pairing.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-relay-ack-pairing.json"; sourceTree = "<group>"; };
+		F52CEB9603742F6BE04E56CB /* oversized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = oversized.json; sourceTree = "<group>"; };
+		F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClientTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		118434EB71E1D6E62EE66CF7 /* ClickBridgeMac */ = {
+			isa = PBXGroup;
+			children = (
+				AB5719ADDCD7E81E48C8D19F /* ActionIngress.swift */,
+				65146BE8CDF80C1E24CFBEFD /* ActionProcessor.swift */,
+				D37C3338DFA31BE1969FC671 /* AppState.swift */,
+				EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */,
+				C9EE92FD9E6234B00DBBB0FA /* Info.plist */,
+				BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */,
+				5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */,
+				956AA383AD3BBC428F257E40 /* PostEventPermissionService.swift */,
+				A644B7BE8E608CF842214238 /* RelayClient.swift */,
+				540A03DF89931A32C0E0A284 /* SettingsStore.swift */,
+				7D94255A6213060DA1155CAA /* StrictWireDecoder.swift */,
+				F140BE0D05E21B51C2626D56 /* WireMessage.swift */,
+			);
+			path = ClickBridgeMac;
+			sourceTree = "<group>";
+		};
+		431A4E7E19A22F939395B219 = {
+			isa = PBXGroup;
+			children = (
+				118434EB71E1D6E62EE66CF7 /* ClickBridgeMac */,
+				C5826750CF3C25EFB1311C3E /* ClickBridgeMacTests */,
+				6F8EE5F66163710C0787AC1F /* clicker-codex-implementation */,
+				7D6F7F8EA97E62E56AC178BC /* Config */,
+				7E535B39EF5EF84122ECAC9F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		43CCA0AF4AE8F3B6A7E76C8E /* invalid */ = {
+			isa = PBXGroup;
+			children = (
+				A1BE65645CB6F3BE83327EAD /* binary-descriptor.json */,
+				F3633E0E907928529DBC627A /* invalid-relay-ack-pairing.json */,
+				1B1BBDA92CDC732407D7EB50 /* invalid-result-reason.json */,
+				AE924754B8AF076ED4CED4C7 /* invalid-result-status.json */,
+				D9419AB96C7288AC77983339 /* malformed.json */,
+				F52CEB9603742F6BE04E56CB /* oversized.json */,
+				115154FD2482746B63D5AE11 /* unknown-field.json */,
+				861F3720ED5894D9C6086048 /* wrong-role.json */,
+				58E4D64A981A0719451B998A /* wrong-version.json */,
+			);
+			path = invalid;
+			sourceTree = "<group>";
+		};
+		535B4DB303089B68BD097175 /* fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				127059B4336627E5525CBD12 /* action.request.json */,
+				AEB19BE646D6A3606C4EE49A /* action.result.posted.json */,
+				9399BB6A4E99CA48B3A7620F /* action.result.rejected.capacity-exceeded.json */,
+				8D3B61A060AFE983CBB0160A /* action.result.rejected.event-creation-failed.json */,
+				294B5E7C71D1B5892D1B3A84 /* action.result.rejected.expired.json */,
+				CF27C5C94BA1A20FD783B61A /* action.result.rejected.id-conflict.json */,
+				BC816C4C3B5F984E255116FB /* action.result.rejected.invalid-request.json */,
+				D0404E5836A042F8D1D10C07 /* action.result.rejected.json */,
+				8E3444FDEB9C1933D8C76695 /* action.result.rejected.permission-required.json */,
+				B0F80AADAB59457A6928BA0C /* diagnostics.counters.json */,
+				E0681E2A95D6ED81C661E41E /* diagnostics.request.json */,
+				C098666411FFC9D056927E6B /* heartbeat.ack.json */,
+				BCC10655CCEFC9D2098A7810 /* heartbeat.request.json */,
+				017533A28A12CDE53BBA23B5 /* hello.mac.json */,
+				7CD07FADD6950866CCC8FA79 /* hello.ok.json */,
+				1CF8333D1013D5B2F5298E1D /* hello.ok.mac.json */,
+				C7F825B1F263B435D59E832F /* hello.phone.json */,
+				53A5A856F766015FE9E0CBA0 /* mac.state.json */,
+				66F55DAA64B97B3AA76D70DC /* relay.ack.json */,
+				DC40E437EAFDEC77A42CFC80 /* relay.ack.mac-offline.json */,
+				B7DB91B51EA0D7FCE5FFE592 /* relay.ack.rejected-expired.json */,
+				C29AC62DCB23E4DF86884E96 /* relay.ack.rejected-invalid-request.json */,
+				B7060BA2E6BCD65911E3C8D7 /* state.json */,
+				8AE65932FEF3C95E4C2E0B66 /* time.sync.request.json */,
+				94D1F3BFE2816519FB81271E /* time.sync.response.json */,
+				43CCA0AF4AE8F3B6A7E76C8E /* invalid */,
+			);
+			path = fixtures;
+			sourceTree = "<group>";
+		};
+		6F8EE5F66163710C0787AC1F /* clicker-codex-implementation */ = {
+			isa = PBXGroup;
+			children = (
+				F23EB1CD0365B1E8BCE8D2BC /* contracts */,
+			);
+			name = "clicker-codex-implementation";
+			path = ..;
+			sourceTree = "<group>";
+		};
+		7D6F7F8EA97E62E56AC178BC /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				97039C3EB866FF4FF20CEF37 /* Base.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		7E535B39EF5EF84122ECAC9F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6619A4AB88AFCF4E099D06B9 /* ClickBridgeMac.app */,
+				09768FA296120FB0738F01B0 /* ClickBridgeMacTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C5826750CF3C25EFB1311C3E /* ClickBridgeMacTests */ = {
+			isa = PBXGroup;
+			children = (
+				42F56CF837ED2862327D252E /* ActionProcessorTests.swift */,
+				2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */,
+				9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */,
+				F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */,
+				B1103FB96DB77440AC51FE1E /* SettingsStoreTests.swift */,
+				9FF6446CBBC7E496806FB0B1 /* WireMessageTests.swift */,
+			);
+			path = ClickBridgeMacTests;
+			sourceTree = "<group>";
+		};
+		F23EB1CD0365B1E8BCE8D2BC /* contracts */ = {
+			isa = PBXGroup;
+			children = (
+				535B4DB303089B68BD097175 /* fixtures */,
+			);
+			path = contracts;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		420F96D7A5B4ABDB13328428 /* ClickBridgeMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0EE774B9532889CBFDC977BE /* Build configuration list for PBXNativeTarget "ClickBridgeMacTests" */;
+			buildPhases = (
+				4545EE1653951B69A5B6B17E /* Sources */,
+				1AB29CE7F1D46315E25B7A84 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB6298270C5DC136F7B23A9D /* PBXTargetDependency */,
+			);
+			name = ClickBridgeMacTests;
+			packageProductDependencies = (
+			);
+			productName = ClickBridgeMacTests;
+			productReference = 09768FA296120FB0738F01B0 /* ClickBridgeMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		FEA6C72CCA94118A72548FB5 /* ClickBridgeMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 553413C216B11796E3171E55 /* Build configuration list for PBXNativeTarget "ClickBridgeMac" */;
+			buildPhases = (
+				C419D6819770EAEC1E1C79DE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClickBridgeMac;
+			packageProductDependencies = (
+			);
+			productName = ClickBridgeMac;
+			productReference = 6619A4AB88AFCF4E099D06B9 /* ClickBridgeMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2DBAE186CC17992E538040F2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					420F96D7A5B4ABDB13328428 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+					FEA6C72CCA94118A72548FB5 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 680CFF11280CEA905A493015 /* Build configuration list for PBXProject "ClickBridgeMac" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 431A4E7E19A22F939395B219;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 7E535B39EF5EF84122ECAC9F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				FEA6C72CCA94118A72548FB5 /* ClickBridgeMac */,
+				420F96D7A5B4ABDB13328428 /* ClickBridgeMacTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1AB29CE7F1D46315E25B7A84 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5686B03C994AAA34C52FCC9D /* action.request.json in Resources */,
+				A2016286AE13AA25971F6202 /* action.result.posted.json in Resources */,
+				336035425C1DC3657A223845 /* action.result.rejected.capacity-exceeded.json in Resources */,
+				C9CF76530623C7F6866AB79C /* action.result.rejected.event-creation-failed.json in Resources */,
+				EB1F2EB2210EC5C5E0893335 /* action.result.rejected.expired.json in Resources */,
+				F329D46E6417DCA7C7AFF69B /* action.result.rejected.id-conflict.json in Resources */,
+				C7A1BA635D65780755F7253A /* action.result.rejected.invalid-request.json in Resources */,
+				7256B7C93559775B2B700F5C /* action.result.rejected.json in Resources */,
+				AE76BDE7458326E01C5AAA82 /* action.result.rejected.permission-required.json in Resources */,
+				99D1ACE3817F7B4D87EE7AE8 /* binary-descriptor.json in Resources */,
+				6F01A7AEADA3895ACDF04888 /* diagnostics.counters.json in Resources */,
+				47783A5981AF1B30935296E1 /* diagnostics.request.json in Resources */,
+				0996F3CF4CF2FA6796E0989F /* heartbeat.ack.json in Resources */,
+				E6E5D9C56FCC4FECE97779B4 /* heartbeat.request.json in Resources */,
+				1EEDD3CA454F2A409E2BBB61 /* hello.mac.json in Resources */,
+				0169646DC1FB647EC589E43E /* hello.ok.json in Resources */,
+				A4EC4708AAAA25E75D01FF99 /* hello.ok.mac.json in Resources */,
+				5961B9F041F5DAE924F9C652 /* hello.phone.json in Resources */,
+				85B142B99D36160D7070F25C /* invalid-relay-ack-pairing.json in Resources */,
+				F1E6DF0F5AD3D415D1D18711 /* invalid-result-reason.json in Resources */,
+				3E7F8A061BF8EBDD422A054A /* invalid-result-status.json in Resources */,
+				E5E2CF381C91B368EFF6CEBF /* mac.state.json in Resources */,
+				E3843EAC84C539850F191B5C /* malformed.json in Resources */,
+				E4702170763A1052039788D0 /* oversized.json in Resources */,
+				22545148581771EB07672148 /* relay.ack.json in Resources */,
+				43195C7FA653A9FE2466D1FD /* relay.ack.mac-offline.json in Resources */,
+				429183CC7777F20F7DCDFBAB /* relay.ack.rejected-expired.json in Resources */,
+				85A3E2F054F56F593EFA22D6 /* relay.ack.rejected-invalid-request.json in Resources */,
+				70A6B6517EABB64ACCC8F29E /* state.json in Resources */,
+				7BFF446C603287AD4D5653D4 /* time.sync.request.json in Resources */,
+				6ED89F23E357078177A85A43 /* time.sync.response.json in Resources */,
+				8AA8CAAD897D620028F0E303 /* unknown-field.json in Resources */,
+				6BF4B1FD1388B226AFCD972E /* wrong-role.json in Resources */,
+				55B68500AE170134E77A6179 /* wrong-version.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4545EE1653951B69A5B6B17E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				14076C680E5DBA725DD1DD7C /* ActionProcessorTests.swift in Sources */,
+				4C9339C67D82AB5B662F7B50 /* MacInputExecutorTests.swift in Sources */,
+				41FFD1C3772E69872A80A968 /* PermissionServiceTests.swift in Sources */,
+				B09A3E66040D2BBE6B67A0BC /* RelayClientTests.swift in Sources */,
+				E7F123B0BF0D7FAAE769A206 /* SettingsStoreTests.swift in Sources */,
+				152F87276EBAE3EAA03978A0 /* WireMessageTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C419D6819770EAEC1E1C79DE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2DCE3BF2B14C7CF2E18A51B5 /* ActionIngress.swift in Sources */,
+				BDEC21571CE1512A736B8C29 /* ActionProcessor.swift in Sources */,
+				3AE66A38830D2748B8649B34 /* AppState.swift in Sources */,
+				C7F547B6F56E2BDFE02DF07B /* ClickBridgeApp.swift in Sources */,
+				9879C54A918CDFD841EB6548 /* KeychainStore.swift in Sources */,
+				6279506B599734959BD49198 /* MacInputExecutor.swift in Sources */,
+				2C3D996E6C15DDE71BDCDBC8 /* PostEventPermissionService.swift in Sources */,
+				1E34F9EDC6DB4672BC2F4DF1 /* RelayClient.swift in Sources */,
+				061E9132F6535B940086214E /* SettingsStore.swift in Sources */,
+				6B79CF040D9683F03D9DED8D /* StrictWireDecoder.swift in Sources */,
+				E41553ACC38571F90C506CB3 /* WireMessage.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB6298270C5DC136F7B23A9D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FEA6C72CCA94118A72548FB5 /* ClickBridgeMac */;
+			targetProxy = 454D378721C5712A87488E3A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		35D10EFC1FA95F93DBBBA69A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = ClickBridgeMac/Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.clickbridge.mac;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		54D168237678A4BB66C860AD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.clickbridge.mac.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ClickBridgeMac.app/Contents/MacOS/ClickBridgeMac";
+			};
+			name = Debug;
+		};
+		C43FA1D2E8C59E420A34D802 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = ClickBridgeMac/Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.clickbridge.mac;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		C55F869F167788B9C80B5028 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.clickbridge.mac.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ClickBridgeMac.app/Contents/MacOS/ClickBridgeMac";
+			};
+			name = Release;
+		};
+		C7553D6A557ABF3CD14CF214 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 97039C3EB866FF4FF20CEF37 /* Base.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		FA1635EDAC35F7279E4C14B3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 97039C3EB866FF4FF20CEF37 /* Base.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0EE774B9532889CBFDC977BE /* Build configuration list for PBXNativeTarget "ClickBridgeMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				54D168237678A4BB66C860AD /* Debug */,
+				C55F869F167788B9C80B5028 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		553413C216B11796E3171E55 /* Build configuration list for PBXNativeTarget "ClickBridgeMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C43FA1D2E8C59E420A34D802 /* Debug */,
+				35D10EFC1FA95F93DBBBA69A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		680CFF11280CEA905A493015 /* Build configuration list for PBXProject "ClickBridgeMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C7553D6A557ABF3CD14CF214 /* Debug */,
+				FA1635EDAC35F7279E4C14B3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 2DBAE186CC17992E538040F2 /* Project object */;
+}
