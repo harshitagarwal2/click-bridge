@@ -73,8 +73,9 @@ function renderedText(elements) {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((next) => { resolve = next; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((next, fail) => { resolve = next; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 test('disabled pairing composition stays absent and does not claim an invitation', () => {
@@ -131,6 +132,46 @@ test('a clipboard read cannot start pairing after the UI is destroyed', async ()
 
   assert.deepEqual(h.starts, []);
 });
+
+for (const olderOutcome of ['success', 'failure']) {
+  test(`a newer valid clipboard read owns pairing over an older ${olderOutcome}`, async () => {
+    const reads = [deferred(), deferred()];
+    let readIndex = 0;
+    const h = harness({ readClipboard: () => reads[readIndex++].promise });
+
+    h.elements.paste.dispatchEvent(event('click'));
+    h.elements.paste.dispatchEvent(event('click'));
+    reads[1].resolve(LINK);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (olderOutcome === 'success') reads[0].resolve(LINK);
+    else reads[0].reject(new Error('older clipboard failed'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(h.starts, [REFERENCE]);
+    assert.equal(h.elements.message.textContent, 'Claiming the pairing link…');
+    assert.equal(h.elements.alert.hidden, true);
+  });
+}
+
+for (const newerOutcome of ['invalid', 'failure']) {
+  test(`a newer ${newerOutcome} clipboard read cannot be replaced by an older valid result`, async () => {
+    const reads = [deferred(), deferred()];
+    let readIndex = 0;
+    const h = harness({ readClipboard: () => reads[readIndex++].promise });
+
+    h.elements.paste.dispatchEvent(event('click'));
+    h.elements.paste.dispatchEvent(event('click'));
+    if (newerOutcome === 'invalid') reads[1].resolve('not a pairing link');
+    else reads[1].reject(new Error('newer clipboard failed'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    reads[0].resolve(LINK);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(h.starts, []);
+    assert.equal(h.elements.alert.hidden, false);
+    assert.equal(h.elements.alert.textContent, 'Pairing could not be completed. Try again.');
+  });
+}
 
 test('the confirmation code is one labelled element and approval progress is polite', () => {
   const h = harness();
