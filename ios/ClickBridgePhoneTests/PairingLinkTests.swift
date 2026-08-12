@@ -13,6 +13,15 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(link.claimantWebSocketURL.absoluteString, "wss://relay.example/ws")
     }
 
+    func testParsesCanonicalWebInvitationForNativeClaimant() throws {
+        let url = try XCTUnwrap(URL(string: "https://relay.example/pair/web#v=1&r=\(reference)"))
+
+        let link = try PhonePairingLink.parse(url, expectedHost: "relay.example")
+
+        XCTAssertEqual(link.reference, reference)
+        XCTAssertEqual(link.claimantWebSocketURL.absoluteString, "wss://relay.example/ws")
+    }
+
     func testRejectsNoncanonicalOrSecretBearingPairingLinks() throws {
         let candidates = [
             "http://relay.example/pair#v=1&r=\(reference)",
@@ -25,6 +34,10 @@ final class PairingLinkTests: XCTestCase {
             "https://relay.example/pair#v=1&r=\(reference)&token=secret",
             "https://relay.example/pair#v=2&r=\(reference)",
             "https://relay.example/pair#v=1&r=\(reference)=",
+            "https://relay.example/%70air#v=1&r=\(reference)",
+            "https://relay.example/pair/%77eb#v=1&r=\(reference)",
+            "https://relay.example/pair#v%3D1%26r%3D\(reference)",
+            "https://relay.example/pair#v=1&r=%41\(reference.dropFirst())",
         ]
 
         for candidate in candidates {

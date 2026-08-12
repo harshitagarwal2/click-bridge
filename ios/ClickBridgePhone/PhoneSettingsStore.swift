@@ -152,12 +152,16 @@ final class PhoneSettingsStore {
          secrets: any SecretStoring = KeychainStore()) throws {
         self.defaults = defaults
         self.secrets = secrets
-        relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
         do {
-            hasToken = try Self.decodeRecord(
-                secrets.read(account: Self.phoneTokenAccount)
-            ).active != nil
+            let record = try Self.decodeRecord(secrets.read(account: Self.phoneTokenAccount))
+            hasToken = record.active != nil
+            relayURLString = record.active?.relayWebSocketURL
+                ?? defaults.string(forKey: Self.relayURLKey) ?? ""
+            if record.active?.relayWebSocketURL != nil {
+                defaults.set(relayURLString, forKey: Self.relayURLKey)
+            }
         } catch {
+            relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
             hasToken = false
             throw PhoneSettingsStorageError.unavailable
         }

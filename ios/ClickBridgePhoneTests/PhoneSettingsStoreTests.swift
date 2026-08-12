@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class PhoneSettingsStoreTests: XCTestCase {
+    func testReopenDerivesRelayURLFromPromotedCredentialRecord() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let secrets = TestSecretStore()
+        let store = try PhoneSettingsStore(defaults: defaults, secrets: secrets)
+        let pending = try store.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://new.example/ws"))
+        )
+        try store.promotePairingCredential(pending)
+
+        let reopened = try PhoneSettingsStore(defaults: defaults, secrets: secrets)
+
+        XCTAssertEqual(reopened.relayURLString, "wss://new.example/ws")
+    }
+
+    func testStartOverUsesExactPendingGenerationAndCannotDeleteNewerPending() throws {
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!, secrets: TestSecretStore()
+        )
+        let stale = try store.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        try store.discardPairingCredential(stale)
+        let newer = try store.stagePairingCredential(
+            .init(token: String(repeating: "c", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+
+        XCTAssertThrowsError(try store.discardPairingCredential(stale))
+        XCTAssertEqual(try store.pendingPairingRecoveryDescriptor(), newer)
+    }
     private let token = String(repeating: "a", count: 64)
 
     func testConfigurationAcceptsOnlyWSSWSPathAndLowercaseHexToken() throws {

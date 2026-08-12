@@ -14,6 +14,10 @@ enum PhoneComposition {
         let transport = PhoneRelayClient(socketFactory: URLSessionPhoneWebSocketFactory(),
                                          clock: clock,
                                          scheduler: scheduler)
+        let pendingTransport = PhoneRelayClient(socketFactory: URLSessionPhoneWebSocketFactory(),
+                                                clock: clock,
+                                                scheduler: scheduler)
+        let pendingAuthenticator = PhonePendingAuthenticator(transport: pendingTransport)
         let modelBox = ModelBox()
         let actions = PhoneActionCoordinator(transport: transport,
                                              clock: clock,
@@ -33,6 +37,13 @@ enum PhoneComposition {
                                   transport: transport,
                                   clockHealth: clockHealth,
                                   actions: actions)
+        let pairing = PhonePairingClient(socketFactory: URLSessionPhoneWebSocketFactory(),
+                                         settings: settings,
+                                         normalTransport: transport,
+                                         clock: clock,
+                                         scheduler: scheduler,
+                                         authenticatePending: pendingAuthenticator.authenticate)
+        model.installPairingClient(pairing)
         modelBox.model = model
         return model
     }
@@ -44,7 +55,10 @@ struct ClickBridgePhoneApp: App {
     @State private var model = PhoneComposition.makeModel()
 
     var body: some Scene {
-        WindowGroup { ContentView(model: model) }
+        WindowGroup {
+            ContentView(model: model)
+                .onOpenURL(perform: model.handlePairingInvitation)
+        }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 model.scenePhaseChanged(phase)
             }

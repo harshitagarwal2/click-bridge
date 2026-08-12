@@ -4,6 +4,98 @@ import XCTest
 
 @MainActor
 final class PhoneLifecycleTests: XCTestCase {
+    func testUniversalLinkStartsClaimantWithoutShowingInvitationValue() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        let reference = String(repeating: "A", count: 43)
+
+        harness.model.handlePairingInvitation(try XCTUnwrap(URL(
+            string: "https://clickbridge-sjc.duckdns.org/pair#v=1&r=\(reference)"
+        )))
+
+        XCTAssertEqual(pairing.startedLinks.count, 1)
+        XCTAssertTrue(harness.model.pairingSheetPresented)
+        XCTAssertFalse(PhonePairingPresentation(state: harness.model.pairingState).detail.contains(reference))
+    }
+
+    func testBackgroundCancelsInFlightClaimant() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator(state: .init(phase: .awaitingApproval,
+                                                          confirmationCode: "123 456"))
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.background)
+
+        XCTAssertEqual(pairing.cancelCount, 1)
+    }
+
+    func testBackgroundPreservesStagedPairingForForegroundRecovery() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator(state: .init(phase: .awaitingActivation))
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.background)
+
+        XCTAssertEqual(pairing.cancelCount, 0)
+    }
+
+    func testRecoveredActiveEventStartsForegroundMonitoringOnlyOnce() async throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let pairing = FakePairingCoordinator(
+            recoveryResult: .recovered,
+            emitsActiveDuringRecovery: true,
+            beforeRecoveryResult: {
+                let pending = try XCTUnwrap(try harness.settings.pendingPairingRecoveryDescriptor())
+                try harness.settings.promotePairingCredential(pending)
+                harness.settings.relayURLString = pending.relayWebSocketURL.absoluteString
+            }
+        )
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.active)
+        for _ in 0..<10 where harness.source.startCount == 0 { await Task.yield() }
+
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testStartOverDiscardsOnlyCurrentlyDisplayedSavedPairing() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        _ = try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+
+        XCTAssertTrue(harness.model.hasPendingPairing)
+        harness.model.startOverSavedPairing()
+
+        XCTAssertFalse(harness.model.hasPendingPairing)
+        XCTAssertNil(try harness.settings.pendingPairingRecoveryDescriptor())
+    }
+
+    func testExistingCredentialRequiresExplicitReplacementBeforeStarting() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        let reference = String(repeating: "A", count: 43)
+        let url = try XCTUnwrap(URL(
+            string: "https://clickbridge-sjc.duckdns.org/pair/web#v=1&r=\(reference)"
+        ))
+
+        harness.model.handlePairingInvitation(url)
+        XCTAssertTrue(harness.model.replacementConfirmationPresented)
+        XCTAssertTrue(pairing.startedLinks.isEmpty)
+
+        harness.model.confirmPairAgain()
+        XCTAssertEqual(pairing.startedLinks.count, 1)
+        XCTAssertNotNil(pairing.replacementAuthorizations.first ?? nil)
+    }
+
     func testActiveInactiveBackgroundOwnsOneForegroundSession() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.inactive)
@@ -450,6 +542,52 @@ final class PhoneLifecycleTests: XCTestCase {
                                     value: .state(.init(macOnline: true, remoteEnabled: true, permission: .ready))))
             model.applyClockHealth(.init(status: .healthy, offsetMilliseconds: 0, uncertaintyMilliseconds: 1))
         }
+    }
+}
+
+@MainActor
+private final class FakePairingCoordinator: PhonePairingCoordinating {
+    var state: PhonePairingState
+    var onState: (@MainActor (PhonePairingState) -> Void)?
+    private(set) var startedLinks: [PhonePairingLink] = []
+    private(set) var replacementAuthorizations: [PhonePairingReplacementAuthorization?] = []
+    private(set) var cancelCount = 0
+    let recoveryResult: PhonePairingRecoveryResult
+    let emitsActiveDuringRecovery: Bool
+    let beforeRecoveryResult: (() throws -> Void)?
+
+    init(state: PhonePairingState = .init(),
+         recoveryResult: PhonePairingRecoveryResult = .noPending,
+         emitsActiveDuringRecovery: Bool = false,
+         beforeRecoveryResult: (() throws -> Void)? = nil) {
+        self.state = state
+        self.recoveryResult = recoveryResult
+        self.emitsActiveDuringRecovery = emitsActiveDuringRecovery
+        self.beforeRecoveryResult = beforeRecoveryResult
+    }
+
+    func start(_ link: PhonePairingLink,
+               replacementAuthorization: PhonePairingReplacementAuthorization?) {
+        startedLinks.append(link)
+        replacementAuthorizations.append(replacementAuthorization)
+        state = .init(phase: .connecting)
+        onState?(state)
+    }
+
+    func cancel() {
+        cancelCount += 1
+        state = .init(phase: .cancelled)
+        onState?(state)
+    }
+
+    func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult {
+        do { try beforeRecoveryResult?() }
+        catch { return .promotionFailed }
+        if emitsActiveDuringRecovery {
+            state = .init(phase: .active)
+            onState?(state)
+        }
+        return recoveryResult
     }
 }
 

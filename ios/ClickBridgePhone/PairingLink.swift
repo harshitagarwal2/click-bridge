@@ -11,7 +11,9 @@ struct PhonePairingLink: Equatable, Sendable {
     let claimantWebSocketURL: URL
 
     static func parse(_ url: URL, expectedHost: String) throws -> Self {
-        guard Data(url.absoluteString.utf8).count <= 512,
+        let raw = url.absoluteString
+        guard Data(raw.utf8).count <= 512,
+              !raw.contains("%"),
               expectedHost.range(of: "^[a-z0-9.-]+$", options: .regularExpression) != nil,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme == "https",
@@ -19,7 +21,7 @@ struct PhonePairingLink: Equatable, Sendable {
               components.user == nil,
               components.password == nil,
               components.port == nil,
-              components.path == "/pair",
+              ["/pair", "/pair/web"].contains(components.path),
               components.query == nil,
               let fragment = components.fragment,
               fragment.hasPrefix("v=1&r="),
@@ -28,6 +30,7 @@ struct PhonePairingLink: Equatable, Sendable {
         }
         let reference = String(fragment.dropFirst(6))
         guard canonicalReference(reference),
+              raw == "https://\(expectedHost)\(components.path)#v=1&r=\(reference)",
               let socketURL = canonicalClaimantWebSocketURL(
                 URL(string: "wss://\(expectedHost)/ws")
               ) else {

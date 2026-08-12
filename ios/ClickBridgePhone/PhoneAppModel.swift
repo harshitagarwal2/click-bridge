@@ -44,7 +44,19 @@ final class PhoneClickIntentRouter {
 @MainActor
 @Observable
 final class PhoneAppModel {
+    enum PresentedFlow: Equatable { case settings, pairing, replacement }
+
     private(set) var state: PhoneState
+    private(set) var pairingState = PhonePairingState()
+    var presentedFlow: PresentedFlow?
+    var pairingSheetPresented: Bool {
+        get { presentedFlow == .pairing }
+        set { if newValue { presentedFlow = .pairing } else if presentedFlow == .pairing { presentedFlow = nil } }
+    }
+    var replacementConfirmationPresented: Bool {
+        get { presentedFlow == .replacement }
+        set { if newValue { presentedFlow = .replacement } else if presentedFlow == .replacement { presentedFlow = nil } }
+    }
     let settings: PhoneSettingsStore
 
     private let volumeController: VolumeDeltaController
@@ -55,6 +67,9 @@ final class PhoneAppModel {
     @ObservationIgnored private var foregroundGeneration: Int?
     @ObservationIgnored private var generationCounter = 0
     @ObservationIgnored private var sceneIsActive = false
+    @ObservationIgnored private var pairingClient: (any PhonePairingCoordinating)?
+    @ObservationIgnored private var pendingReplacementLink: PhonePairingLink?
+    @ObservationIgnored private var pairingRecoveryTask: Task<Void, Never>?
 
     convenience init(settings: PhoneSettingsStore,
                      volumeController: VolumeDeltaController,
@@ -92,6 +107,10 @@ final class PhoneAppModel {
         actions.canAccept(readiness: actionReadiness)
     }
 
+    var hasPendingPairing: Bool {
+        (try? settings.pendingPairingRecoveryDescriptor()) != nil
+    }
+
     @discardableResult
     func triggerClick() -> ActionDisposition {
         actions.accept(readiness: actionReadiness)
@@ -101,7 +120,7 @@ final class PhoneAppModel {
         switch phase {
         case .active:
             sceneIsActive = true
-            if foregroundGeneration == nil { startForegroundSession() }
+            if foregroundGeneration == nil { startActiveSession() }
             intentRouter.setAppActive(true)
         case .inactive:
             intentRouter.setAppActive(false)
@@ -110,11 +129,95 @@ final class PhoneAppModel {
             intentRouter.setAppActive(false)
             intentRouter.discardPendingRequest()
             endForegroundSession(reason: "background")
+            cancelPairingForBackgroundIfNeeded()
         @unknown default:
             sceneIsActive = false
             intentRouter.setAppActive(false)
             intentRouter.discardPendingRequest()
             endForegroundSession(reason: "unknown_scene_phase")
+            cancelPairingForBackgroundIfNeeded()
+        }
+    }
+
+    func installPairingClient(_ client: any PhonePairingCoordinating) {
+        pairingClient = client
+        pairingState = client.state
+        client.onState = { [weak self] state in self?.pairingDidChange(state) }
+    }
+
+    func showPairingClaimant() {
+        pairingState = .init()
+        presentedFlow = .pairing
+    }
+
+    func showSettings() { presentedFlow = .settings }
+    func dismissPresentedFlow() { presentedFlow = nil }
+
+    func submitPairingInvitation(_ value: String) {
+        guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            pairingState = .init(phase: .failed, failure: "invalid_link")
+            return
+        }
+        handlePairingInvitation(url)
+    }
+
+    func handlePairingInvitation(_ url: URL) {
+        let link: PhonePairingLink
+        do { link = try PhonePairingLink.parse(url, expectedHost: PhoneDeployment.pairingHost) }
+        catch {
+            presentedFlow = .pairing
+            pairingState = .init(phase: .failed, failure: "invalid_link")
+            return
+        }
+        if settings.hasToken {
+            pendingReplacementLink = link
+            presentedFlow = .replacement
+        } else {
+            presentedFlow = .pairing
+            startPairing(link)
+        }
+    }
+
+    func confirmPairAgain() {
+        guard let link = pendingReplacementLink else { return }
+        pendingReplacementLink = nil
+        presentedFlow = .pairing
+        startPairing(link)
+    }
+
+    func rejectPairAgain() {
+        presentedFlow = nil
+        pendingReplacementLink = nil
+    }
+
+    func cancelPairing() {
+        pairingClient?.cancel()
+    }
+
+    func forgetMac() throws {
+        cancelPairing()
+        endForegroundSession(reason: "forgot_mac")
+        try settings.clearPhoneToken()
+        state = PhoneState()
+        pairingState = .init()
+        presentedFlow = nil
+    }
+
+    func retrySavedPairing() {
+        pairingState = .init(phase: .connecting)
+        startActiveSession()
+    }
+
+    func startOverSavedPairing() {
+        do {
+            guard let pending = try settings.pendingPairingRecoveryDescriptor() else {
+                pairingState = .init()
+                return
+            }
+            try settings.discardPairingCredential(pending)
+            pairingState = .init()
+        } catch {
+            pairingState = .init(phase: .failed, failure: "secure_storage_unavailable")
         }
     }
 
@@ -181,7 +284,7 @@ final class PhoneAppModel {
         }
     }
 
-    private func startForegroundSession() {
+    private func startForegroundSession(connectTransport: Bool = true) {
         guard !state.phoneTakenOver else { return }
         let token: String
         do {
@@ -206,7 +309,7 @@ final class PhoneAppModel {
         foregroundGeneration = generation
         state.foregroundSessionActive = true
         state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
-        transport.connect(configuration: configuration)
+        if connectTransport { transport.connect(configuration: configuration) }
         do {
             try volumeController.start(foregroundGeneration: generation) { [weak self] event in
                 self?.handleVolume(event, foregroundGeneration: generation)
@@ -215,6 +318,64 @@ final class PhoneAppModel {
         } catch {
             endForegroundSession(reason: "volume_monitoring_unavailable")
             state.issue = .volumeMonitoringUnavailable
+        }
+    }
+
+    private func startPairing(_ link: PhonePairingLink) {
+        guard let pairingClient else {
+            pairingState = .init(phase: .failed, failure: "pairing_unavailable")
+            return
+        }
+        endForegroundSession(reason: "pairing_started")
+        pairingRecoveryTask?.cancel()
+        pairingRecoveryTask = nil
+        do {
+            pairingClient.start(link, replacementAuthorization: try settings.replacementAuthorization())
+        } catch {
+            pairingState = .init(phase: .failed, failure: "secure_storage_unavailable")
+        }
+    }
+
+    private func pairingDidChange(_ newState: PhonePairingState) {
+        pairingState = newState
+        guard newState.phase == .active, sceneIsActive, pairingRecoveryTask == nil else { return }
+        startForegroundSession(connectTransport: false)
+    }
+
+    private func cancelPairingForBackgroundIfNeeded() {
+        let recovering = pairingRecoveryTask != nil
+        pairingRecoveryTask?.cancel()
+        pairingRecoveryTask = nil
+        if recovering || PhonePairingPresentation.shouldCancelOnBackground(pairingState.phase) {
+            pairingClient?.cancel()
+        }
+    }
+
+    private func startActiveSession() {
+        guard pairingRecoveryTask == nil else { return }
+        let pending: PhonePairingPendingCredential?
+        do { pending = try settings.pendingPairingRecoveryDescriptor() }
+        catch {
+            state.issue = .secureStorageUnavailable
+            return
+        }
+        guard let pending, let pairingClient else {
+            startForegroundSession()
+            return
+        }
+        pairingRecoveryTask = Task { [weak self] in
+            let result = await pairingClient.recoverPending(relayWebSocketURL: pending.relayWebSocketURL)
+            guard let self else { return }
+            pairingRecoveryTask = nil
+            guard sceneIsActive, !Task.isCancelled else { return }
+            if result == .recovered {
+                pairingState = .init(phase: .active)
+                startForegroundSession(connectTransport: false)
+            } else if result == .noPending || result == .superseded {
+                startForegroundSession()
+            } else {
+                pairingState = .init(phase: .failed, failure: "pending_recovery_failed")
+            }
         }
     }
 

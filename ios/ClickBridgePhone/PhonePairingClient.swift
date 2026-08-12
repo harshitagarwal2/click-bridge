@@ -22,7 +22,7 @@ struct PhonePairingState: Equatable, Sendable {
 }
 
 @MainActor
-final class PhonePairingClient {
+final class PhonePairingClient: PhonePairingCoordinating {
     private let socketFactory: any PhoneWebSocketFactory
     private let settings: PhoneSettingsStore
     private let normalTransport: any PhoneActionTransport
@@ -107,6 +107,8 @@ final class PhonePairingClient {
     }
 
     func cancel() {
+        guard state.phase != .awaitingActivation,
+              state.phase != .awaitingCredential else { return }
         let currentSocket = socket
         let currentClaim = currentClaimID
         if opened, let currentSocket, let currentClaim,
@@ -150,6 +152,7 @@ final class PhonePairingClient {
         guard authenticated else { return .authenticationRejected }
         do {
             try settings.promotePairingCredential(pending)
+            settings.relayURLString = pending.relayWebSocketURL.absoluteString
         } catch PhonePairingCredentialStorageError.invalidState {
             return .superseded
         } catch PhonePairingCredentialStorageError.corruptState {
@@ -159,7 +162,6 @@ final class PhonePairingClient {
         }
         guard generation == expectedGeneration else { return .superseded }
         normalTransport.connect(configuration: configuration)
-        publish(.active)
         return .recovered
     }
 
@@ -263,13 +265,8 @@ final class PhonePairingClient {
             )), socket: socket, generation: expectedGeneration, failure: "activation_failed")
         case .pairActive(let active):
             guard let pending,
-                  pending.credential.version == active.activePhoneCredentialVersion else {
-                fail("activation_failed", socket: socket)
-                return
-            }
-            do { try settings.promotePairingCredential(pending) }
-            catch { fail("storage_failed", socket: socket); return }
-            guard let relayWebSocketURL,
+                  pending.credential.version == active.activePhoneCredentialVersion,
+                  let relayWebSocketURL,
                   let configuration = try? RelayConfiguration.validated(
                     urlString: relayWebSocketURL.absoluteString,
                     token: pending.credential.token
@@ -277,6 +274,11 @@ final class PhonePairingClient {
                 fail("activation_failed", socket: socket)
                 return
             }
+            do {
+                try settings.promotePairingCredential(pending)
+                settings.relayURLString = relayWebSocketURL.absoluteString
+            }
+            catch { fail("storage_failed", socket: socket); return }
             generation &+= 1
             retire(reason: "pairing_complete")
             clearSensitive()
