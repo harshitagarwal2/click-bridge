@@ -8,27 +8,442 @@ const reviewedCaddy =
 const reviewedNode =
   "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43";
 
+function dockerfileBaseReferences(source) {
+  return source
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .flatMap((line) => {
+      const match = line.match(
+        /^\s*FROM\s+(?:(?:--platform=\S+)\s+)?([^\s#]+)(?:\s+AS\s+[^\s#]+)?\s*$/i,
+      );
+      return match ? [match[1]] : [];
+    });
+}
+
+function stripYamlComment(line) {
+  let quote = "";
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && (index === 0 || /\s/.test(line[index - 1]))) {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+function yamlScalar(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return JSON.parse(trimmed);
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replaceAll("''", "'");
+  }
+  return trimmed;
+}
+
+function yamlMapping(line) {
+  const mapping = line.match(
+    /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[A-Za-z0-9_.-]+)\s*:(?:\s*(.*))?$/,
+  );
+  if (!mapping) return null;
+  return { key: yamlScalar(mapping[1]), value: mapping[2] ?? "" };
+}
+
+function composeCaddyImageReferences(source) {
+  const stack = [];
+  const references = [];
+  let servicesCount = 0;
+  let caddyCount = 0;
+
+  for (const rawLine of source.split(/\r?\n/)) {
+    const line = stripYamlComment(rawLine);
+    if (!line.trim()) continue;
+    assert.ok(
+      !/^\s*[?:](?:\s|$)/.test(line),
+      "Compose must not use explicit YAML mapping keys",
+    );
+    const indent = line.match(/^\s*/)[0].length;
+    const mapping = yamlMapping(line.slice(indent));
+    if (!mapping) continue;
+
+    while (stack.length && stack.at(-1).indent >= indent) stack.pop();
+    const pathParts = [...stack.map(({ key }) => key), mapping.key];
+    const { value } = mapping;
+    if (pathParts.length === 1 && pathParts[0] === "services") {
+      servicesCount += 1;
+      assert.equal(value, "", "Compose services must use a block mapping");
+    }
+    if (
+      pathParts.length === 2 &&
+      pathParts[0] === "services" &&
+      pathParts[1] === "caddy"
+    ) {
+      caddyCount += 1;
+      assert.equal(value, "", "Compose caddy must use a block mapping");
+    }
+    if (
+      pathParts.length === 3 &&
+      pathParts[0] === "services" &&
+      pathParts[1] === "caddy" &&
+      pathParts[2] === "image" &&
+      value
+    ) {
+      references.push(yamlScalar(value));
+    }
+    if (!value) stack.push({ indent, key: mapping.key });
+  }
+
+  assert.equal(servicesCount, 1, "Compose must define services exactly once");
+  assert.equal(caddyCount, 1, "Compose must define the caddy service exactly once");
+  return references;
+}
+
+function shellCommandSegments(source) {
+  const segments = [];
+  let words = [];
+  let word = "";
+  let wordDynamic = false;
+  let quote = "";
+  let escaped = false;
+  let comment = false;
+
+  const finishWord = () => {
+    if (word) words.push({ dynamic: wordDynamic, value: word });
+    word = "";
+    wordDynamic = false;
+  };
+  const finishSegment = () => {
+    finishWord();
+    if (words.length) segments.push(words);
+    words = [];
+  };
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (comment) {
+      if (character === "\n") {
+        comment = false;
+        finishSegment();
+      }
+      continue;
+    }
+    if (escaped) {
+      if (character !== "\n") word += character;
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = "";
+      else {
+        if (quote === '"' && (character === "$" || character === "`")) {
+          wordDynamic = true;
+        }
+        word += character;
+      }
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && !word) {
+      comment = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      finishWord();
+      if (character === "\n") finishSegment();
+      continue;
+    }
+    if (";&|(){}".includes(character)) {
+      finishSegment();
+      if (
+        (character === "&" || character === "|") &&
+        source[index + 1] === character
+      ) {
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "$" || character === "`" || /[*?]/.test(character)) {
+      wordDynamic = true;
+    }
+    word += character;
+  }
+  assert.equal(quote, "", "deployment script contains an unterminated quote");
+  assert.equal(escaped, false, "deployment script ends inside an escape sequence");
+  finishSegment();
+  return segments;
+}
+
+const dockerRunOptionsWithValues = new Set([
+  "--add-host",
+  "--env",
+  "--env-file",
+  "--label",
+  "--name",
+  "--network",
+  "--publish",
+  "--volume",
+  "--workdir",
+]);
+const dockerRunBooleanOptions = new Set(["--detach", "--rm"]);
+
+function dockerRunImageAndCommand(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "--") {
+      return { image: tokens[index + 1], command: shellCommandBeforeRedirect(tokens.slice(index + 2)) };
+    }
+    if (!token.startsWith("-")) {
+      return { image: token, command: shellCommandBeforeRedirect(tokens.slice(index + 1)) };
+    }
+    if (dockerRunBooleanOptions.has(token) || token.includes("=")) {
+      index += 1;
+      continue;
+    }
+    assert.ok(
+      dockerRunOptionsWithValues.has(token),
+      `unsupported docker run option in deploy script: ${token}`,
+    );
+    index += 2;
+  }
+  return { image: undefined, command: [] };
+}
+
+function shellCommandBeforeRedirect(tokens) {
+  const redirectIndex = tokens.findIndex((token) => /^(?:\d*(?:>|<)|&>)/.test(token));
+  return redirectIndex < 0 ? tokens : tokens.slice(0, redirectIndex);
+}
+
+function shellCommandInvocationIndex(tokens) {
+  let index = 0;
+  const shellPrefixes = new Set([
+    "!",
+    "do",
+    "elif",
+    "if",
+    "then",
+    "time",
+    "until",
+    "while",
+  ]);
+  while (shellPrefixes.has(tokens[index]?.value)) index += 1;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]?.value ?? "")) index += 1;
+  return index < tokens.length ? index : -1;
+}
+
+function isLiteralDockerExecutable(token) {
+  return token === "docker" || token?.endsWith("/docker");
+}
+
+const unsafeShellAssignments = new Set([
+  "BASH_ENV",
+  "BASHOPTS",
+  "CDPATH",
+  "DOCKER_CONFIG",
+  "DOCKER_CONTEXT",
+  "DOCKER_HOST",
+  "DYLD_INSERT_LIBRARIES",
+  "ENV",
+  "IFS",
+  "LD_PRELOAD",
+  "PATH",
+  "SHELLOPTS",
+]);
+const reviewedShellExecutables = new Set([
+  ":",
+  "[[",
+  "break",
+  "cd",
+  "cleanup_candidate",
+  "compose_release",
+  "die",
+  "docker",
+  "done",
+  "else",
+  "esac",
+  "exit",
+  "export",
+  "fi",
+  "for",
+  "grep",
+  "local",
+  "mv",
+  "printf",
+  "pwd",
+  "read_pointer",
+  "release_directory",
+  "required_key",
+  "return",
+  "rm",
+  "secret_file_mode",
+  "sed",
+  "seq",
+  "set",
+  "shift",
+  "sleep",
+  "start_release",
+  "stat",
+  "tr",
+  "trap",
+  "true",
+  "umask",
+  "validate_git_release",
+  "validate_pointer_release",
+  "verify_candidate",
+  "verify_public_release",
+  "write_pointer",
+]);
+
+function assertSafeShellAssignments(segment) {
+  for (const { value } of segment) {
+    const assignment = value.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\+?=)/);
+    if (!assignment) continue;
+    assert.ok(
+      !unsafeShellAssignments.has(assignment[1]) &&
+        !assignment[1].startsWith("BASH_FUNC_"),
+      `deploy script must not replace command-resolution environment: ${assignment[1]}`,
+    );
+  }
+}
+
+function deployDockerRuns(source) {
+  const runs = [];
+  const subcommands = [];
+  for (const segment of shellCommandSegments(source)) {
+    assertSafeShellAssignments(segment);
+    if (
+      segment.every(({ value }) =>
+        /^(?:\d+(?:,\d+)*|\d?>.*|&>.*|\]\])$/.test(value),
+      )
+    ) {
+      continue;
+    }
+    const commandIndex = shellCommandInvocationIndex(segment);
+    if (commandIndex < 0) continue;
+    const executableToken = segment[commandIndex];
+    const subcommandToken = segment[commandIndex + 1];
+    const executable = executableToken.value;
+    const subcommand = subcommandToken?.value;
+    const executableName = executable.split("/").at(-1);
+
+    if (executableToken.dynamic) {
+      assert.equal(
+        segment.at(-1)?.value,
+        "]]",
+        `deploy script must not compute an executable command: ${JSON.stringify(segment)}`,
+      );
+      continue;
+    }
+
+    assert.ok(
+      reviewedShellExecutables.has(executableName),
+      `deploy script contains an unreviewed executable command: ${executableName}`,
+    );
+
+    for (let index = 0; index < segment.length - 1; index += 1) {
+      if (
+        !isLiteralDockerExecutable(segment[index].value) ||
+        segment[index + 1].value !== "run"
+      ) {
+        continue;
+      }
+      assert.ok(
+        index === commandIndex,
+        "deploy script contains docker run outside a structurally validated command position",
+      );
+    }
+
+    if (!isLiteralDockerExecutable(executable)) {
+      assert.notEqual(
+        subcommand,
+        "run",
+        "deploy script must not invoke docker run through an indirect executable",
+      );
+      continue;
+    }
+    assert.ok(subcommandToken, "docker invocation must include a literal subcommand");
+    assert.equal(
+      subcommandToken.dynamic,
+      false,
+      "docker subcommand must not be computed",
+    );
+    assert.ok(
+      ["compose", "exec", "logs", "rm", "run"].includes(subcommand),
+      `deploy script uses an unsupported docker subcommand: ${subcommand}`,
+    );
+    subcommands.push(subcommand);
+    if (subcommand !== "run") continue;
+    const { image, command } = dockerRunImageAndCommand(
+      segment.slice(commandIndex + 2).map(({ value }) => value),
+    );
+    runs.push({
+      command: command.slice(0, 2).join(" "),
+      executable,
+      image,
+    });
+  }
+  return { runs, subcommands };
+}
+
 export function validateDeploymentImages({ dockerfile, compose, deployScript }) {
-  const baseReferences = dockerfile.match(/node:24-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  const baseReferences = dockerfileBaseReferences(dockerfile);
   assert.deepEqual(
     baseReferences,
     [reviewedNode],
     "relay base image must use the reviewed digest; tag-only references are forbidden",
   );
 
-  const caddyReferences = compose.match(/caddy:2-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  const caddyReferences = composeCaddyImageReferences(compose);
   assert.deepEqual(
     caddyReferences,
     [reviewedCaddy],
     "Caddy must use exactly the reviewed digest; tag-only references are forbidden",
   );
 
-  const verifierReferences =
-    deployScript.match(/node:24-alpine(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+  const { runs: deployRuns, subcommands: dockerSubcommands } =
+    deployDockerRuns(deployScript);
   assert.deepEqual(
-    verifierReferences,
-    [reviewedNode, reviewedNode],
-    "both verifier containers must match the reviewed Node digest; tag-only references are forbidden",
+    dockerSubcommands,
+    ["compose", "rm", "run", "exec", "logs", "run", "run"],
+    "deploy script must contain exactly the reviewed Docker command sequence",
+  );
+  assert.deepEqual(
+    deployRuns,
+    [
+      { command: "", executable: "docker", image: "click-bridge-relay:$release" },
+      { command: "node -e", executable: "docker", image: reviewedNode },
+      { command: "sh -euc", executable: "docker", image: reviewedNode },
+    ],
+    "deploy script docker run images must be the candidate and both verifier containers with the reviewed Node digest",
   );
 }
 

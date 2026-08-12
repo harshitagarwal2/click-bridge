@@ -16,7 +16,45 @@ mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -eu
-printf 'release=%s docker %s\n' "${CLICK_BRIDGE_RELEASE:-unset}" "$*" >> "$FAKE_DOCKER_LOG"
+readonly EXPECTED_PHONE_TOKEN='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+readonly EXPECTED_MAC_TOKEN='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+readonly EXPECTED_DOMAIN='clickbridge.example.test'
+readonly EXPECTED_NODE='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43'
+readonly HEALTH_SCRIPT='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+readonly SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+
+fail_fake() {
+  printf 'fake docker rejected verifier contract: %s\n' "$1" >&2
+  exit 1
+}
+
+log_argv() {
+  {
+    printf 'release=%q docker' "${CLICK_BRIDGE_RELEASE:-unset}"
+    printf ' %q' "$@"
+    printf '\n'
+  } >> "$FAKE_DOCKER_LOG"
+}
+
+assert_exact_args() {
+  local description="$1"
+  shift
+  local -a expected=("$@")
+  local index
+  test "${#DOCKER_ARGS[@]}" -eq "${#expected[@]}" ||
+    fail_fake "$description argument count"
+  for index in "${!expected[@]}"; do
+    test "${DOCKER_ARGS[$index]}" = "${expected[$index]}" ||
+      fail_fake "$description argument $index"
+  done
+}
+
+record_env_spec() {
+  local env_spec="$1"
+  [[ "$env_spec" =~ ^[A-Za-z_][A-Za-z0-9_]*(=.*)?$ ]] ||
+    fail_fake 'malformed env option'
+  RUN_ENVS+=("$env_spec")
+}
 
 require_env() {
   local name="$1"
@@ -35,20 +73,130 @@ require_env_absent() {
   }
 }
 
-case "$*" in
-  *"run --detach"*) printf '%s\n' fake-candidate-id ;;
-  *"exec click-bridge-relay-candidate"*) test "${FAKE_CANDIDATE_FAIL:-0}" != 1 ;;
-  *"node -e"*)
+for argument in "$@"; do
+  case "$argument" in
+    *"$EXPECTED_PHONE_TOKEN"*|*"$EXPECTED_MAC_TOKEN"*)
+      fail_fake 'token value appeared in argv'
+      ;;
+  esac
+done
+
+DOCKER_ARGS=("$@")
+RUN_KIND=''
+RUN_IMAGE=''
+RUN_ENV_FILE=0
+RUN_ENVS=()
+RUN_COMMAND=()
+
+if test "${1:-}" = run; then
+  index=1
+  while test "$index" -lt "${#DOCKER_ARGS[@]}"; do
+    argument="${DOCKER_ARGS[$index]}"
+    case "$argument" in
+      -e)
+        next=$((index + 1))
+        test "$next" -lt "${#DOCKER_ARGS[@]}" || fail_fake '-e is missing a value'
+        record_env_spec "${DOCKER_ARGS[$next]}"
+        index=$((index + 2))
+        ;;
+      -e?*)
+        compact_env="${argument#-e}"
+        record_env_spec "$compact_env"
+        index=$((index + 1))
+        ;;
+      --detach|--rm)
+        index=$((index + 1))
+        ;;
+      --add-host|--env|--env-file|--name|--network|--publish|--volume|--workdir)
+        next=$((index + 1))
+        test "$next" -lt "${#DOCKER_ARGS[@]}" || fail_fake "$argument is missing a value"
+        if test "$argument" = --env; then
+          record_env_spec "${DOCKER_ARGS[$next]}"
+        elif test "$argument" = --env-file; then
+          RUN_ENV_FILE=1
+        fi
+        index=$((index + 2))
+        ;;
+      --*=*)
+        case "$argument" in
+          --env=*) record_env_spec "${argument#--env=}" ;;
+          --env-file=*) RUN_ENV_FILE=1 ;;
+          *) fail_fake "undeclared docker run option ${argument%%=*}" ;;
+        esac
+        index=$((index + 1))
+        ;;
+      --*)
+        fail_fake "undeclared docker run option $argument"
+        ;;
+      -*)
+        fail_fake "undeclared docker run option $argument"
+        ;;
+      *)
+        RUN_IMAGE="$argument"
+        RUN_COMMAND=("${DOCKER_ARGS[@]:$((index + 1))}")
+        break
+        ;;
+    esac
+  done
+  test -n "$RUN_IMAGE" || fail_fake 'docker run image is missing'
+
+  if test "${RUN_COMMAND[0]:-}" = node && test "${RUN_COMMAND[1]:-}" = -e; then
+    RUN_KIND=health
+    test "$RUN_ENV_FILE" -eq 0 || fail_fake 'health verifier used env-file'
+    test "${#RUN_ENVS[@]}" -eq 1 || fail_fake 'health verifier env allowlist'
+    test "${RUN_ENVS[0]}" = "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" ||
+      fail_fake 'health verifier env allowlist'
     require_env_absent PHONE_TOKEN
     require_env_absent MAC_TOKEN
-    ;;
-  *"scripts/smoke-relay.mjs"*)
-    require_env PHONE_TOKEN aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    require_env MAC_TOKEN bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-    test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}"
-    ;;
-  *) exit 0 ;;
-esac
+    assert_exact_args health \
+      run --rm --network host \
+      --add-host "$EXPECTED_DOMAIN:127.0.0.1" \
+      --env "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" \
+      "$EXPECTED_NODE" node -e "$HEALTH_SCRIPT"
+  elif test "${RUN_COMMAND[0]:-}" = sh && test "${RUN_COMMAND[1]:-}" = -euc; then
+    RUN_KIND=smoke
+    test "$RUN_ENV_FILE" -eq 0 || fail_fake 'smoke verifier used env-file'
+    test "${#RUN_ENVS[@]}" -eq 3 || fail_fake 'smoke verifier env allowlist'
+    test "${RUN_ENVS[0]}" = "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" ||
+      fail_fake 'smoke verifier env allowlist'
+    test "${RUN_ENVS[1]}" = PHONE_TOKEN || fail_fake 'smoke verifier env allowlist'
+    test "${RUN_ENVS[2]}" = MAC_TOKEN || fail_fake 'smoke verifier env allowlist'
+    require_env PHONE_TOKEN "$EXPECTED_PHONE_TOKEN"
+    require_env MAC_TOKEN "$EXPECTED_MAC_TOKEN"
+    test "${CLICK_BRIDGE_ROOT:-}" != '' || fail_fake 'smoke verifier release root is missing'
+    expected_relay_mount="$CLICK_BRIDGE_ROOT/releases/$CLICK_BRIDGE_RELEASE/relay:/workspace:ro"
+    test "${DOCKER_ARGS[13]:-}" = "$expected_relay_mount" ||
+      fail_fake 'smoke verifier volume'
+    assert_exact_args smoke \
+      run --rm --network host \
+      --add-host "$EXPECTED_DOMAIN:127.0.0.1" \
+      --env "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" \
+      --env PHONE_TOKEN \
+      --env MAC_TOKEN \
+      --volume "$expected_relay_mount" \
+      --workdir /tmp/smoke \
+      "$EXPECTED_NODE" sh -euc "$SMOKE_SCRIPT"
+  fi
+fi
+
+log_argv "$@"
+
+if test "${1:-}" = run && test "$RUN_KIND" = health; then
+  exit 0
+fi
+if test "${1:-}" = run && test "$RUN_KIND" = smoke; then
+  test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}"
+  exit
+fi
+if test "${1:-}" = run && test "$RUN_IMAGE" != '' && test "${RUN_COMMAND[0]:-}" = ''; then
+  printf '%s\n' fake-candidate-id
+  exit 0
+fi
+if test "${1:-}" = exec && test "${2:-}" = click-bridge-relay-candidate; then
+  test "${FAKE_CANDIDATE_FAIL:-0}" != 1
+  exit
+fi
+exit 0
 FAKE_DOCKER
 chmod +x "$FAKE_BIN/docker"
 
@@ -120,9 +268,114 @@ test -f "$DEPLOY_SCRIPT" || fail 'deploy-oci.sh does not exist'
 
 SHA_A='1111111111111111111111111111111111111111'
 SHA_B='2222222222222222222222222222222222222222'
-
+NODE_VERIFIER='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43'
+# This must match the literal script passed to Node.
+# shellcheck disable=SC2016
+HEALTH_COMMAND='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+# This must match the literal script run in the container.
+# shellcheck disable=SC2016
+SMOKE_COMMAND='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 root="$(new_case_root first-success)"
 add_release "$root" "$SHA_A"
+
+run_fake_health() {
+  FAKE_DOCKER_LOG="$FAKE_DOCKER_LOG" CLICK_BRIDGE_ROOT="$root" \
+    CLICK_BRIDGE_RELEASE="$SHA_A" PHONE_TOKEN='' MAC_TOKEN='' \
+    "$FAKE_BIN/docker" run --rm --network host \
+      --add-host clickbridge.example.test:127.0.0.1 \
+      --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test \
+      "$@" \
+      "$NODE_VERIFIER" node -e "$HEALTH_COMMAND"
+}
+
+run_fake_smoke() {
+  FAKE_DOCKER_LOG="$FAKE_DOCKER_LOG" CLICK_BRIDGE_ROOT="$root" \
+    CLICK_BRIDGE_RELEASE="$SHA_A" \
+    PHONE_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    MAC_TOKEN=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    "$FAKE_BIN/docker" run --rm --network host \
+      --add-host clickbridge.example.test:127.0.0.1 \
+      --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test \
+      --env PHONE_TOKEN \
+      --env MAC_TOKEN \
+      --volume "$root/releases/$SHA_A/relay:/workspace:ro" \
+      "$@" \
+      --workdir /tmp/smoke \
+      "$NODE_VERIFIER" sh -euc "$SMOKE_COMMAND"
+}
+
+assert_fake_rejects_health_extra() {
+  local description="$1"
+  shift
+  if run_fake_health "$@" 2>/dev/null; then
+    fail "fake docker accepted $description on the health verifier"
+  fi
+}
+
+assert_fake_rejects_smoke_extra() {
+  local description="$1"
+  shift
+  if run_fake_smoke "$@" 2>/dev/null; then
+    fail "fake docker accepted $description on the smoke verifier"
+  fi
+}
+
+: > "$FAKE_DOCKER_LOG"
+run_fake_health
+run_fake_smoke
+assert_fake_rejects_health_extra 'an env outside its allowlist' --env HOME
+assert_fake_rejects_health_extra \
+  'a mount' \
+  --volume "$root/shared/secrets.env:/tmp/secrets:ro"
+assert_fake_rejects_smoke_extra 'an env-file' --env-file /tmp/decoy.env
+assert_fake_rejects_smoke_extra \
+  'a token value in argv' \
+  --env PHONE_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+assert_fake_rejects_smoke_extra \
+  'an extra volume' \
+  --volume "$root/shared/secrets.env:/tmp/secrets:ro"
+assert_fake_rejects_smoke_extra \
+  'a short-form volume' \
+  -v "$root/shared/secrets.env:/tmp/secrets:ro"
+assert_fake_rejects_smoke_extra \
+  'a compact short-form volume' \
+  "-v$root/shared/secrets.env:/tmp/secrets:ro"
+assert_fake_rejects_smoke_extra \
+  'a compact inherited env' \
+  -eHOME
+assert_fake_rejects_smoke_extra \
+  'a compact token value' \
+  -ePHONE_TOKEN=inherited-phone
+assert_fake_rejects_smoke_extra \
+  'a malformed compact env' \
+  -e=NAME
+assert_fake_rejects_smoke_extra \
+  'a missing compact env value' \
+  -e
+assert_fake_rejects_smoke_extra \
+  'a missing long env value' \
+  --env
+assert_fake_rejects_smoke_extra \
+  'a bind mount' \
+  --mount="type=bind,source=$root/shared/secrets.env,target=/tmp/secrets,readonly"
+assert_fake_rejects_smoke_extra \
+  'a split bind mount' \
+  --mount "type=bind,source=$root/shared/secrets.env,target=/tmp/secrets,readonly"
+assert_fake_rejects_smoke_extra \
+  'an inline env-file' \
+  --env-file="$root/shared/secrets.env"
+assert_fake_rejects_smoke_extra \
+  'a device' \
+  --device /dev/null
+assert_fake_rejects_smoke_extra \
+  'a secret option' \
+  --secret "$root/shared/secrets.env"
+assert_fake_rejects_smoke_extra \
+  'an unknown privilege option' \
+  --cap-add SYS_ADMIN
+assert_log_not_contains 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+assert_log_not_contains 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+
 : > "$FAKE_DOCKER_LOG"
 run_deploy "$root" "$SHA_A" PHONE_TOKEN=inherited-phone MAC_TOKEN=inherited-mac
 assert_file_equals "$root/current-release" "$SHA_A"
@@ -136,6 +389,8 @@ assert_log_contains 'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275
 assert_log_not_contains "docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env-file $root/shared/secrets.env"
 assert_log_not_contains 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 assert_log_not_contains 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+assert_log_not_contains 'inherited-phone'
+assert_log_not_contains 'inherited-mac'
 
 root="$(new_case_root replacement-success)"
 add_release "$root" "$SHA_A"
