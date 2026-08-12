@@ -97,7 +97,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install XcodeGen
+      - name: Install pinned XcodeGen
         run: |
           set -Eeuo pipefail
           version='2.46.0'
@@ -169,6 +169,11 @@ jobs:
             mac/ClickBridgeMac/Info.plist \
             ios/ClickBridgePhone.xcodeproj/project.pbxproj \
             ios/ClickBridgePhone/Info.plist
+          test -z "$(git ls-files --others --exclude-standard -- \
+            mac/ClickBridgeMac.xcodeproj \
+            mac/ClickBridgeMac/Info.plist \
+            ios/ClickBridgePhone.xcodeproj \
+            ios/ClickBridgePhone/Info.plist)"
 
       - name: Select iPhone simulator
         if: ${{ hashFiles('ios/project.yml') != '' }}

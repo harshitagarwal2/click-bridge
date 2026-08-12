@@ -1,0 +1,9 @@
+Please test all three click triggers while the iPhone app is in the foreground:
+
+1. Change the system output volume once.
+2. Tap Trigger 3 Clicks in the app.
+3. Run the Trigger 3 Clicks App Shortcut.
+
+For each trigger, confirm that the iPhone reports one action result with haptic feedback and that the connected Mac posts exactly three independent clicks at its current pointer location.
+
+The Mac must be connected to the relay and must have Accessibility permission. Please also report which audio route was active (built-in speaker, wired/Bluetooth headset, or AirPods) when testing volume changes.

@@ -1,5 +1,33 @@
 import Foundation
 
+enum PhoneAppIssue: LocalizedError, Equatable, Sendable {
+    case invalidSettings
+    case secureStorageUnavailable
+    case volumeMonitoringUnavailable
+
+    var message: String {
+        switch self {
+        case .invalidSettings:
+            "Relay settings are invalid. Open Settings to reconnect."
+        case .secureStorageUnavailable:
+            "Secure storage is unavailable. Try again or restart the app."
+        case .volumeMonitoringUnavailable:
+            "System volume monitoring is unavailable. Try reopening the app."
+        }
+    }
+
+    var errorDescription: String? { message }
+
+    var settingsMessage: String? {
+        switch self {
+        case .invalidSettings, .secureStorageUnavailable:
+            message
+        case .volumeMonitoringUnavailable:
+            nil
+        }
+    }
+}
+
 enum PhonePrimaryStatus: Equatable, Sendable {
     case notConnected, anotherPhoneTookOver, macOffline, macNotReady, checkingClock, clockMismatch, sending
     case atVolumeBoundary(VolumeBoundary)
@@ -45,7 +73,7 @@ struct PhoneState: Equatable, Sendable {
     var volume = VolumeReading(value: 0)
     var actionPhase: PhoneActionPhase = .idle
     var lastActionOutcome: String?
-    var settingsError: String?
+    var issue: PhoneAppIssue?
     var phoneTakenOver = false
 
     var primaryStatus: PhonePrimaryStatus {
@@ -64,5 +92,42 @@ struct PhoneState: Equatable, Sendable {
         }
         if let boundary = volume.boundary { return .atVolumeBoundary(boundary) }
         return .ready
+    }
+
+    var primaryStatusDetail: String? {
+        guard foregroundSessionActive else { return primaryStatus.detail }
+        switch connection {
+        case .connecting:
+            return "Connecting to the relay."
+        case .authenticating:
+            return "Authenticating with the relay."
+        case .backoff:
+            return "Connection lost. Retrying automatically."
+        case .disconnected, .authenticated, .takenOver:
+            return primaryStatus.detail
+        }
+    }
+}
+
+extension ResultReason {
+    var userFacingDescription: String {
+        switch self {
+        case .ok:
+            "The click was posted."
+        case .permissionRequired:
+            "Mac Accessibility permission is required."
+        case .remoteDisabled:
+            "Remote control is disabled on the Mac."
+        case .idConflict:
+            "The click request conflicted with an earlier request."
+        case .expired:
+            "The click request expired before it could be posted."
+        case .capacityExceeded:
+            "The relay is busy. Try again."
+        case .eventCreationFailed:
+            "The Mac could not create the click event."
+        case .invalidRequest:
+            "The relay rejected the click request."
+        }
     }
 }

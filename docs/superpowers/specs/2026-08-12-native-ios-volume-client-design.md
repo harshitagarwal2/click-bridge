@@ -146,9 +146,9 @@ The XcodeGen source of truth is `ios/project.yml`. It generates `ios/ClickBridge
 | `ios/project.yml` | iOS app/test targets, shared scheme, fixture resources, build settings |
 | `ios/Config/Base.xcconfig` | checked-in nonsecret defaults and signing-neutral build configuration |
 | `ios/Config/Local.xcconfig.example` | documented local development-team override; contains no token |
-| `ClickBridgePhoneApp.swift` | composition root and SwiftUI scene-phase forwarding |
-| `PhoneAppModel.swift` | foreground-session owner, event routing, presentation state |
-| `PhoneState.swift` | pure readiness/status derivation and domain value types |
+| `ClickBridgePhoneApp.swift` | composition root, Observation-backed model ownership, and SwiftUI scene-phase forwarding |
+| `PhoneAppModel.swift` | foreground-session owner, event routing, typed app issues, settings save/reconnect behavior, and presentation state |
+| `PhoneState.swift` | pure readiness/status derivation, connection-specific detail, readable result descriptions, and domain value types |
 | `PhonePorts.swift` | injected port protocols and shared adapter contracts |
 | `VolumeDeltaController.swift` | baseline, duplicate suppression, direction/boundary derivation, observer generation |
 | `AVAudioSessionVolumeSource.swift` | `outputVolume` KVO and audio-session activation/deactivation only |
@@ -157,9 +157,9 @@ The XcodeGen source of truth is `ios/project.yml`. It generates `ios/ClickBridge
 | `PhoneClockHealthController.swift` | five-sample time sync, best-sample selection, timeouts and refresh |
 | `PhoneWireProtocol.swift` | protocol v1 constants and Codable wire value types |
 | `StrictPhoneWireDecoder.swift` | text-only, size, exact-field, role and semantic validation |
-| `PhoneSettingsStore.swift` | relay URL persistence and token lifecycle |
+| `PhoneSettingsStore.swift` | relay URL persistence, split URL/token validation, and stored-token lifecycle |
 | `KeychainStore.swift` | Security-framework secret adapter |
-| `ContentView.swift` | status, current volume, boundary/source explanations, settings UI |
+| `ContentView.swift` | scrolling dashboard, readiness-gated click control, validated settings draft, accessibility behavior, and deterministic previews |
 
 ### Port contracts
 
@@ -224,16 +224,21 @@ Production adapters and deterministic fakes implement the same contracts. Fakes 
 | Five clock samples, current exchange and refresh timer | `PhoneClockHealthController` |
 | Pending action ID, generation and result timeout | `PhoneActionCoordinator` |
 | Relay URL and token presence | `PhoneSettingsStore` |
-| User-visible status | pure derivation in `PhoneState` from model snapshots |
+| Settings field values and save error while the sheet is open | `RelaySettingsDraft` in `SettingsView` |
+| Typed app issue and last action outcome | `PhoneAppModel` |
+| User-visible primary status, connection detail, and readable reason text | pure derivation in `PhoneState` from model snapshots and protocol values |
+| Dashboard accessibility focus | `DashboardView` |
 
 No event bus, service locator, dependency-injection container, offline queue, retry queue, persistent action record, camera capture path, or silent-audio playback loop is introduced.
 
 ## Settings and Security
 
-- The user configures a `wss://` relay URL ending in `/ws` and a 64-character lowercase hexadecimal `PHONE_TOKEN` in the app.
+- First setup requires a valid `wss://` relay URL ending in `/ws` and a 64-character lowercase hexadecimal `PHONE_TOKEN`. After a token is stored, the user may save a valid URL with the token field blank to reuse the Keychain token, or provide a valid replacement token.
 - The relay URL is stored in `UserDefaults`; the token is stored as a generic-password Keychain item under service `com.clickbridge.phone` and account `phoneToken`.
 - URL validation rejects credentials, query strings, fragments, non-WSS schemes, and paths other than `/ws`.
 - The token appears only in the `hello` text frame. It never appears in a URL, error string, log, analytics event, build setting, source file, screenshot label, or checked-in xcconfig.
+- The settings sheet validates its draft before enabling Save. A failed save preserves the URL and sensitive token draft in memory for correction; changing either field clears the stale error. A successful save clears the token field before dismissal.
+- Invalid settings, secure-storage failure, and volume-monitoring failure are separate typed issues with distinct recovery copy.
 - Changing configuration while foregrounded ends the current generation and begins a newly authenticated and clock-validated session. No pending action crosses configuration generations.
 
 ## User Interface
@@ -244,6 +249,7 @@ The main screen shows:
 - current system volume as a percentage;
 - last Mac result and measured local elapsed time when present;
 - a settings button for relay URL and token;
+- a readiness-gated **Trigger 3 Clicks** button that invokes the same one-in-flight action coordinator as a volume delta;
 - the permanent disclosure: “Any system volume change can trigger, including Control Center, wired or Bluetooth headsets, and AirPods.”
 
 Boundary copy is exact:
@@ -251,11 +257,15 @@ Boundary copy is exact:
 - `0%`: “At volume boundary. Volume Down cannot create another change, so it cannot be detected. Volume Up can still trigger.”
 - `100%`: “At volume boundary. Volume Up cannot create another change, so it cannot be detected. Volume Down can still trigger.”
 
+Connecting, authenticating, and automatic reconnect backoff provide distinct status detail. Rejection reasons are translated into readable action results, including Mac Accessibility permission, remote-control, expiry, relay-capacity, event-creation, conflict, and invalid-request outcomes.
+
+The dashboard uses a `ScrollView` and scaled volume typography so controls remain reachable at accessibility Dynamic Type sizes. VoiceOver receives stable labels and identifiers for status, issues, volume, trigger, outcomes, retry, settings fields, errors, and toolbar actions. Accessibility focus moves only to newly presented or changed issues and action outcomes. Deterministic previews render disconnected, ready, clock-retry accessibility text, first-setup settings, and stored-token error states without live platform or network dependencies.
+
 The screen exposes a readiness-gated **Trigger 3 Clicks** button and App Shortcut through the same coordinator as volume deltas; neither path bypasses the one-in-flight or lifecycle gates. The existing PWA retains tap fallback behavior with truthful three-click copy.
 
 ## Test Strategy
 
-All domain behavior uses deterministic fakes. XCTest runs on the generated iOS test target; existing JSON contract fixtures are included as test resources.
+All domain behavior uses deterministic fakes. XCTest runs on the generated iOS test target; existing JSON contract fixtures are included as test resources. The current full Simulator suite passes 83/83 tests, including the original ten SwiftUI correction tests and two accessibility-focus transition regressions.
 
 | Area | Required deterministic cases |
 | --- | --- |
@@ -268,8 +278,10 @@ All domain behavior uses deterministic fakes. XCTest runs on the generated iOS t
 | Heartbeat/reconnect | exact intervals/timeouts, full-jitter cap, one live socket, authentication before readiness |
 | Clock | five exchanges, minimum nonnegative RTT sample, mismatch, unavailable timeout, refresh, stale batch generation |
 | Expiry/result | `expiresAtUnixMs == issuedAtUnixMs + 2_000`; forwarded ack stays pending; terminal relay rejection settles without haptic; matching Mac result settles with one haptic; `4,000 ms` timeout becomes unknown without retry |
-| UI state | Ready, Not connected, Mac offline, Clock mismatch, both boundary messages and Mac-not-ready states |
-| Settings | WSS/path/token validation, URL persistence, Keychain save/read/delete/failure, token absent from descriptions |
+| UI state | Ready, Not connected, Mac offline, Clock mismatch, both boundary messages, Mac-not-ready states, connection-specific detail, typed app issues, readable rejection results, and accessibility-focus transitions |
+| Settings | validated draft; first-setup token requirement; stored-token URL-only save; WSS/path/token validation; URL persistence; Keychain save/read/delete/failure; failed-save draft preservation and stale-error clearing; token absent from descriptions |
+
+Deterministic previews support disconnected, ready, retry, first-setup, and stored-token-error review. Dynamic Type scrolling, stable accessibility labels and identifiers, and focus movement for new or changed issues/results are verified through the manual acceptance gate below.
 
 ## Build and Acceptance Gates
 
@@ -293,7 +305,8 @@ The simulator can prove compilation, deterministic behavior, UI state rendering,
 4. Exercise rapid distinct presses, a held key, Control Center, wired/Bluetooth controls when available, and AirPods when available; record observed deltas and terminal action IDs without claiming physical source identity.
 5. Background the app and verify volume changes send nothing; reactivate and verify no send is possible until authentication, Mac state, and all five clock samples complete.
 6. Verify the `0%` and `100%` explanations and the detectable inward direction.
-7. Confirm the PWA still passes its existing tests and remains available after the native app disconnects.
+7. At accessibility Dynamic Type sizes, verify the dashboard and settings remain scrollable with every control reachable; with VoiceOver, verify stable labels and focus movement to a new or changed issue and action result without refocusing unchanged history.
+8. Confirm the PWA still passes its existing tests and remains available after the native app disconnects.
 
 The hardware-volume requirement is not accepted from simulator evidence. If no physical iPhone and signing identity are available, the implementation can be build/test complete but remains explicitly blocked on physical-device acceptance.
 

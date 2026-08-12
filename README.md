@@ -28,6 +28,8 @@ the automated evidence does not stand in for those gates.
 
 Repository and environment facts are recorded in
 [`docs/preflight.md`](docs/preflight.md).
+Xcode Cloud setup, workflow ownership, and TestFlight rollout are recorded in
+[`docs/xcode-cloud.md`](docs/xcode-cloud.md).
 
 ## Delivery acceptance path
 

@@ -10,6 +10,13 @@ deploy/oci/.env
 deploy/oci/.env.previous
 mac/Config/Local.xcconfig
 ios/Config/Local.xcconfig
+# Apple signing and App Store Connect credentials
+AuthKey_*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.certSigningRequest
 *.dmg
 .DS_Store
 benchmarks/*.csv

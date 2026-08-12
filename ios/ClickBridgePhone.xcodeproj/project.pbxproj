@@ -67,6 +67,7 @@
 		E94CA166F787E72B23FAA29E /* relay.ack.mac-offline.json in Resources */ = {isa = PBXBuildFile; fileRef = CEBF6F30A4C9A76B8E3AA455 /* relay.ack.mac-offline.json */; };
 		F2CBED067392EA876634C027 /* diagnostics.request.json in Resources */ = {isa = PBXBuildFile; fileRef = B946FCA4D59F52C0616A44A2 /* diagnostics.request.json */; };
 		FC908E1F6B80FCFFA54896B9 /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = 751FF4BD78E51CB183F13C80 /* unknown-field.json */; };
+		FE0FEEEA8FDF119CE0478AAB /* SettingsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 169735BA84EA671F01741E8A /* SettingsPresentationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -81,6 +82,7 @@
 
 /* Begin PBXFileReference section */
 		1026C2587167C684DB3D1BEA /* malformed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = malformed.json; sourceTree = "<group>"; };
+		169735BA84EA671F01741E8A /* SettingsPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPresentationTests.swift; sourceTree = "<group>"; };
 		19A6D6AB40E5A6F2870DA4BC /* PhoneActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneActionCoordinator.swift; sourceTree = "<group>"; };
 		1B3676A7E98ABE97922C7B59 /* wrong-role.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-role.json"; sourceTree = "<group>"; };
 		1BE0E7F9262B9CC7CEA0B845 /* PhoneLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLifecycleTests.swift; sourceTree = "<group>"; };
@@ -139,6 +141,7 @@
 		E24E6ECB379D94CEAE69CC0C /* StrictPhoneWireDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictPhoneWireDecoder.swift; sourceTree = "<group>"; };
 		E27D9D36416B5A1D8FC4332E /* relay.ack.rejected-expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-expired.json"; sourceTree = "<group>"; };
 		E40162D7B83EEB1DB7934914 /* action.result.rejected.capacity-exceeded.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.capacity-exceeded.json"; sourceTree = "<group>"; };
+		EA6EBA2119B44D01EE9B3DE2 /* WhatToTest.en-US.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "WhatToTest.en-US.txt"; sourceTree = "<group>"; };
 		F34DF61DC641B6FDAE25648A /* action.result.rejected.id-conflict.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.id-conflict.json"; sourceTree = "<group>"; };
 		F3EF3F71B5800400F630173B /* action.result.rejected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.json; sourceTree = "<group>"; };
 		F7A3879462463502A9004BCB /* hello.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.mac.json; sourceTree = "<group>"; };
@@ -230,6 +233,7 @@
 				C97DDD527D6A00EC40F8A64C /* ClickBridgePhoneTests */,
 				2A81D1E9F6E38F23A5BCDE1B /* Config */,
 				9826F3614056D3C23786CDAC /* contracts */,
+				FA295FE26BFB877572240796 /* TestFlight */,
 				2D85477860873EEA8CF263B7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -268,10 +272,19 @@
 				37012802B807C906E27AA628 /* PhoneSettingsStoreTests.swift */,
 				A819423ED6FC50E8802225C9 /* PhoneStateTests.swift */,
 				9A94B694A3F2115B2C872DFB /* PhoneWireProtocolTests.swift */,
+				169735BA84EA671F01741E8A /* SettingsPresentationTests.swift */,
 				3EA9581C90F55AECA9BCDCCF /* TestDoubles.swift */,
 				2995194A5DDCFFBE8D7CF01B /* VolumeDeltaControllerTests.swift */,
 			);
 			path = ClickBridgePhoneTests;
+			sourceTree = "<group>";
+		};
+		FA295FE26BFB877572240796 /* TestFlight */ = {
+			isa = PBXGroup;
+			children = (
+				EA6EBA2119B44D01EE9B3DE2 /* WhatToTest.en-US.txt */,
+			);
+			path = TestFlight;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -324,9 +337,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					46E692EA4409C3C7406D6C0E = {
+						DevelopmentTeam = EC3R6XQ226;
 						ProvisioningStyle = Automatic;
 					};
 					52A00CE2006CC036262C0DF7 = {
+						DevelopmentTeam = EC3R6XQ226;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -416,6 +431,7 @@
 				D421C5C7B2872B8D1B76E9B0 /* PhoneSettingsStoreTests.swift in Sources */,
 				34B36381D7692D6D5DC858EB /* PhoneStateTests.swift in Sources */,
 				7B8954F135104108209A3CD7 /* PhoneWireProtocolTests.swift in Sources */,
+				FE0FEEEA8FDF119CE0478AAB /* SettingsPresentationTests.swift in Sources */,
 				305330481293DB88D0E4A0F6 /* TestDoubles.swift in Sources */,
 				8624142A487B3DA1B2361385 /* VolumeDeltaControllerTests.swift in Sources */,
 			);

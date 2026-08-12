@@ -41,7 +41,7 @@ final class PhoneLifecycleTests: XCTestCase {
 
         XCTAssertEqual(harness.model.state.primaryStatus, .notConnected)
         XCTAssertEqual(harness.transport.disconnectReasons, ["settings_invalid"])
-        XCTAssertNotNil(harness.model.state.settingsError)
+        XCTAssertEqual(harness.model.state.issue, .invalidSettings)
     }
 
     func testSavingFirstValidTokenWhileActiveStartsForegroundSession() throws {
@@ -56,6 +56,44 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertEqual(harness.transport.configurations.last?.url.absoluteString, "wss://new.example/ws")
         XCTAssertEqual(harness.source.startCount, 1)
         XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testSavingValidReplacementRepairsAnInvalidPersistedURL() throws {
+        let harness = try Harness(relayURL: "https://stale.example/ws")
+        let replacementToken = String(repeating: "b", count: 64)
+
+        try harness.model.saveSettings(urlString: "wss://new.example/ws",
+                                       token: replacementToken)
+
+        XCTAssertEqual(harness.model.settings.relayURLString, "wss://new.example/ws")
+        XCTAssertEqual(harness.secret.value, replacementToken)
+        XCTAssertNil(harness.model.state.issue)
+    }
+
+    func testSavingURLOnlyReusesExistingStoredToken() throws {
+        let harness = try Harness()
+        let existingToken = try XCTUnwrap(harness.secret.value)
+        harness.model.scenePhaseChanged(.active)
+
+        try harness.model.saveSettings(urlString: "wss://new.example/ws", token: "")
+
+        XCTAssertEqual(harness.secret.value, existingToken)
+        XCTAssertEqual(harness.model.settings.relayURLString, "wss://new.example/ws")
+        XCTAssertEqual(harness.transport.configurations.last,
+                       RelayConfiguration(url: try XCTUnwrap(URL(string: "wss://new.example/ws")),
+                                          token: existingToken))
+        XCTAssertEqual(harness.transport.disconnectReasons, ["settings_changed"])
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testVolumeMonitoringFailureIsNotReportedAsInvalidSettings() throws {
+        let harness = try Harness(startError: NSError(domain: "AVAudioSession", code: 1))
+
+        harness.model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(harness.model.state.issue, .volumeMonitoringUnavailable)
+        XCTAssertFalse(harness.model.state.foregroundSessionActive)
+        XCTAssertEqual(harness.transport.disconnectReasons, ["volume_monitoring_unavailable"])
     }
 
     func testTransportDropAbandonsPendingSoRecoveryCanSendAgain() throws {
@@ -283,12 +321,16 @@ final class PhoneLifecycleTests: XCTestCase {
         let secret: LifecycleSecretStore
         let model: PhoneAppModel
 
-        init(token: String? = String(repeating: "a", count: 64), writeError: Error? = nil) throws {
+        init(token: String? = String(repeating: "a", count: 64),
+             relayURL: String = "wss://relay.example/ws",
+             writeError: Error? = nil,
+             startError: Error? = nil) throws {
             let defaults = UserDefaults(suiteName: UUID().uuidString)!
-            defaults.set("wss://relay.example/ws", forKey: PhoneSettingsStore.relayURLKey)
+            defaults.set(relayURL, forKey: PhoneSettingsStore.relayURLKey)
             let secret = LifecycleSecretStore(value: token, writeError: writeError)
             let settings = try PhoneSettingsStore(defaults: defaults, secrets: secret)
             let source = FakeVolumeChangeSource(volume: 0.5)
+            source.startError = startError
             let transport = FakePhoneActionTransport()
             let scheduler = FakePhoneScheduler()
             let clock = FakePhoneClock()

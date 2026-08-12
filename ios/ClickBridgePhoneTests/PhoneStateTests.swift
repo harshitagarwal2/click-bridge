@@ -46,4 +46,66 @@ final class PhoneStateTests: XCTestCase {
         state.volume = .init(value: 0.5)
         XCTAssertEqual(state.primaryStatus, .ready)
     }
+
+    func testConnectionProgressProvidesSpecificRecoveryDetail() {
+        var state = PhoneState()
+        state.foregroundSessionActive = true
+
+        state.connection = .connecting
+        XCTAssertEqual(state.primaryStatusDetail, "Connecting to the relay.")
+
+        state.connection = .authenticating
+        XCTAssertEqual(state.primaryStatusDetail, "Authenticating with the relay.")
+
+        state.connection = .backoff
+        XCTAssertEqual(state.primaryStatusDetail, "Connection lost. Retrying automatically.")
+    }
+
+    func testRejectionReasonsHaveReadableActionResults() {
+        XCTAssertEqual(ResultReason.permissionRequired.userFacingDescription,
+                       "Mac Accessibility permission is required.")
+        XCTAssertEqual(ResultReason.remoteDisabled.userFacingDescription,
+                       "Remote control is disabled on the Mac.")
+        XCTAssertEqual(ResultReason.capacityExceeded.userFacingDescription,
+                       "The relay is busy. Try again.")
+    }
+
+    func testOnlySettingsRelatedIssuesAreForwardedIntoSettings() {
+        XCTAssertEqual(PhoneAppIssue.invalidSettings.settingsMessage,
+                       PhoneAppIssue.invalidSettings.message)
+        XCTAssertEqual(PhoneAppIssue.secureStorageUnavailable.settingsMessage,
+                       PhoneAppIssue.secureStorageUnavailable.message)
+        XCTAssertNil(PhoneAppIssue.volumeMonitoringUnavailable.settingsMessage)
+    }
+
+    func testDashboardAccessibilityFocusPrefersIssueWhenIssueAndOutcomeAreNew() {
+        let previous = DashboardAccessibilityAnnouncement(issue: nil, outcome: nil)
+
+        XCTAssertEqual(DashboardAccessibilityAnnouncement(issue: .invalidSettings,
+                                                           outcome: "Posted in 12 ms").focusChange(from: previous),
+                       .issue)
+        XCTAssertEqual(DashboardAccessibilityAnnouncement(issue: nil,
+                                                           outcome: "Posted in 12 ms").focusChange(from: previous),
+                       .outcome)
+        XCTAssertNil(DashboardAccessibilityAnnouncement(issue: nil,
+                                                         outcome: nil).focusChange(from: previous))
+    }
+
+    func testDashboardAccessibilityFocusIgnoresUnchangedOutcomeWhenIssueClears() {
+        let previous = DashboardAccessibilityAnnouncement(issue: .invalidSettings,
+                                                           outcome: "Posted in 12 ms")
+        let current = DashboardAccessibilityAnnouncement(issue: nil,
+                                                          outcome: "Posted in 12 ms")
+
+        XCTAssertNil(current.focusChange(from: previous))
+    }
+
+    func testDashboardAccessibilityFocusPrefersChangedIssueWhenOutcomeAlsoChanges() {
+        let previous = DashboardAccessibilityAnnouncement(issue: nil,
+                                                           outcome: "Posted in 12 ms")
+        let current = DashboardAccessibilityAnnouncement(issue: .volumeMonitoringUnavailable,
+                                                          outcome: "Mac Accessibility permission is required.")
+
+        XCTAssertEqual(current.focusChange(from: previous), .issue)
+    }
 }
