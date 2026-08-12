@@ -8,6 +8,7 @@ DerivedData/
 deploy/oci/.env
 deploy/oci/.env.previous
 mac/Config/Local.xcconfig
+ios/Config/Local.xcconfig
 *.dmg
 .DS_Store
 benchmarks/*.csv

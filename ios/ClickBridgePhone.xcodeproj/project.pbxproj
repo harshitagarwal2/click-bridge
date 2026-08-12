@@ -7,63 +7,66 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		046C79D027EBBB7BE304AF2B /* heartbeat.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 2820992B9751E6C926090A91 /* heartbeat.request.json */; };
 		065BD567E3785B402A0855BB /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AF78A40C08CC8D2B666CFE5 /* ContentView.swift */; };
+		0B0A468E6F044773E1F8A718 /* state.json in Resources */ = {isa = PBXBuildFile; fileRef = 57CD6F3CDD446AAA11BA459D /* state.json */; };
 		0BDDEAE7A3419332AAE1EA68 /* PhonePorts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D96F4AF51FF721DBFFB754 /* PhonePorts.swift */; };
 		0DC086D1E7662680697FCF3C /* PhoneWireProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5697FCA42A34E1F65DCC1664 /* PhoneWireProtocol.swift */; };
+		0FBF3EAC572CE4CCBAFE6CCD /* relay.ack.rejected-invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = 2E732BEF4A9C9923D0AC11D2 /* relay.ack.rejected-invalid-request.json */; };
 		109610365CF557AD54624437 /* PhoneActionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6F28DA587801EBD819EB398 /* PhoneActionCoordinatorTests.swift */; };
-		11C5914060A4D6F160601A53 /* malformed.json in Resources */ = {isa = PBXBuildFile; fileRef = 5A5A00CD4282D1788FD40426 /* malformed.json */; };
-		1376351FA984E651A977708F /* time.sync.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 3B2FF728E9899D1BBFCF2AE7 /* time.sync.request.json */; };
-		14583E69BC6124C722E3ED4A /* diagnostics.counters.json in Resources */ = {isa = PBXBuildFile; fileRef = 094C7805B30B2B5AEEF8D6C1 /* diagnostics.counters.json */; };
-		18CE11A823B7B6344D0B6408 /* invalid-result-reason.json in Resources */ = {isa = PBXBuildFile; fileRef = B17F6BA11E85C301C5DA827C /* invalid-result-reason.json */; };
-		2179C397C7617FB59824B1C3 /* action.result.rejected.expired.json in Resources */ = {isa = PBXBuildFile; fileRef = 020EA6E9AC915259919A9CD6 /* action.result.rejected.expired.json */; };
-		229BA93E23D9381128CBF4C7 /* action.result.rejected.json in Resources */ = {isa = PBXBuildFile; fileRef = 78E111D0B1A3A92D8B251643 /* action.result.rejected.json */; };
+		1B3ABC168A8E807AEFF77690 /* oversized.json in Resources */ = {isa = PBXBuildFile; fileRef = 5002D579F0DDE9F6C8C7728E /* oversized.json */; };
 		235178D0FFBE2AF0883A378E /* AVAudioSessionVolumeSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FAC5220384CDDA8E3B4334A /* AVAudioSessionVolumeSource.swift */; };
 		2B8984B9B84A9CCA72EA0875 /* PhoneRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA6F46C08252D6500E29AA1 /* PhoneRelayClient.swift */; };
-		2CD820FC47FBB6F30E80B92C /* oversized.json in Resources */ = {isa = PBXBuildFile; fileRef = E4BB3DD6075582D3E7A72812 /* oversized.json */; };
 		2D08DF4588EC6158772F30B1 /* PhoneLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BE0E7F9262B9CC7CEA0B845 /* PhoneLifecycleTests.swift */; };
+		2EABE7107676C397AA372571 /* action.request.json in Resources */ = {isa = PBXBuildFile; fileRef = B06837C01E288F47112046A9 /* action.request.json */; };
 		305330481293DB88D0E4A0F6 /* TestDoubles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA9581C90F55AECA9BCDCCF /* TestDoubles.swift */; };
-		3218E968ACC394BEA09E756F /* action.result.rejected.event-creation-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = 96E823D806358FFF7F349F11 /* action.result.rejected.event-creation-failed.json */; };
 		33FCB83F6AE07746CFBA6A7A /* PhoneState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 559AB89DCED1360CDBC403E9 /* PhoneState.swift */; };
 		34B36381D7692D6D5DC858EB /* PhoneStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A819423ED6FC50E8802225C9 /* PhoneStateTests.swift */; };
 		3CF376EB1AFCC1F39BCE9808 /* PhoneSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720491FC42ED8E19B9D4728F /* PhoneSettingsStore.swift */; };
-		3FBAF4326C4C2E59D196D7EB /* binary-descriptor.json in Resources */ = {isa = PBXBuildFile; fileRef = 2991D289C48941622984498C /* binary-descriptor.json */; };
-		457EF9C19C0F5BE8B82BD627 /* action.result.rejected.invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = 4F1AE60F1A2E8A20395BA06E /* action.result.rejected.invalid-request.json */; };
-		49C86F7232685F0216642F74 /* hello.ok.json in Resources */ = {isa = PBXBuildFile; fileRef = F5DE857468D0853204006EC7 /* hello.ok.json */; };
+		443E9DAB0164C8C26F74B5C7 /* wrong-version.json in Resources */ = {isa = PBXBuildFile; fileRef = 321B04D634B3F3ED1579038B /* wrong-version.json */; };
+		4C54DEAADBDC37F51CE2E227 /* action.result.rejected.invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = 55B76ED65F4B3973DDCD7BD2 /* action.result.rejected.invalid-request.json */; };
+		4CBED6C7197F50D2BF98CB92 /* action.result.rejected.json in Resources */ = {isa = PBXBuildFile; fileRef = F3EF3F71B5800400F630173B /* action.result.rejected.json */; };
+		4DBE1EF7F14F05CDC1C3BB74 /* action.result.rejected.capacity-exceeded.json in Resources */ = {isa = PBXBuildFile; fileRef = E40162D7B83EEB1DB7934914 /* action.result.rejected.capacity-exceeded.json */; };
 		4DDF8C096B020C608F5E7C5E /* PhoneClockHealthControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42BA4C0D99171C3686BF0677 /* PhoneClockHealthControllerTests.swift */; };
-		58BBA0F4C9422B41E69BD9C0 /* action.result.rejected.capacity-exceeded.json in Resources */ = {isa = PBXBuildFile; fileRef = 7C7A6C2D63C3D1C933BC9D9F /* action.result.rejected.capacity-exceeded.json */; };
-		638C3B782941E55B2312756D /* wrong-version.json in Resources */ = {isa = PBXBuildFile; fileRef = 9BC531443C5A8C25623DE656 /* wrong-version.json */; };
+		520E5D8A70E1E7413CCD929F /* time.sync.response.json in Resources */ = {isa = PBXBuildFile; fileRef = DE0A11477A2D44D30BB14D66 /* time.sync.response.json */; };
+		567B0AC18BA451E8CF7CD4EF /* action.result.rejected.event-creation-failed.json in Resources */ = {isa = PBXBuildFile; fileRef = F81E04222FA3FFD9428F1F30 /* action.result.rejected.event-creation-failed.json */; };
+		5D403F9B78978E0378868028 /* heartbeat.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = 2D1DDF6E89B6B464138B68F3 /* heartbeat.ack.json */; };
+		5EB45B0AA462AF823B749AFD /* invalid-result-reason.json in Resources */ = {isa = PBXBuildFile; fileRef = 9A28D7E8A0CB9808E8B5E1EF /* invalid-result-reason.json */; };
 		64BEF839893426949D9DE829 /* PhoneAppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23E5CCAB41E627DDA061BD66 /* PhoneAppModel.swift */; };
-		7724FE496D748E1874E03B54 /* mac.state.json in Resources */ = {isa = PBXBuildFile; fileRef = 43BCAAB794927E0869F04BD5 /* mac.state.json */; };
+		654C418AC03B36B6C44C25BE /* relay.ack.rejected-expired.json in Resources */ = {isa = PBXBuildFile; fileRef = E27D9D36416B5A1D8FC4332E /* relay.ack.rejected-expired.json */; };
+		6DDFF552CBCB6AB8E94447A8 /* binary-descriptor.json in Resources */ = {isa = PBXBuildFile; fileRef = B57BD956AB23167F03BFAC7E /* binary-descriptor.json */; };
+		71115851912B003A66B5266F /* heartbeat.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 5A2F28F17260BC1C3FF791CC /* heartbeat.request.json */; };
+		73063C94241699EE3C6F4DAE /* diagnostics.counters.json in Resources */ = {isa = PBXBuildFile; fileRef = C05DFA96B235B723E6BA1476 /* diagnostics.counters.json */; };
+		7354E45B18E62B7CE15C515F /* hello.ok.json in Resources */ = {isa = PBXBuildFile; fileRef = 94DECA504F4AD19E8FEFF1D6 /* hello.ok.json */; };
+		749B8E8D88E3DAEF70D9A6CE /* hello.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = F7A3879462463502A9004BCB /* hello.mac.json */; };
 		7879224145B8AB561F795A0A /* PhoneRelayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BEAA04BB04F3F8D2B9C7D9D /* PhoneRelayClientTests.swift */; };
 		7B8954F135104108209A3CD7 /* PhoneWireProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A94B694A3F2115B2C872DFB /* PhoneWireProtocolTests.swift */; };
+		85D3A9809CF2D9677C2213D4 /* wrong-role.json in Resources */ = {isa = PBXBuildFile; fileRef = 1B3676A7E98ABE97922C7B59 /* wrong-role.json */; };
 		8624142A487B3DA1B2361385 /* VolumeDeltaControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2995194A5DDCFFBE8D7CF01B /* VolumeDeltaControllerTests.swift */; };
+		8B1D96E3D3F21686325B46BC /* malformed.json in Resources */ = {isa = PBXBuildFile; fileRef = 1026C2587167C684DB3D1BEA /* malformed.json */; };
 		8BF369EB71F2F149C22A6111 /* PhoneActionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A6D6AB40E5A6F2870DA4BC /* PhoneActionCoordinator.swift */; };
-		8E8E3A7196DACEA5870640DA /* hello.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = 4C7F98B2388F1D8E4CEEE1D9 /* hello.mac.json */; };
 		911F823B122E7CC1BA75615A /* PhoneClockHealthController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA204DD8D3F6AB7425401E5F /* PhoneClockHealthController.swift */; };
-		92D36BFF6C72B162942BA9ED /* relay.ack.mac-offline.json in Resources */ = {isa = PBXBuildFile; fileRef = BA38406C27D149BFAA434592 /* relay.ack.mac-offline.json */; };
-		9AB6B783BA183DB526413686 /* diagnostics.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 7D630D8F0AF9D61CA05856E1 /* diagnostics.request.json */; };
-		9FD03D94C258140D08E07ED5 /* hello.phone.json in Resources */ = {isa = PBXBuildFile; fileRef = 12F7385BAD90B0D1857A8F6C /* hello.phone.json */; };
+		95AD325AA274F8D9673BF648 /* action.result.posted.json in Resources */ = {isa = PBXBuildFile; fileRef = 2C941661EA7AAD864246CDD0 /* action.result.posted.json */; };
+		9C6776E2E8FECBFC7E4228DC /* relay.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = D6FCA39C666D3388A7836FFE /* relay.ack.json */; };
+		A0F1E5DB9ABF95AE3D7D4287 /* hello.ok.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = D8E538BA6E6926E8854D2845 /* hello.ok.mac.json */; };
+		A399BB19C7E495D4897D12F5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AC46A3FF2E91CC4D65C8B6D2 /* Assets.xcassets */; };
 		A714D2FDB5E74598F682B541 /* ClickBridgePhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29C13719C36FE3B021C0CE10 /* ClickBridgePhoneApp.swift */; };
-		A7955555185F129AAB84FB56 /* action.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 75D7DA76AB0BAFC062A68858 /* action.request.json */; };
 		AEFC880701B6644975721EF8 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8E8F065E4DEFD8706D61160 /* KeychainStore.swift */; };
-		B3B909490376E208FDA8390A /* heartbeat.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = 271E17AF1F3FDF1AD5F4D276 /* heartbeat.ack.json */; };
-		BDAD5BF9E77CB22A4B8D107F /* time.sync.response.json in Resources */ = {isa = PBXBuildFile; fileRef = 4EAA5F6AA06D05C22B4C164A /* time.sync.response.json */; };
-		BDD19353A737D1B11C5793AD /* invalid-result-status.json in Resources */ = {isa = PBXBuildFile; fileRef = 502FF38FF6C1071E5D03875B /* invalid-result-status.json */; };
-		C51A97974E5547F1B5B01825 /* relay.ack.json in Resources */ = {isa = PBXBuildFile; fileRef = F2DF00CEAD477B620537C35D /* relay.ack.json */; };
-		C54F4037E05FFD8CE36B056D /* relay.ack.rejected-expired.json in Resources */ = {isa = PBXBuildFile; fileRef = E3894EB195444936AC01D5A0 /* relay.ack.rejected-expired.json */; };
-		C7943B1B8A323B0B8581A48F /* relay.ack.rejected-invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = F51125077A76520B8512E3F0 /* relay.ack.rejected-invalid-request.json */; };
+		B0933A791DE10C5C00F16EFC /* invalid-relay-ack-pairing.json in Resources */ = {isa = PBXBuildFile; fileRef = 93FD7750933D24566E56574A /* invalid-relay-ack-pairing.json */; };
+		B5E3EC7E4794784C7862097F /* time.sync.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 46533BA4F0297677867548D4 /* time.sync.request.json */; };
+		B6085A2096069DA80B1F1B69 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 7A3E77A004AA5F923DF69812 /* PrivacyInfo.xcprivacy */; };
+		BFA4F9F656E4785C02634678 /* action.result.rejected.expired.json in Resources */ = {isa = PBXBuildFile; fileRef = 5B7475BF2E200C4D4273713E /* action.result.rejected.expired.json */; };
 		C9E58DD53C887445C02F1DD0 /* VolumeDeltaController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D10BF941DBB865E2E0C9BE0 /* VolumeDeltaController.swift */; };
 		C9F7138F7EDC1535136E27BF /* StrictPhoneWireDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E24E6ECB379D94CEAE69CC0C /* StrictPhoneWireDecoder.swift */; };
-		CA043492E3601EFFD6B26748 /* state.json in Resources */ = {isa = PBXBuildFile; fileRef = BF6EEDB9720EBA505F6C041A /* state.json */; };
-		CD7C7C0F3BC1F9FE20C7327D /* action.result.rejected.permission-required.json in Resources */ = {isa = PBXBuildFile; fileRef = 80445D0211E8C43386A99F13 /* action.result.rejected.permission-required.json */; };
-		D2971B4AD2A84F96BA4FDBF1 /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = AF6471E3B5E54FDFE9E9A9A3 /* unknown-field.json */; };
+		CC3E41BDED3A37310710C207 /* mac.state.json in Resources */ = {isa = PBXBuildFile; fileRef = BFFF82FB37CD389C962FD8F0 /* mac.state.json */; };
+		D0366EB9E605C0F81D62D52A /* action.result.rejected.id-conflict.json in Resources */ = {isa = PBXBuildFile; fileRef = F34DF61DC641B6FDAE25648A /* action.result.rejected.id-conflict.json */; };
 		D421C5C7B2872B8D1B76E9B0 /* PhoneSettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37012802B807C906E27AA628 /* PhoneSettingsStoreTests.swift */; };
-		D4F039A79EC96EE16CF5540F /* action.result.rejected.id-conflict.json in Resources */ = {isa = PBXBuildFile; fileRef = 58AE61F9BBD8A123B6773F6E /* action.result.rejected.id-conflict.json */; };
-		EB9B06AF0E2FFC7DD68645EA /* wrong-role.json in Resources */ = {isa = PBXBuildFile; fileRef = 8AAF652E5198C2ADAAADFE67 /* wrong-role.json */; };
-		EC7FEF2A47470E6FFAFA7DAA /* action.result.posted.json in Resources */ = {isa = PBXBuildFile; fileRef = D2281FAD47F65DEDB0781596 /* action.result.posted.json */; };
-		F95ABBB4D2CC3560A526B24E /* invalid-relay-ack-pairing.json in Resources */ = {isa = PBXBuildFile; fileRef = 5E12569B6BFBE3FA5C9A0F05 /* invalid-relay-ack-pairing.json */; };
-		FD4F6FC15678FB45AF7DC662 /* hello.ok.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = D07FC08C1DF09CE8C7C9FF9C /* hello.ok.mac.json */; };
+		D5177B0D1562631F715BD0DF /* ClickBridgeIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DB5265C684452C9726FEF97 /* ClickBridgeIntents.swift */; };
+		DB8916B8E7408B4D18CAD752 /* invalid-result-status.json in Resources */ = {isa = PBXBuildFile; fileRef = 7FABD57413C17B471DA7805E /* invalid-result-status.json */; };
+		E584582F8DB28E27F007400E /* action.result.rejected.permission-required.json in Resources */ = {isa = PBXBuildFile; fileRef = 67318F4FB52548636761D66F /* action.result.rejected.permission-required.json */; };
+		E782BEC5296864887608EB05 /* hello.phone.json in Resources */ = {isa = PBXBuildFile; fileRef = 85254040287679459F0BB3FE /* hello.phone.json */; };
+		E94CA166F787E72B23FAA29E /* relay.ack.mac-offline.json in Resources */ = {isa = PBXBuildFile; fileRef = CEBF6F30A4C9A76B8E3AA455 /* relay.ack.mac-offline.json */; };
+		F2CBED067392EA876634C027 /* diagnostics.request.json in Resources */ = {isa = PBXBuildFile; fileRef = B946FCA4D59F52C0616A44A2 /* diagnostics.request.json */; };
+		FC908E1F6B80FCFFA54896B9 /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = 751FF4BD78E51CB183F13C80 /* unknown-field.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -77,82 +80,79 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		020EA6E9AC915259919A9CD6 /* action.result.rejected.expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.expired.json; sourceTree = "<group>"; };
-		094C7805B30B2B5AEEF8D6C1 /* diagnostics.counters.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.counters.json; sourceTree = "<group>"; };
-		12F7385BAD90B0D1857A8F6C /* hello.phone.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.phone.json; sourceTree = "<group>"; };
+		1026C2587167C684DB3D1BEA /* malformed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = malformed.json; sourceTree = "<group>"; };
 		19A6D6AB40E5A6F2870DA4BC /* PhoneActionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneActionCoordinator.swift; sourceTree = "<group>"; };
+		1B3676A7E98ABE97922C7B59 /* wrong-role.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-role.json"; sourceTree = "<group>"; };
 		1BE0E7F9262B9CC7CEA0B845 /* PhoneLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneLifecycleTests.swift; sourceTree = "<group>"; };
 		23E5CCAB41E627DDA061BD66 /* PhoneAppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneAppModel.swift; sourceTree = "<group>"; };
-		271E17AF1F3FDF1AD5F4D276 /* heartbeat.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.ack.json; sourceTree = "<group>"; };
-		2820992B9751E6C926090A91 /* heartbeat.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.request.json; sourceTree = "<group>"; };
-		2991D289C48941622984498C /* binary-descriptor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "binary-descriptor.json"; sourceTree = "<group>"; };
 		2995194A5DDCFFBE8D7CF01B /* VolumeDeltaControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeDeltaControllerTests.swift; sourceTree = "<group>"; };
 		29C13719C36FE3B021C0CE10 /* ClickBridgePhoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickBridgePhoneApp.swift; sourceTree = "<group>"; };
+		2C941661EA7AAD864246CDD0 /* action.result.posted.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.posted.json; sourceTree = "<group>"; };
 		2D10BF941DBB865E2E0C9BE0 /* VolumeDeltaController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeDeltaController.swift; sourceTree = "<group>"; };
+		2D1DDF6E89B6B464138B68F3 /* heartbeat.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.ack.json; sourceTree = "<group>"; };
 		2DC647D7703D8183680FB97F /* ClickBridgePhoneTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ClickBridgePhoneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2E732BEF4A9C9923D0AC11D2 /* relay.ack.rejected-invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-invalid-request.json"; sourceTree = "<group>"; };
+		321B04D634B3F3ED1579038B /* wrong-version.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-version.json"; sourceTree = "<group>"; };
 		37012802B807C906E27AA628 /* PhoneSettingsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsStoreTests.swift; sourceTree = "<group>"; };
-		3B2FF728E9899D1BBFCF2AE7 /* time.sync.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.request.json; sourceTree = "<group>"; };
+		3DB5265C684452C9726FEF97 /* ClickBridgeIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickBridgeIntents.swift; sourceTree = "<group>"; };
 		3EA9581C90F55AECA9BCDCCF /* TestDoubles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestDoubles.swift; sourceTree = "<group>"; };
 		42BA4C0D99171C3686BF0677 /* PhoneClockHealthControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneClockHealthControllerTests.swift; sourceTree = "<group>"; };
-		43BCAAB794927E0869F04BD5 /* mac.state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mac.state.json; sourceTree = "<group>"; };
+		46533BA4F0297677867548D4 /* time.sync.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.request.json; sourceTree = "<group>"; };
 		4BEAA04BB04F3F8D2B9C7D9D /* PhoneRelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRelayClientTests.swift; sourceTree = "<group>"; };
-		4C7F98B2388F1D8E4CEEE1D9 /* hello.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.mac.json; sourceTree = "<group>"; };
-		4EAA5F6AA06D05C22B4C164A /* time.sync.response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.response.json; sourceTree = "<group>"; };
-		4F1AE60F1A2E8A20395BA06E /* action.result.rejected.invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.invalid-request.json"; sourceTree = "<group>"; };
-		502FF38FF6C1071E5D03875B /* invalid-result-status.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-status.json"; sourceTree = "<group>"; };
+		5002D579F0DDE9F6C8C7728E /* oversized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = oversized.json; sourceTree = "<group>"; };
 		559AB89DCED1360CDBC403E9 /* PhoneState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneState.swift; sourceTree = "<group>"; };
+		55B76ED65F4B3973DDCD7BD2 /* action.result.rejected.invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.invalid-request.json"; sourceTree = "<group>"; };
 		5697FCA42A34E1F65DCC1664 /* PhoneWireProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWireProtocol.swift; sourceTree = "<group>"; };
-		58AE61F9BBD8A123B6773F6E /* action.result.rejected.id-conflict.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.id-conflict.json"; sourceTree = "<group>"; };
-		5A5A00CD4282D1788FD40426 /* malformed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = malformed.json; sourceTree = "<group>"; };
-		5E12569B6BFBE3FA5C9A0F05 /* invalid-relay-ack-pairing.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-relay-ack-pairing.json"; sourceTree = "<group>"; };
+		57CD6F3CDD446AAA11BA459D /* state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = state.json; sourceTree = "<group>"; };
+		5A2F28F17260BC1C3FF791CC /* heartbeat.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.request.json; sourceTree = "<group>"; };
+		5B7475BF2E200C4D4273713E /* action.result.rejected.expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.expired.json; sourceTree = "<group>"; };
 		65D96F4AF51FF721DBFFB754 /* PhonePorts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePorts.swift; sourceTree = "<group>"; };
+		67318F4FB52548636761D66F /* action.result.rejected.permission-required.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.permission-required.json"; sourceTree = "<group>"; };
 		6FAC5220384CDDA8E3B4334A /* AVAudioSessionVolumeSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVAudioSessionVolumeSource.swift; sourceTree = "<group>"; };
 		720491FC42ED8E19B9D4728F /* PhoneSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsStore.swift; sourceTree = "<group>"; };
-		75D7DA76AB0BAFC062A68858 /* action.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.request.json; sourceTree = "<group>"; };
-		78E111D0B1A3A92D8B251643 /* action.result.rejected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.json; sourceTree = "<group>"; };
+		751FF4BD78E51CB183F13C80 /* unknown-field.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "unknown-field.json"; sourceTree = "<group>"; };
+		7A3E77A004AA5F923DF69812 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7BA6F46C08252D6500E29AA1 /* PhoneRelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRelayClient.swift; sourceTree = "<group>"; };
-		7C7A6C2D63C3D1C933BC9D9F /* action.result.rejected.capacity-exceeded.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.capacity-exceeded.json"; sourceTree = "<group>"; };
-		7D630D8F0AF9D61CA05856E1 /* diagnostics.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.request.json; sourceTree = "<group>"; };
-		80445D0211E8C43386A99F13 /* action.result.rejected.permission-required.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.permission-required.json"; sourceTree = "<group>"; };
-		8AAF652E5198C2ADAAADFE67 /* wrong-role.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-role.json"; sourceTree = "<group>"; };
+		7FABD57413C17B471DA7805E /* invalid-result-status.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-status.json"; sourceTree = "<group>"; };
+		85254040287679459F0BB3FE /* hello.phone.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.phone.json; sourceTree = "<group>"; };
 		8AF78A40C08CC8D2B666CFE5 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		96E823D806358FFF7F349F11 /* action.result.rejected.event-creation-failed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.event-creation-failed.json"; sourceTree = "<group>"; };
+		93FD7750933D24566E56574A /* invalid-relay-ack-pairing.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-relay-ack-pairing.json"; sourceTree = "<group>"; };
+		94DECA504F4AD19E8FEFF1D6 /* hello.ok.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.json; sourceTree = "<group>"; };
+		9A28D7E8A0CB9808E8B5E1EF /* invalid-result-reason.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-reason.json"; sourceTree = "<group>"; };
 		9A94B694A3F2115B2C872DFB /* PhoneWireProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWireProtocolTests.swift; sourceTree = "<group>"; };
-		9BC531443C5A8C25623DE656 /* wrong-version.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-version.json"; sourceTree = "<group>"; };
 		A819423ED6FC50E8802225C9 /* PhoneStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneStateTests.swift; sourceTree = "<group>"; };
-		AF6471E3B5E54FDFE9E9A9A3 /* unknown-field.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "unknown-field.json"; sourceTree = "<group>"; };
-		B17F6BA11E85C301C5DA827C /* invalid-result-reason.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-reason.json"; sourceTree = "<group>"; };
+		AC46A3FF2E91CC4D65C8B6D2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B06837C01E288F47112046A9 /* action.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.request.json; sourceTree = "<group>"; };
+		B57BD956AB23167F03BFAC7E /* binary-descriptor.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "binary-descriptor.json"; sourceTree = "<group>"; };
 		B6F28DA587801EBD819EB398 /* PhoneActionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneActionCoordinatorTests.swift; sourceTree = "<group>"; };
-		BA38406C27D149BFAA434592 /* relay.ack.mac-offline.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.mac-offline.json"; sourceTree = "<group>"; };
-		BF6EEDB9720EBA505F6C041A /* state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = state.json; sourceTree = "<group>"; };
+		B946FCA4D59F52C0616A44A2 /* diagnostics.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.request.json; sourceTree = "<group>"; };
+		BFFF82FB37CD389C962FD8F0 /* mac.state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = mac.state.json; sourceTree = "<group>"; };
+		C05DFA96B235B723E6BA1476 /* diagnostics.counters.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = diagnostics.counters.json; sourceTree = "<group>"; };
 		C0E9717BF1CD2631C085B786 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		C15E535E885EE67A070ADC46 /* ClickBridgePhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ClickBridgePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA204DD8D3F6AB7425401E5F /* PhoneClockHealthController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneClockHealthController.swift; sourceTree = "<group>"; };
-		D07FC08C1DF09CE8C7C9FF9C /* hello.ok.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.mac.json; sourceTree = "<group>"; };
-		D2281FAD47F65DEDB0781596 /* action.result.posted.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.posted.json; sourceTree = "<group>"; };
+		CEBF6F30A4C9A76B8E3AA455 /* relay.ack.mac-offline.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.mac-offline.json"; sourceTree = "<group>"; };
+		D6FCA39C666D3388A7836FFE /* relay.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = relay.ack.json; sourceTree = "<group>"; };
+		D8E538BA6E6926E8854D2845 /* hello.ok.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.mac.json; sourceTree = "<group>"; };
 		DB2B3B08EFF39083A3A2BB5D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		DE0A11477A2D44D30BB14D66 /* time.sync.response.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.response.json; sourceTree = "<group>"; };
 		E24E6ECB379D94CEAE69CC0C /* StrictPhoneWireDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StrictPhoneWireDecoder.swift; sourceTree = "<group>"; };
-		E3894EB195444936AC01D5A0 /* relay.ack.rejected-expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-expired.json"; sourceTree = "<group>"; };
-		E4BB3DD6075582D3E7A72812 /* oversized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = oversized.json; sourceTree = "<group>"; };
-		F2DF00CEAD477B620537C35D /* relay.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = relay.ack.json; sourceTree = "<group>"; };
-		F51125077A76520B8512E3F0 /* relay.ack.rejected-invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-invalid-request.json"; sourceTree = "<group>"; };
-		F5DE857468D0853204006EC7 /* hello.ok.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.json; sourceTree = "<group>"; };
+		E27D9D36416B5A1D8FC4332E /* relay.ack.rejected-expired.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-expired.json"; sourceTree = "<group>"; };
+		E40162D7B83EEB1DB7934914 /* action.result.rejected.capacity-exceeded.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.capacity-exceeded.json"; sourceTree = "<group>"; };
+		F34DF61DC641B6FDAE25648A /* action.result.rejected.id-conflict.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.id-conflict.json"; sourceTree = "<group>"; };
+		F3EF3F71B5800400F630173B /* action.result.rejected.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.rejected.json; sourceTree = "<group>"; };
+		F7A3879462463502A9004BCB /* hello.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.mac.json; sourceTree = "<group>"; };
+		F81E04222FA3FFD9428F1F30 /* action.result.rejected.event-creation-failed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.event-creation-failed.json"; sourceTree = "<group>"; };
 		F8E8F065E4DEFD8706D61160 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		03180D11FB079099274E770A /* contracts */ = {
-			isa = PBXGroup;
-			children = (
-				6E39B3ECC8BEDE278E36C35E /* fixtures */,
-			);
-			path = contracts;
-			sourceTree = "<group>";
-		};
 		1328EDF0CBEE55E39200FCE6 /* ClickBridgePhone */ = {
 			isa = PBXGroup;
 			children = (
+				AC46A3FF2E91CC4D65C8B6D2 /* Assets.xcassets */,
 				6FAC5220384CDDA8E3B4334A /* AVAudioSessionVolumeSource.swift */,
+				3DB5265C684452C9726FEF97 /* ClickBridgeIntents.swift */,
 				29C13719C36FE3B021C0CE10 /* ClickBridgePhoneApp.swift */,
 				8AF78A40C08CC8D2B666CFE5 /* ContentView.swift */,
 				DB2B3B08EFF39083A3A2BB5D /* Info.plist */,
@@ -165,6 +165,7 @@
 				720491FC42ED8E19B9D4728F /* PhoneSettingsStore.swift */,
 				559AB89DCED1360CDBC403E9 /* PhoneState.swift */,
 				5697FCA42A34E1F65DCC1664 /* PhoneWireProtocol.swift */,
+				7A3E77A004AA5F923DF69812 /* PrivacyInfo.xcprivacy */,
 				E24E6ECB379D94CEAE69CC0C /* StrictPhoneWireDecoder.swift */,
 				2D10BF941DBB865E2E0C9BE0 /* VolumeDeltaController.swift */,
 			);
@@ -188,46 +189,38 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		34F4EC899C65171DB3FD3288 /* clicker-ios */ = {
+		44C2BB635DB5EF19C7D38055 /* fixtures */ = {
 			isa = PBXGroup;
 			children = (
-				03180D11FB079099274E770A /* contracts */,
+				B06837C01E288F47112046A9 /* action.request.json */,
+				2C941661EA7AAD864246CDD0 /* action.result.posted.json */,
+				E40162D7B83EEB1DB7934914 /* action.result.rejected.capacity-exceeded.json */,
+				F81E04222FA3FFD9428F1F30 /* action.result.rejected.event-creation-failed.json */,
+				5B7475BF2E200C4D4273713E /* action.result.rejected.expired.json */,
+				F34DF61DC641B6FDAE25648A /* action.result.rejected.id-conflict.json */,
+				55B76ED65F4B3973DDCD7BD2 /* action.result.rejected.invalid-request.json */,
+				F3EF3F71B5800400F630173B /* action.result.rejected.json */,
+				67318F4FB52548636761D66F /* action.result.rejected.permission-required.json */,
+				C05DFA96B235B723E6BA1476 /* diagnostics.counters.json */,
+				B946FCA4D59F52C0616A44A2 /* diagnostics.request.json */,
+				2D1DDF6E89B6B464138B68F3 /* heartbeat.ack.json */,
+				5A2F28F17260BC1C3FF791CC /* heartbeat.request.json */,
+				F7A3879462463502A9004BCB /* hello.mac.json */,
+				94DECA504F4AD19E8FEFF1D6 /* hello.ok.json */,
+				D8E538BA6E6926E8854D2845 /* hello.ok.mac.json */,
+				85254040287679459F0BB3FE /* hello.phone.json */,
+				BFFF82FB37CD389C962FD8F0 /* mac.state.json */,
+				D6FCA39C666D3388A7836FFE /* relay.ack.json */,
+				CEBF6F30A4C9A76B8E3AA455 /* relay.ack.mac-offline.json */,
+				E27D9D36416B5A1D8FC4332E /* relay.ack.rejected-expired.json */,
+				2E732BEF4A9C9923D0AC11D2 /* relay.ack.rejected-invalid-request.json */,
+				57CD6F3CDD446AAA11BA459D /* state.json */,
+				46533BA4F0297677867548D4 /* time.sync.request.json */,
+				DE0A11477A2D44D30BB14D66 /* time.sync.response.json */,
+				C4D67FBDEC6988BAF0CAC121 /* invalid */,
 			);
-			name = "clicker-ios";
-			path = ..;
-			sourceTree = "<group>";
-		};
-		6E39B3ECC8BEDE278E36C35E /* fixtures */ = {
-			isa = PBXGroup;
-			children = (
-				75D7DA76AB0BAFC062A68858 /* action.request.json */,
-				D2281FAD47F65DEDB0781596 /* action.result.posted.json */,
-				7C7A6C2D63C3D1C933BC9D9F /* action.result.rejected.capacity-exceeded.json */,
-				96E823D806358FFF7F349F11 /* action.result.rejected.event-creation-failed.json */,
-				020EA6E9AC915259919A9CD6 /* action.result.rejected.expired.json */,
-				58AE61F9BBD8A123B6773F6E /* action.result.rejected.id-conflict.json */,
-				4F1AE60F1A2E8A20395BA06E /* action.result.rejected.invalid-request.json */,
-				78E111D0B1A3A92D8B251643 /* action.result.rejected.json */,
-				80445D0211E8C43386A99F13 /* action.result.rejected.permission-required.json */,
-				094C7805B30B2B5AEEF8D6C1 /* diagnostics.counters.json */,
-				7D630D8F0AF9D61CA05856E1 /* diagnostics.request.json */,
-				271E17AF1F3FDF1AD5F4D276 /* heartbeat.ack.json */,
-				2820992B9751E6C926090A91 /* heartbeat.request.json */,
-				4C7F98B2388F1D8E4CEEE1D9 /* hello.mac.json */,
-				F5DE857468D0853204006EC7 /* hello.ok.json */,
-				D07FC08C1DF09CE8C7C9FF9C /* hello.ok.mac.json */,
-				12F7385BAD90B0D1857A8F6C /* hello.phone.json */,
-				43BCAAB794927E0869F04BD5 /* mac.state.json */,
-				F2DF00CEAD477B620537C35D /* relay.ack.json */,
-				BA38406C27D149BFAA434592 /* relay.ack.mac-offline.json */,
-				E3894EB195444936AC01D5A0 /* relay.ack.rejected-expired.json */,
-				F51125077A76520B8512E3F0 /* relay.ack.rejected-invalid-request.json */,
-				BF6EEDB9720EBA505F6C041A /* state.json */,
-				3B2FF728E9899D1BBFCF2AE7 /* time.sync.request.json */,
-				4EAA5F6AA06D05C22B4C164A /* time.sync.response.json */,
-				C7383BB6DAC4B31D52837C23 /* invalid */,
-			);
-			path = fixtures;
+			name = fixtures;
+			path = ../contracts/fixtures;
 			sourceTree = "<group>";
 		};
 		91ECE6CE8A8579E4F0C4F425 = {
@@ -235,24 +228,32 @@
 			children = (
 				1328EDF0CBEE55E39200FCE6 /* ClickBridgePhone */,
 				C97DDD527D6A00EC40F8A64C /* ClickBridgePhoneTests */,
-				34F4EC899C65171DB3FD3288 /* clicker-ios */,
 				2A81D1E9F6E38F23A5BCDE1B /* Config */,
+				9826F3614056D3C23786CDAC /* contracts */,
 				2D85477860873EEA8CF263B7 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		C7383BB6DAC4B31D52837C23 /* invalid */ = {
+		9826F3614056D3C23786CDAC /* contracts */ = {
 			isa = PBXGroup;
 			children = (
-				2991D289C48941622984498C /* binary-descriptor.json */,
-				5E12569B6BFBE3FA5C9A0F05 /* invalid-relay-ack-pairing.json */,
-				B17F6BA11E85C301C5DA827C /* invalid-result-reason.json */,
-				502FF38FF6C1071E5D03875B /* invalid-result-status.json */,
-				5A5A00CD4282D1788FD40426 /* malformed.json */,
-				E4BB3DD6075582D3E7A72812 /* oversized.json */,
-				AF6471E3B5E54FDFE9E9A9A3 /* unknown-field.json */,
-				8AAF652E5198C2ADAAADFE67 /* wrong-role.json */,
-				9BC531443C5A8C25623DE656 /* wrong-version.json */,
+				44C2BB635DB5EF19C7D38055 /* fixtures */,
+			);
+			name = contracts;
+			sourceTree = "<group>";
+		};
+		C4D67FBDEC6988BAF0CAC121 /* invalid */ = {
+			isa = PBXGroup;
+			children = (
+				B57BD956AB23167F03BFAC7E /* binary-descriptor.json */,
+				93FD7750933D24566E56574A /* invalid-relay-ack-pairing.json */,
+				9A28D7E8A0CB9808E8B5E1EF /* invalid-result-reason.json */,
+				7FABD57413C17B471DA7805E /* invalid-result-status.json */,
+				1026C2587167C684DB3D1BEA /* malformed.json */,
+				5002D579F0DDE9F6C8C7728E /* oversized.json */,
+				751FF4BD78E51CB183F13C80 /* unknown-field.json */,
+				1B3676A7E98ABE97922C7B59 /* wrong-role.json */,
+				321B04D634B3F3ED1579038B /* wrong-version.json */,
 			);
 			path = invalid;
 			sourceTree = "<group>";
@@ -300,6 +301,7 @@
 			buildConfigurationList = A92DB56059AFA18E3EAE603B /* Build configuration list for PBXNativeTarget "ClickBridgePhone" */;
 			buildPhases = (
 				D921F17601C1B2390C7643FD /* Sources */,
+				BADBCAB71A18483A22862A28 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -350,44 +352,53 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		BADBCAB71A18483A22862A28 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A399BB19C7E495D4897D12F5 /* Assets.xcassets in Resources */,
+				B6085A2096069DA80B1F1B69 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CF173A9E13ACAB5D5DFD1E9C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A7955555185F129AAB84FB56 /* action.request.json in Resources */,
-				EC7FEF2A47470E6FFAFA7DAA /* action.result.posted.json in Resources */,
-				58BBA0F4C9422B41E69BD9C0 /* action.result.rejected.capacity-exceeded.json in Resources */,
-				3218E968ACC394BEA09E756F /* action.result.rejected.event-creation-failed.json in Resources */,
-				2179C397C7617FB59824B1C3 /* action.result.rejected.expired.json in Resources */,
-				D4F039A79EC96EE16CF5540F /* action.result.rejected.id-conflict.json in Resources */,
-				457EF9C19C0F5BE8B82BD627 /* action.result.rejected.invalid-request.json in Resources */,
-				229BA93E23D9381128CBF4C7 /* action.result.rejected.json in Resources */,
-				CD7C7C0F3BC1F9FE20C7327D /* action.result.rejected.permission-required.json in Resources */,
-				3FBAF4326C4C2E59D196D7EB /* binary-descriptor.json in Resources */,
-				14583E69BC6124C722E3ED4A /* diagnostics.counters.json in Resources */,
-				9AB6B783BA183DB526413686 /* diagnostics.request.json in Resources */,
-				B3B909490376E208FDA8390A /* heartbeat.ack.json in Resources */,
-				046C79D027EBBB7BE304AF2B /* heartbeat.request.json in Resources */,
-				8E8E3A7196DACEA5870640DA /* hello.mac.json in Resources */,
-				49C86F7232685F0216642F74 /* hello.ok.json in Resources */,
-				FD4F6FC15678FB45AF7DC662 /* hello.ok.mac.json in Resources */,
-				9FD03D94C258140D08E07ED5 /* hello.phone.json in Resources */,
-				F95ABBB4D2CC3560A526B24E /* invalid-relay-ack-pairing.json in Resources */,
-				18CE11A823B7B6344D0B6408 /* invalid-result-reason.json in Resources */,
-				BDD19353A737D1B11C5793AD /* invalid-result-status.json in Resources */,
-				7724FE496D748E1874E03B54 /* mac.state.json in Resources */,
-				11C5914060A4D6F160601A53 /* malformed.json in Resources */,
-				2CD820FC47FBB6F30E80B92C /* oversized.json in Resources */,
-				C51A97974E5547F1B5B01825 /* relay.ack.json in Resources */,
-				92D36BFF6C72B162942BA9ED /* relay.ack.mac-offline.json in Resources */,
-				C54F4037E05FFD8CE36B056D /* relay.ack.rejected-expired.json in Resources */,
-				C7943B1B8A323B0B8581A48F /* relay.ack.rejected-invalid-request.json in Resources */,
-				CA043492E3601EFFD6B26748 /* state.json in Resources */,
-				1376351FA984E651A977708F /* time.sync.request.json in Resources */,
-				BDAD5BF9E77CB22A4B8D107F /* time.sync.response.json in Resources */,
-				D2971B4AD2A84F96BA4FDBF1 /* unknown-field.json in Resources */,
-				EB9B06AF0E2FFC7DD68645EA /* wrong-role.json in Resources */,
-				638C3B782941E55B2312756D /* wrong-version.json in Resources */,
+				2EABE7107676C397AA372571 /* action.request.json in Resources */,
+				95AD325AA274F8D9673BF648 /* action.result.posted.json in Resources */,
+				4DBE1EF7F14F05CDC1C3BB74 /* action.result.rejected.capacity-exceeded.json in Resources */,
+				567B0AC18BA451E8CF7CD4EF /* action.result.rejected.event-creation-failed.json in Resources */,
+				BFA4F9F656E4785C02634678 /* action.result.rejected.expired.json in Resources */,
+				D0366EB9E605C0F81D62D52A /* action.result.rejected.id-conflict.json in Resources */,
+				4C54DEAADBDC37F51CE2E227 /* action.result.rejected.invalid-request.json in Resources */,
+				4CBED6C7197F50D2BF98CB92 /* action.result.rejected.json in Resources */,
+				E584582F8DB28E27F007400E /* action.result.rejected.permission-required.json in Resources */,
+				6DDFF552CBCB6AB8E94447A8 /* binary-descriptor.json in Resources */,
+				73063C94241699EE3C6F4DAE /* diagnostics.counters.json in Resources */,
+				F2CBED067392EA876634C027 /* diagnostics.request.json in Resources */,
+				5D403F9B78978E0378868028 /* heartbeat.ack.json in Resources */,
+				71115851912B003A66B5266F /* heartbeat.request.json in Resources */,
+				749B8E8D88E3DAEF70D9A6CE /* hello.mac.json in Resources */,
+				7354E45B18E62B7CE15C515F /* hello.ok.json in Resources */,
+				A0F1E5DB9ABF95AE3D7D4287 /* hello.ok.mac.json in Resources */,
+				E782BEC5296864887608EB05 /* hello.phone.json in Resources */,
+				B0933A791DE10C5C00F16EFC /* invalid-relay-ack-pairing.json in Resources */,
+				5EB45B0AA462AF823B749AFD /* invalid-result-reason.json in Resources */,
+				DB8916B8E7408B4D18CAD752 /* invalid-result-status.json in Resources */,
+				CC3E41BDED3A37310710C207 /* mac.state.json in Resources */,
+				8B1D96E3D3F21686325B46BC /* malformed.json in Resources */,
+				1B3ABC168A8E807AEFF77690 /* oversized.json in Resources */,
+				9C6776E2E8FECBFC7E4228DC /* relay.ack.json in Resources */,
+				E94CA166F787E72B23FAA29E /* relay.ack.mac-offline.json in Resources */,
+				654C418AC03B36B6C44C25BE /* relay.ack.rejected-expired.json in Resources */,
+				0FBF3EAC572CE4CCBAFE6CCD /* relay.ack.rejected-invalid-request.json in Resources */,
+				0B0A468E6F044773E1F8A718 /* state.json in Resources */,
+				B5E3EC7E4794784C7862097F /* time.sync.request.json in Resources */,
+				520E5D8A70E1E7413CCD929F /* time.sync.response.json in Resources */,
+				FC908E1F6B80FCFFA54896B9 /* unknown-field.json in Resources */,
+				85D3A9809CF2D9677C2213D4 /* wrong-role.json in Resources */,
+				443E9DAB0164C8C26F74B5C7 /* wrong-version.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -415,6 +426,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				235178D0FFBE2AF0883A378E /* AVAudioSessionVolumeSource.swift in Sources */,
+				D5177B0D1562631F715BD0DF /* ClickBridgeIntents.swift in Sources */,
 				A714D2FDB5E74598F682B541 /* ClickBridgePhoneApp.swift in Sources */,
 				065BD567E3785B402A0855BB /* ContentView.swift in Sources */,
 				AEFC880701B6644975721EF8 /* KeychainStore.swift in Sources */,

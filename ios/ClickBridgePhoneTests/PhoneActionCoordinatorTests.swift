@@ -64,6 +64,33 @@ final class PhoneActionCoordinatorTests: XCTestCase {
         XCTAssertEqual(transport.sentMessages.compactMap(\.actionID), [firstID, secondID])
     }
 
+    func testGenericClickUsesSameReadinessAndPendingGateAsVolumeClick() {
+        let subject = makeSubject(ids: [firstID, secondID])
+
+        XCTAssertEqual(subject.accept(readiness: ready), .sent(actionID: firstID))
+        XCTAssertEqual(subject.accept(readiness: ready), .ignoredPending)
+        XCTAssertEqual(transport.sentMessages.compactMap(\.actionID), [firstID])
+
+        XCTAssertTrue(subject.handle(.actionResult(posted(firstID)), socketGeneration: 9))
+        XCTAssertEqual(subject.accept(delta(), readiness: ready), .sent(actionID: secondID))
+        XCTAssertEqual(transport.sentMessages.compactMap(\.actionID), [firstID, secondID])
+    }
+
+    func testGenericClickRejectsClosedReadinessWithoutSending() {
+        let subject = makeSubject()
+        let notAuthenticated = ActionGateSnapshot(
+            foregroundGeneration: 4,
+            socketGeneration: 9,
+            transportAuthenticated: false,
+            mac: ready.mac,
+            clock: ready.clock
+        )
+
+        XCTAssertFalse(subject.canAccept(readiness: notAuthenticated))
+        XCTAssertEqual(subject.accept(readiness: notAuthenticated), .ignoredNotReady)
+        XCTAssertTrue(transport.sentMessages.isEmpty)
+    }
+
     func testRequestUsesInjectedWallClockAndExactTwoSecondExpiry() {
         let subject = makeSubject()
         XCTAssertEqual(subject.accept(delta(), readiness: ready), .sent(actionID: firstID))

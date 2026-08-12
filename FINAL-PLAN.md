@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use the xcodebuildmcp-cli skill for the macOS and iOS build, test, run, and diagnostic steps. Steps use checkbox syntax for tracking.
 
-**Canonical file:** `FINAL-PLAN.md`. `PLAN-v5.md` and earlier plans are preserved as historical inputs only; implementation status and future edits belong here.
+**Canonical file:** `FINAL-PLAN.md`. `archive/plans/PLAN-v5.md` and earlier plans are preserved as historical inputs only; implementation status and future edits belong here.
 
 **Goal:** While either foreground phone client is active, one accepted user input produces at most one native left mouse click at the Mac's current cursor position within the running-process reliability boundary. The PWA remains the tap fallback; the native iOS client additionally maps each real output-volume delta to one action through the same OCI relay and unchanged phone protocol. An optional measured Tailscale path follows only after both OCI clients pass.
 
@@ -15,7 +15,7 @@
 - macOS 13 or newer only.
 - One phone, one Mac, one user, one OCI relay process.
 - The foreground installable PWA remains unchanged and supported as the fallback phone client.
-- The native iOS SwiftUI client is an additional foreground-only client. It requires a normal signed iPhone build for physical acceptance but no App Store submission.
+- The native iOS SwiftUI client is an additional foreground-only client and requires a normal signed iPhone build for physical acceptance. Release automation may upload to TestFlight or submit an already processed build for App Store review only through protected manual workflows; it never distributes to testers or releases automatically.
 - Production uses a stable public hostname. Prefer a domain you own; DuckDNS is the no-cost fallback. Do not depend on sslip.io or nip.io for the permanent installation.
 - The only action is one left click at the Mac's current cursor position.
 - Octo Browser is the required physical target for final click verification; the application is not restricted to Octo.
@@ -84,9 +84,9 @@ Current folder facts to preserve during implementation:
 - Existing fixtures, relay state/server files, PWA files, and tests are incomplete and use duplicated `constants-lite.js`/`protocol-lite.js` parsing. Task 2 introduces the canonical browser-shared parser; Tasks 3 and 4 migrate the existing code and remove the duplicates only after parity tests pass.
 - The Swift scaffold uses `mac/project.yml` and already contains partial app, relay-client, action-processor, input, and test files. Task 5 keeps the XcodeGen specification as the project source, generates the missing Xcode project, and Tasks 5 and 6 complete or split the partial types.
 - Existing OCI Docker, Compose, Caddy, and deployment documentation are scaffold only. Task 8 replaces the Node 22 image contract and the flat deployment/rollback instructions with the reviewed immutable-release runbook.
-- `archive/` already contains historical plans and prototypes. Do not duplicate them. `PLAN-v5.md` remains at the root only until Task 9 makes the final canonical cleanup.
+- `archive/` contains the historical plans and prototypes, including `archive/plans/PLAN-v5.md`. Do not duplicate them.
 - `_to_delete/_impl.tgz` and `_to_delete/_scaffold.tgz` remain as ignored local bundles and are no longer tracked. Keep them out of Docker and release transfer inputs; Task 9 deletes them only after proving they contain no unique source or evidence.
-- PLAN-v5.md and earlier plans remain historical inputs. FINAL-PLAN.md is the only active implementation plan.
+- `archive/plans/PLAN-v5.md` and earlier plans remain historical inputs. FINAL-PLAN.md is the only active implementation plan.
 
 Do not treat any imported file as complete merely because it exists. Preserve the working tree, reconcile each active file through its owning task, and keep historical material outside runtime, build, and deployment inputs.
 
@@ -612,7 +612,7 @@ Tasks 1 through 9 produce the complete PWA/core OCI application. Task 10 adds th
 - Create: .dockerignore
 - Create: docs/preflight.md
 - Preserve: FINAL-PLAN.md
-- Preserve as historical: PLAN-v5.md and earlier plan files
+- Preserve as historical: `archive/plans/PLAN-v5.md` and earlier plan files
 - Inspect only: committed imported scaffold, historical archives, `_to_delete/` bundles, and existing OCI instance
 
 **Interfaces:**
@@ -726,7 +726,7 @@ README.md must state:
 - FINAL-PLAN.md is the only active plan;
 - all earlier files are preserved until the mandatory cleanup inside Task 9.
 
-`archive/README.md` must simultaneously stop calling `PLAN-v5.md` active and label all archived content non-authoritative. The root README must describe the current code as an imported, unverified scaffold until each acceptance gate passes; it must not copy old “done” or test-count claims forward without rerunning them.
+`archive/README.md` must label `archive/plans/PLAN-v5.md` and all other archived content non-authoritative. The root README must distinguish fresh automated evidence from physical acceptance and must not copy old “done” or test-count claims forward without rerunning them.
 
 - [ ] **Step 6: Commit**
 
@@ -2200,7 +2200,7 @@ git commit -m "chore: deploy click bridge on oci sjc"
 - Modify: archive/README.md
 - Modify: docs/physical-smoke-test.md
 - Modify: README.md
-- Move: root PLAN-v5.md to archive/plans/ after Milestone 1 passes
+- Historical cleanup complete: `archive/plans/PLAN-v5.md` is preserved as non-authoritative evidence
 - Verify in place: historical plans and prototypes already under archive/
 - Remove after content verification: `_to_delete/_impl.tgz` and `_to_delete/_scaffold.tgz`
 
@@ -2361,7 +2361,7 @@ Retain keep-warm only if its overall Posted estimatedActuationMs p95 improves by
 
 The imported repository already contains historical plan and prototype directories. Do not create duplicate copies. After Milestone 1 has passed:
 
-- move the root `PLAN-v5.md` into `archive/plans/` and keep `FINAL-PLAN.md` at the root;
+- keep `archive/plans/PLAN-v5.md` historical and `FINAL-PLAN.md` canonical at the root;
 - verify the existing historical plans and prototypes are already represented under `archive/`;
 - list the contents of `_to_delete/_impl.tgz` and `_to_delete/_scaffold.tgz` without extracting them into the repository;
 - compare those listings with the active and archived trees; delete the two ignored bundles only after confirming they contain no unique source, plan, or evidence;
@@ -2460,6 +2460,8 @@ Show `Ready`, `Not connected`, `Mac offline`, `Clock mismatch`, and `At volume b
 
 Document in the UI/help that Control Center, wired or Bluetooth headsets, and AirPods can also trigger because the supported API observes output-volume changes, not the physical button source. Produce haptic feedback only after the matching Mac `action.result`; `relay.ack` changes forwarding state but never produces haptics.
 
+Expose the same click coordinator through a readiness-gated on-screen **Trigger Click** button and an iOS 17 **Trigger Click** App Shortcut. The shortcut may retain only the narrow launch-to-active handoff, makes one immediate attempt once active, and consumes not-ready, pending, failed, or backgrounded requests. It never queues or retries a delayed click.
+
 - [ ] **Step 4: Prove the coordinator and transport with deterministic tests**
 
 Tests must cover:
@@ -2473,6 +2475,7 @@ Tests must cover:
 - 0% and 100% boundary presentation and the still-detectable inward direction;
 - no haptic on send or `relay.ack`, and one haptic after the matching Mac terminal result;
 - exact one action ID per accepted delta, one action in flight, no queue, no retry, and no second send from callback noise;
+- on-screen and App Shortcut actions using the same readiness/one-in-flight gate, including no delayed send after a not-ready, pending, failed, or backgrounded shortcut attempt;
 - the existing canonical phone fixtures, heartbeat, clock-health, reconnect, result, strict-frame, and 4 KiB rules.
 
 - [ ] **Step 5: Build, test, and record physical acceptance**

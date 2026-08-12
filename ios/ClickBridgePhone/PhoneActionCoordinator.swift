@@ -73,17 +73,37 @@ final class PhoneActionCoordinator {
 
     var hasPendingAction: Bool { pending != nil }
 
+    func canAccept(readiness: ActionGateSnapshot) -> Bool {
+        pending == nil && isReady(readiness)
+    }
+
+    func accept(readiness: ActionGateSnapshot) -> ActionDisposition {
+        guard pending == nil else { return .ignoredPending }
+        guard isReady(readiness) else { return .ignoredNotReady }
+        return sendAction(readiness: readiness)
+    }
+
     func accept(_ delta: ObservedVolumeDelta, readiness: ActionGateSnapshot) -> ActionDisposition {
         guard pending == nil else { return .ignoredPending }
         guard let foregroundGeneration = readiness.foregroundGeneration,
               foregroundGeneration == delta.foregroundGeneration,
-              readiness.socketGeneration == transport.generation,
-              readiness.transportAuthenticated,
-              transport.isAuthenticated,
-              readiness.mac.online,
-              readiness.mac.remoteEnabled,
-              readiness.mac.permission == .ready,
-              readiness.clock.status == .healthy else { return .ignoredNotReady }
+              isReady(readiness) else { return .ignoredNotReady }
+        return sendAction(readiness: readiness)
+    }
+
+    private func isReady(_ readiness: ActionGateSnapshot) -> Bool {
+        readiness.foregroundGeneration != nil &&
+            readiness.socketGeneration == transport.generation &&
+            readiness.transportAuthenticated &&
+            transport.isAuthenticated &&
+            readiness.mac.online &&
+            readiness.mac.remoteEnabled &&
+            readiness.mac.permission == .ready &&
+            readiness.clock.status == .healthy
+    }
+
+    private func sendAction(readiness: ActionGateSnapshot) -> ActionDisposition {
+        guard let foregroundGeneration = readiness.foregroundGeneration else { return .ignoredNotReady }
 
         let actionID = makeActionID()
         let issuedAt = clock.nowUnixMilliseconds()

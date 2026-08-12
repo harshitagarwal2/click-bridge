@@ -1,6 +1,6 @@
 # Native iOS Client Acceptance
 
-**Automated status:** Passed on iOS Simulator and generic iOS device build
+**Automated status:** Passed: 66/66 tests, Release Simulator run, and generic iOS Release build
 
 **Physical iPhone status:** `NOT RUN`
 
@@ -18,6 +18,13 @@ The SwiftUI app composes these responsibilities:
 - `PhoneRelayClient` owns one authenticated WSS connection, socket generations, heartbeat, reconnect, and strict protocol-v1 message handling.
 - `PhoneClockHealthController` reproduces the five-sample clock-health gate.
 - `PhoneActionCoordinator` permits one action in flight and has no queue. It creates one action ID and one immutable protocol-v1 `click` request for each accepted delta. A distinct delta observed while an action is pending is consumed and not replayed.
+- The on-screen **Trigger Click** button calls the same action coordinator and
+  is enabled only while the current readiness state can accept an action.
+- `TriggerClickIntent` publishes a **Trigger Click** App Shortcut and opens the
+  app when invoked. It permits only the launch-to-active handoff, makes one
+  immediate attempt through the same foreground/readiness/action boundary, and
+  discards not-ready, pending, failed, or backgrounded requests rather than
+  queueing a delayed click.
 - `TerminalNotificationHaptics` runs only after a matching current-generation Mac `action.result`. Relay acceptance, relay rejection, timeout, disconnect, backgrounding, stale results, and duplicate results do not produce a terminal-result haptic.
 
 A delta is accepted only when the current foreground session, authenticated socket generation, Mac-online state, Mac remote-control setting, Mac permission, healthy clock, and no-pending-action gates are all ready.
@@ -26,16 +33,16 @@ A delta is accepted only when the current foreground session, authenticated sock
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Toolchain | Recorded | Xcode 27.0 beta (`27A5228h`), Apple Swift 6.4 (`swiftlang-6.4.0.27.1`), iOS SDK 27.0 |
-| Simulator runtime | Recorded | iPhone 17 Pro Max on iOS 26.3.1 (`5B58DC37-8DC7-42E3-9BF6-23AD609E061B`) for the independent review run, and iOS 26.4 (`134E2611-504E-4071-8FA8-6B4E6AEF081C`) for the Build iOS Apps plugin run |
+| Simulator runtime | Recorded | iPhone 17 on iOS 26.3 |
 | XcodeGen project | Passed | `ios/project.yml` generated `ios/ClickBridgePhone.xcodeproj` |
 | Shared scheme | Passed | `ClickBridgePhone` is present under `xcshareddata/xcschemes` |
-| Simulator build | Passed | `ClickBridgePhone` application target built for iOS Simulator |
-| Simulator install and launch | Passed | Build iOS Apps plugin built, installed, and launched `com.clickbridge.phone`; the initial SwiftUI screen rendered **Not connected**, **0%**, Settings, and the supported volume-source disclosure |
-| Generic device build | Passed | XcodeBuildMCP Release build for platform `iOS`, code signing disabled; build log `build_device_2026-08-12T04-20-43-584Z_pid69272_87d074ef.log` |
-| Full XCTest suite | Passed: **56/56 tests** | Build iOS Apps plugin result bundle `test_sim_2026-08-12T05-00-40-096Z_pid81100_d2cb62c1.xcresult`; the added cases prove Keychain-initialization failure cannot crash, persist, or leak a token |
+| Release Simulator build | Passed | `ClickBridgePhone` built in Release configuration for iOS Simulator |
+| Release Simulator install and launch | Passed | The Release app installed and launched on iPhone 17 / iOS 26.3 |
+| Generic device build | Passed | Release build for generic platform `iOS` with code signing disabled |
+| Full XCTest suite | Passed: **66/66 tests** | XcodeBuildMCP full suite, including focused on-screen trigger, App Intent routing, no-delayed-shortcut guarantees, and fail-closed Keychain coverage |
+| Release bundle inspection | Passed | The app bundle contains `Assets.car` with `AppIcon`, `PrivacyInfo.xcprivacy`, and `Metadata.appintents`; `ITSAppUsesNonExemptEncryption` is `false` |
 
-The 56 passing automated tests cover the deterministic contracts for:
+The 66 passing automated tests cover the deterministic contracts for:
 
 - upward and downward volume deltas;
 - initial baseline and exact duplicate-value callback suppression;
@@ -46,7 +53,10 @@ The 56 passing automated tests cover the deterministic contracts for:
 - stale WebSocket generations, authentication, heartbeat, reconnect, and strict frames;
 - five-sample clock health, timeout, refresh, and stale clock batches;
 - relay URL, token validation, UserDefaults, and Keychain behavior;
-- Ready, Not connected, Mac offline, Clock mismatch, and boundary presentation states.
+- Ready, Not connected, Mac offline, Clock mismatch, and boundary presentation states;
+- on-screen **Trigger Click** readiness and one-action-in-flight behavior;
+- App Shortcut request routing, foreground delivery, pending-request collapse, and non-reentrant readiness handling;
+- fail-closed Keychain initialization behavior.
 
 This evidence proves compilation and deterministic behavior under injected fakes. It does not prove that a physical iPhone reports a particular hardware interaction as an `outputVolume` change.
 
@@ -119,6 +129,6 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 
 ## Acceptance conclusion
 
-Automated implementation status is **passed** with successful Simulator and generic iOS device builds, the shared `ClickBridgePhone` scheme, and 56/56 passing tests in the recorded XcodeBuildMCP result bundle.
+Automated implementation status is **passed** with 66/66 XcodeBuildMCP tests, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
 
 Physical hardware-volume and live end-to-end acceptance remain **`NOT RUN`**. A physical iPhone run is mandatory before claiming the user requirement is fully accepted.

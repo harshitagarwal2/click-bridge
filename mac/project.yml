@@ -62,6 +62,9 @@ targets:
     sources:
       - path: ClickBridgeMacTests
       - path: ../contracts/fixtures
+        name: fixtures
+        group: contracts
+        createIntermediateGroups: false
         buildPhase: resources
     dependencies:
       - target: ClickBridgeMac

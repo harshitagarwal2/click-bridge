@@ -2,8 +2,8 @@
 
 This runbook deploys one stateless Node relay and one Caddy reverse proxy under
 the fixed Compose project name `oci`. The fixed name preserves the live
-`oci_caddy_data` and `oci_caddy_config` certificate volumes while migrating from
-the original flat layout to immutable releases. The relay has no database, no
+`oci_caddy_data` and `oci_caddy_config` certificate volumes across immutable
+releases. The relay has no database, no
 application volume, and no public port. Caddy is the only public service and
 publishes TCP 80 and 443.
 
@@ -31,19 +31,18 @@ Fill this table from the read-only preflight before changing the VM.
 | Hostname | Owned subdomain or dedicated DuckDNS name | `clickbridge-sjc.duckdns.org` |
 | VNIC/NSG | Public subnet, IGW/default route, only 80/443 application ingress | Verified; relay TCP 8080 is not public |
 | Host firewall | Active tool and 80/443 rules | `firewalld`; HTTP/HTTPS enabled on the external zone |
-| Active release | UTC release identifier | `20260812T020129Z` (legacy flat-layout release; replacement pending reviewed commit) |
+| Active release | UTC release identifier | Immutable release layout is live; the exact selected identifier is not recorded in repository evidence and must be read from the live `current-release` pointer |
 
 Do not continue to a mutating step while a prerequisite in the same section is
 unknown.
 
-The verified live host currently uses `/opt/click-bridge/{relay,deploy}`, a
-release-local `deploy/oci/.env`, and Compose project `oci`. It has no
-`releases/`, `shared/secrets.env`, `current-release`, or `previous-release` yet.
-The first rollout from this runbook is therefore a migration: preserve the flat
-tree as the emergency fallback, copy its mode-0600 environment to the shared
-path without printing or rotating tokens, build in a new immutable directory,
-and keep project name `oci`. Never try to bind a second Compose project to
-ports 80 and 443 alongside the live one.
+The verified live host now runs the immutable-release layout with Compose
+project `oci`; the original flat layout is deployment history, not the active
+release. This repository intentionally does not guess which timestamped release
+the host currently selects. Re-read `current-release`, `previous-release`, the
+shared environment permissions, and the running Compose labels during the
+read-only preflight before mutating the host. Never try to bind a second Compose
+project to ports 80 and 443 alongside the live one.
 
 ## 1. Inspect the VM and network without changing them
 
@@ -251,19 +250,23 @@ trap - EXIT INT TERM
 
 ## 7. Install the one shared role-token environment
 
-For the verified first migration, preserve the already-paired tokens. Copy only
-the domain and two role tokens from the live mode-0600 file into the new shared
-location without printing them:
+The live host has already completed the immutable-layout migration. Reuse its
+existing shared role-token environment; do not copy credentials from the
+legacy flat tree during a normal release. The command below applies only when
+recovering a still-flat installation from the documented historical layout.
+For that recovery case, preserve the already-paired tokens and copy only the
+domain and two role tokens from the mode-0600 file into the shared location
+without printing them:
 
 ```bash
 export OCI_SSH_TARGET='opc@146.235.216.172'
 ssh "$OCI_SSH_TARGET" 'set -eu; test "$(stat -c %a /opt/click-bridge/deploy/oci/.env)" = 600; install -d -m 0700 /opt/click-bridge/shared; umask 077; grep -E "^(CLICK_BRIDGE_DOMAIN|PHONE_TOKEN|MAC_TOKEN)=" /opt/click-bridge/deploy/oci/.env > /opt/click-bridge/shared/secrets.env; test "$(wc -l < /opt/click-bridge/shared/secrets.env)" = 3; grep -Eq "^PHONE_TOKEN=[0-9a-f]{64}$" /opt/click-bridge/shared/secrets.env; grep -Eq "^MAC_TOKEN=[0-9a-f]{64}$" /opt/click-bridge/shared/secrets.env; test "$(stat -c %a /opt/click-bridge/shared/secrets.env)" = 600'
 ```
 
-Do not delete or edit the legacy `.env` until the new immutable release and its
-rollback test pass. For a genuinely new installation or deliberate two-role
-rotation, generate a temporary mode-0600 transfer file on the Mac without
-printing the tokens:
+For a still-flat recovery, do not delete or edit the legacy `.env` until the new
+immutable release and its rollback test pass. For a genuinely new installation
+or deliberate two-role rotation, generate a temporary mode-0600 transfer file
+on the Mac without printing the tokens:
 
 ```bash
 umask 077

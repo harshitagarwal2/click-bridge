@@ -34,6 +34,9 @@ const dockerfile = readFileSync(
   path.join(repositoryRoot, "deploy/oci/Dockerfile"),
   "utf8",
 );
-assert.match(dockerfile, /^FROM node:24-alpine$/m);
+assert.match(
+  dockerfile,
+  /^FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43$/m,
+);
 
 console.log(`verified ${workflowFiles.length} workflow file(s)`);

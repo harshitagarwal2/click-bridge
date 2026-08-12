@@ -1,0 +1,1 @@
+REPLACE BEFORE RELEASE: Describe how Click Bridge connects an iPhone to the owner's private relay and Mac, how the volume-button and on-screen click actions work, and what setup is required.
