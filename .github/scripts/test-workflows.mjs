@@ -396,9 +396,26 @@ for (const [shape, deployScript] of [
         compose: validCompose,
         deployScript,
       }),
-    /docker run|indirect executable|dynamic shell execution|compute|command-resolution|unreviewed executable/,
+    /Docker|docker run|literal executable|indirect executable|dynamic shell execution|compute|command-resolution|unreviewed executable/,
     `a ${shape} docker executable must be rejected`,
   );
+}
+for (const dockerPath of ["/tmp/docker", "/usr/local/bin/docker"]) {
+  for (const subcommand of ["compose", "rm", "run", "exec", "logs"]) {
+    assert.throws(
+      () =>
+        validateDeploymentImages({
+          dockerfile: validDockerfile,
+          compose: validCompose,
+          deployScript: validDeployScript.replace(
+            `docker ${subcommand}`,
+            `${dockerPath} ${subcommand}`,
+          ),
+        }),
+      /Docker|docker|executable|invocation|command|arguments/,
+      `${dockerPath} must not replace the literal Docker executable for ${subcommand}`,
+    );
+  }
 }
 for (const [shape, suffix] of [
   ["semicolon", "; docker run --rm node:latest true"],

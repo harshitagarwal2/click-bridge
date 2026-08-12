@@ -420,7 +420,7 @@ function shellCommandInvocationIndex(tokens) {
 }
 
 function isLiteralDockerExecutable(token) {
-  return token === "docker" || token?.endsWith("/docker");
+  return token === "docker";
 }
 
 const unsafeShellAssignments = new Set([
@@ -496,6 +496,7 @@ function assertSafeShellAssignments(segment) {
 
 function deployDockerRuns(source) {
   const runs = [];
+  const invocations = [];
   const subcommands = [];
   for (const substitution of shellCommandSubstitutionBodies(source)) {
     const nestedDocker = deployDockerRuns(substitution);
@@ -544,6 +545,13 @@ function deployDockerRuns(source) {
       reviewedShellExecutables.has(executableName),
       `deploy script contains an unreviewed executable command: ${executableName}`,
     );
+    if (executableName === "docker") {
+      assert.equal(
+        executable,
+        "docker",
+        "deploy script must invoke Docker through the exact literal executable",
+      );
+    }
 
     if (executableName === "trap") {
       const trapCommand = segment.map(({ value }) => value);
@@ -591,6 +599,7 @@ function deployDockerRuns(source) {
       `deploy script uses an unsupported docker subcommand: ${subcommand}`,
     );
     subcommands.push(subcommand);
+    invocations.push({ executable, subcommand });
     if (subcommand !== "run") continue;
     const { args, image } = dockerRunImageAndCommand(
       segment.slice(commandIndex + 2).map(({ value }) => value),
@@ -601,7 +610,7 @@ function deployDockerRuns(source) {
       image,
     });
   }
-  return { runs, subcommands };
+  return { invocations, runs, subcommands };
 }
 
 export function validateDeploymentImages({ dockerfile, compose, deployScript }) {
@@ -619,12 +628,26 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     "Caddy must use exactly the reviewed digest; tag-only references are forbidden",
   );
 
-  const { runs: deployRuns, subcommands: dockerSubcommands } =
+  const {
+    invocations: dockerInvocations,
+    runs: deployRuns,
+    subcommands: dockerSubcommands,
+  } =
     deployDockerRuns(deployScript);
   assert.deepEqual(
     dockerSubcommands,
     ["compose", "rm", "run", "exec", "logs", "run", "run"],
     "deploy script must contain exactly the reviewed Docker command sequence",
+  );
+  assert.deepEqual(
+    dockerInvocations.map(({ executable, subcommand }) => ({
+      executable,
+      subcommand,
+    })),
+    ["compose", "rm", "run", "exec", "logs", "run", "run"].map(
+      (subcommand) => ({ executable: "docker", subcommand }),
+    ),
+    "every deployment Docker invocation must use the exact literal executable",
   );
   assert.deepEqual(
     deployRuns,
