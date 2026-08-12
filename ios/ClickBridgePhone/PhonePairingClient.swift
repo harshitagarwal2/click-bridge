@@ -9,7 +9,7 @@ enum PhonePairingPhase: Equatable, Sendable {
 
 enum PhonePairingRecoveryResult: Equatable, Sendable {
     case recovered, noPending, originMismatch, authenticationRejected
-    case storageReadFailed, storageCorrupt, promotionFailed, superseded
+    case authenticationUnavailable, storageReadFailed, storageCorrupt, promotionFailed, superseded
 }
 
 private enum PhonePairingRandomnessError: Error { case unavailable }
@@ -30,7 +30,7 @@ final class PhonePairingClient: PhonePairingCoordinating {
     private let scheduler: any PhoneScheduler
     private let claimID: @MainActor () -> UUID
     private let randomBytes: @MainActor () throws -> Data
-    private let authenticatePending: @MainActor (RelayConfiguration) async -> Bool
+    private let authenticatePending: @MainActor (RelayConfiguration) async -> PhonePendingAuthenticationResult
     private let decoder = StrictPhoneWireDecoder()
 
     private(set) var state = PhonePairingState()
@@ -61,7 +61,7 @@ final class PhonePairingClient: PhonePairingCoordinating {
             guard status == errSecSuccess else { throw PhonePairingRandomnessError.unavailable }
             return bytes
         },
-        authenticatePending: @escaping @MainActor (RelayConfiguration) async -> Bool = { _ in false }
+        authenticatePending: @escaping @MainActor (RelayConfiguration) async -> PhonePendingAuthenticationResult = { _ in .rejected }
     ) {
         self.socketFactory = socketFactory
         self.settings = settings
@@ -147,9 +147,13 @@ final class PhonePairingClient: PhonePairingCoordinating {
         } catch {
             return .storageCorrupt
         }
-        let authenticated = await authenticatePending(configuration)
+        let authentication = await authenticatePending(configuration)
         guard generation == expectedGeneration else { return .superseded }
-        guard authenticated else { return .authenticationRejected }
+        switch authentication {
+        case .authenticated: break
+        case .rejected: return .authenticationRejected
+        case .unavailable: return .authenticationUnavailable
+        }
         do {
             try settings.promotePairingCredential(pending)
             settings.relayURLString = pending.relayWebSocketURL.absoluteString

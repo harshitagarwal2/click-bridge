@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 
 import { PROTOCOL_VERSION } from '../src/constants.js';
+import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
 import { parseClientMessage } from '../src/protocol.js';
 import { createServer } from '../src/server.js';
 
@@ -325,6 +326,32 @@ test('malformed credential descriptors fail closed without invoking accessors', 
     }
   }
   assert.equal(accessorReads, 0);
+});
+
+test('auth-store persistence failure is transient while an ordinary wrong credential remains rejected', async () => {
+  const unavailable = authStore();
+  unavailable.authenticateCredential = () => {
+    throw new AuthStoreError(AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED, 'phone auth store unavailable');
+  };
+  const unavailableServer = await boot({ authStore: unavailable });
+  try {
+    const phone = peer(unavailableServer.url);
+    await phone.open();
+    phone.send({ type: 'hello', v: 1, role: 'phone', token: PHONE_TOKEN });
+    assert.equal(await phone.closed(), 1011);
+  } finally {
+    await unavailableServer.server.close();
+  }
+
+  const ordinary = await boot();
+  try {
+    const phone = peer(ordinary.url);
+    await phone.open();
+    phone.send({ type: 'hello', v: 1, role: 'phone', token: '9'.repeat(64) });
+    assert.equal(await phone.closed(), 4005);
+  } finally {
+    await ordinary.server.close();
+  }
 });
 
 test('native absent Origin and exact PWA Origin are allowed while hostile Origin is rejected', async () => {

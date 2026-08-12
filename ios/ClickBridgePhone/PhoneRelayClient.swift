@@ -12,6 +12,7 @@ enum PhoneConnectionState: Equatable, Sendable {
     case authenticated
     case backoff
     case takenOver
+    case authenticationRejected
 }
 
 enum PhoneTransportEvent: Equatable, Sendable {
@@ -109,6 +110,8 @@ final class PhoneRelayClient: PhoneActionTransport {
             guard let self, let socket else { return }
             if closure.code == PhoneProtocolV1.phoneTakenOverCloseCode {
                 self.phoneWasTakenOver(generation: expectedGeneration, socket: socket)
+            } else if closure.code == PhoneProtocolV1.authenticationRejectedCloseCode {
+                self.authenticationWasRejected(generation: expectedGeneration, socket: socket)
             } else {
                 self.fail(generation: expectedGeneration, socket: socket, reason: "socket_closed")
             }
@@ -215,6 +218,15 @@ final class PhoneRelayClient: PhoneActionTransport {
         guard owns(socket: socket, generation: expectedGeneration) else { return }
         invalidateCurrentSocket(reason: "phone_taken_over", scheduleReconnect: false)
         publishConnection(.takenOver)
+    }
+
+    private func authenticationWasRejected(generation expectedGeneration: Int,
+                                           socket: any PhoneWebSocket) {
+        guard owns(socket: socket, generation: expectedGeneration) else { return }
+        configuration = nil
+        reconnectAttempt = 0
+        invalidateCurrentSocket(reason: "authentication_rejected", scheduleReconnect: false)
+        publishConnection(.authenticationRejected)
     }
 
     private func invalidateCurrentSocket(reason: String, scheduleReconnect: Bool) {

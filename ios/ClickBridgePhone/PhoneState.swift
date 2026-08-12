@@ -108,6 +108,8 @@ struct PhoneState: Equatable, Sendable {
             return "Authenticating with the relay."
         case .backoff:
             return "Connection lost. Retrying automatically."
+        case .authenticationRejected:
+            return "Credential rejected. Pair this phone again."
         case .disconnected, .authenticated, .takenOver:
             return primaryStatus.detail
         }

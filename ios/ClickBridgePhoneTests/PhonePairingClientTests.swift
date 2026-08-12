@@ -222,7 +222,7 @@ final class PhonePairingClientTests: XCTestCase {
         let recovery = PhonePairingClient(
             socketFactory: FakePhoneWebSocketFactory(), settings: store,
             normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
-            randomBytes: { self.nonce }, authenticatePending: { _ in true }
+            randomBytes: { self.nonce }, authenticatePending: { _ in .authenticated }
         )
         let result = await recovery.recoverPending(
             relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
@@ -406,7 +406,7 @@ final class PhonePairingClientTests: XCTestCase {
             randomBytes: { self.nonce },
             authenticatePending: { configuration in
                 authenticated.append(configuration)
-                return true
+                return .authenticated
             }
         )
 
@@ -438,7 +438,7 @@ final class PhonePairingClientTests: XCTestCase {
             clock: FakePhoneClock(),
             scheduler: FakePhoneScheduler(),
             randomBytes: { self.nonce },
-            authenticatePending: { _ in authenticationCalls += 1; return true }
+            authenticatePending: { _ in authenticationCalls += 1; return .authenticated }
         )
 
         let result = await subject.recoverPending(
@@ -472,12 +472,32 @@ final class PhonePairingClientTests: XCTestCase {
             socketFactory: FakePhoneWebSocketFactory(), settings: rejectedStore,
             normalTransport: FakePhoneActionTransport(), clock: FakePhoneClock(),
             scheduler: FakePhoneScheduler(), randomBytes: { self.nonce },
-            authenticatePending: { _ in false }
+            authenticatePending: { _ in .rejected }
         )
         let rejectedResult = await rejected.recoverPending(
             relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
         )
         XCTAssertEqual(rejectedResult, .authenticationRejected)
+        XCTAssertNotNil(try rejectedStore.pendingPairingCredential())
+
+        let unavailableStore = try makeStore()
+        try unavailableStore.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let unavailableTransport = FakePhoneActionTransport()
+        let unavailable = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: unavailableStore,
+            normalTransport: unavailableTransport, clock: FakePhoneClock(),
+            scheduler: FakePhoneScheduler(), randomBytes: { self.nonce },
+            authenticatePending: { _ in .unavailable }
+        )
+        let unavailableResult = await unavailable.recoverPending(
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        XCTAssertEqual(unavailableResult, .authenticationUnavailable)
+        XCTAssertNotNil(try unavailableStore.pendingPairingCredential())
+        XCTAssertTrue(unavailableTransport.configurations.isEmpty)
 
         let secrets = PairingTestSecretStore()
         let brokenStore = try PhoneSettingsStore(
@@ -492,7 +512,7 @@ final class PhonePairingClientTests: XCTestCase {
         let broken = PhonePairingClient(
             socketFactory: FakePhoneWebSocketFactory(), settings: brokenStore,
             normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
-            randomBytes: { self.nonce }, authenticatePending: { _ in true }
+            randomBytes: { self.nonce }, authenticatePending: { _ in .authenticated }
         )
         let brokenResult = await broken.recoverPending(
             relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
@@ -529,7 +549,7 @@ final class PhonePairingClientTests: XCTestCase {
         let promotion = PhonePairingClient(
             socketFactory: FakePhoneWebSocketFactory(), settings: promotionStore,
             normalTransport: promotionNormal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
-            randomBytes: { self.nonce }, authenticatePending: { _ in true }
+            randomBytes: { self.nonce }, authenticatePending: { _ in .authenticated }
         )
         let promotionResult = await promotion.recoverPending(
             relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
@@ -563,7 +583,7 @@ final class PhonePairingClientTests: XCTestCase {
         await gate.waitUntilEntered()
         let newerToken = String(repeating: "c", count: 64)
         try store.savePhoneToken(newerToken)
-        gate.resume(authenticated: true)
+        gate.resume(with: .authenticated)
 
         let result = await recovery.value
         XCTAssertEqual(result, .superseded)
@@ -592,7 +612,7 @@ final class PhonePairingClientTests: XCTestCase {
         }
         await gate.waitUntilEntered()
         try store.discardPairingCredential(pending)
-        gate.resume(authenticated: true)
+        gate.resume(with: .authenticated)
 
         let result = await recovery.value
         XCTAssertEqual(result, .superseded)
@@ -624,7 +644,7 @@ final class PhonePairingClientTests: XCTestCase {
         }
         await gate.waitUntilEntered()
         secrets.value = "corrupt-pairing-record"
-        gate.resume(authenticated: true)
+        gate.resume(with: .authenticated)
 
         let result = await recovery.value
         XCTAssertEqual(result, .storageCorrupt)
@@ -652,7 +672,7 @@ final class PhonePairingClientTests: XCTestCase {
         }
         await gate.waitUntilEntered()
         subject.cancel()
-        gate.resume(authenticated: true)
+        gate.resume(with: .authenticated)
 
         let result = await recovery.value
         XCTAssertEqual(result, .superseded)
@@ -685,7 +705,7 @@ final class PhonePairingClientTests: XCTestCase {
             XCTUnwrap(URL(string: "https://relay.example/pair#v=1&r=\(reference)")),
             expectedHost: "relay.example"
         ))
-        gate.resume(authenticated: true)
+        gate.resume(with: .authenticated)
 
         let result = await recovery.value
         XCTAssertEqual(result, .superseded)
@@ -697,11 +717,11 @@ final class PhonePairingClientTests: XCTestCase {
 
 @MainActor
 private final class PairingAuthenticationGate {
-    private var authenticationContinuation: CheckedContinuation<Bool, Never>?
+    private var authenticationContinuation: CheckedContinuation<PhonePendingAuthenticationResult, Never>?
     private var entryContinuations: [CheckedContinuation<Void, Never>] = []
     private var entered = false
 
-    func wait() async -> Bool {
+    func wait() async -> PhonePendingAuthenticationResult {
         entered = true
         let entryContinuations = self.entryContinuations
         self.entryContinuations.removeAll()
@@ -714,8 +734,8 @@ private final class PairingAuthenticationGate {
         await withCheckedContinuation { entryContinuations.append($0) }
     }
 
-    func resume(authenticated: Bool) {
-        authenticationContinuation?.resume(returning: authenticated)
+    func resume(with result: PhonePendingAuthenticationResult) {
+        authenticationContinuation?.resume(returning: result)
         authenticationContinuation = nil
     }
 }

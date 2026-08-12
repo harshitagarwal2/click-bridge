@@ -107,6 +107,13 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   let current = null;
   let initializePromise = null;
   let activationQueue = Promise.resolve();
+  let poisoned = false;
+
+  function assertUsable() {
+    if (poisoned) {
+      throw authError(AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED, 'phone auth store unavailable');
+    }
+  }
 
   async function persist(record, previousRecord = null) {
     const directory = dirname(recordPath);
@@ -150,6 +157,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
           await rollbackDirectoryHandle.close();
           rollbackDirectoryHandle = null;
         } catch {
+          poisoned = true;
           if (rollbackHandle) {
             try { await rollbackHandle.close(); } catch {}
           }
@@ -188,11 +196,13 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   async function initialize() {
+    assertUsable();
     initializePromise ??= initializeOnce();
     return initializePromise;
   }
 
   function snapshot() {
+    assertUsable();
     if (!current) {
       throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
     }
@@ -200,6 +210,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   function authenticateCredential(credential) {
+    assertUsable();
     const record = current;
     if (!record
         || record.schemaVersion !== SCHEMA_VERSION

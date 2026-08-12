@@ -1,21 +1,25 @@
 import Foundation
 
+enum PhonePendingAuthenticationResult: Equatable, Sendable {
+    case authenticated, rejected, unavailable
+}
+
 @MainActor
 final class PhonePendingAuthenticator {
     private let transport: any PhoneActionTransport
-    private var continuation: CheckedContinuation<Bool, Never>?
+    private var continuation: CheckedContinuation<PhonePendingAuthenticationResult, Never>?
     private var expectedGeneration: Int?
 
     init(transport: any PhoneActionTransport) {
         self.transport = transport
     }
 
-    func authenticate(_ configuration: RelayConfiguration) async -> Bool {
-        finish(false, reason: "pending_authentication_superseded")
+    func authenticate(_ configuration: RelayConfiguration) async -> PhonePendingAuthenticationResult {
+        finish(.unavailable, reason: "pending_authentication_superseded")
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 guard !Task.isCancelled else {
-                    continuation.resume(returning: false)
+                    continuation.resume(returning: .unavailable)
                     return
                 }
                 self.continuation = continuation
@@ -25,25 +29,28 @@ final class PhonePendingAuthenticator {
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.finish(false, reason: "pending_authentication_cancelled")
+                self?.finish(.unavailable, reason: "pending_authentication_cancelled")
             }
         }
     }
 
     private func handle(_ event: PhoneTransportEvent) {
         guard case .connection(let generation, let state) = event,
-              generation == expectedGeneration else { return }
+              expectedGeneration != nil,
+              generation == transport.generation else { return }
         switch state {
         case .authenticated:
-            finish(true, reason: "pending_authentication_complete")
+            finish(.authenticated, reason: "pending_authentication_complete")
+        case .authenticationRejected:
+            finish(.rejected, reason: "pending_authentication_rejected")
         case .backoff, .takenOver, .disconnected:
-            finish(false, reason: "pending_authentication_rejected")
+            finish(.unavailable, reason: "pending_authentication_unavailable")
         case .connecting, .authenticating:
             break
         }
     }
 
-    private func finish(_ result: Bool, reason: String) {
+    private func finish(_ result: PhonePendingAuthenticationResult, reason: String) {
         guard let continuation else { return }
         self.continuation = nil
         expectedGeneration = nil
