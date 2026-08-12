@@ -59,6 +59,11 @@ final class PhonePairingPresentationTests: XCTestCase {
         XCTAssertTrue(PhoneDeployment.pairingAvailabilityCopy.contains("Advanced"))
     }
 
+    func testAdvancedLegacySaveIsAvailableOnlyWhileDisclosureIsExpanded() {
+        XCTAssertFalse(AdvancedLegacySettingsPresentation.showsSaveButton(isExpanded: false))
+        XCTAssertTrue(AdvancedLegacySettingsPresentation.showsSaveButton(isExpanded: true))
+    }
+
     func testFailureCopyDoesNotEchoUnknownServerReason() {
         let secretLikeReason = String(repeating: "a", count: 64)
         let presentation = PhonePairingPresentation(state: .init(

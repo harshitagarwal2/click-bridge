@@ -82,6 +82,7 @@
 		A399BB19C7E495D4897D12F5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AC46A3FF2E91CC4D65C8B6D2 /* Assets.xcassets */; };
 		A43519035B572F475FD2CF1B /* PhonePairingClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 363F0099EB46329EFE77A33C /* PhonePairingClientTests.swift */; };
 		A5393B0B08BF6A98FF632955 /* pair-bad-credential.json in Resources */ = {isa = PBXBuildFile; fileRef = 142F21D9B58DF25CC1EF990C /* pair-bad-credential.json */; };
+		A5A7FA5D83A75FE31D99480E /* PairingScannerLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF029CE9331040FF4422FF4 /* PairingScannerLifecycleTests.swift */; };
 		A714D2FDB5E74598F682B541 /* ClickBridgePhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29C13719C36FE3B021C0CE10 /* ClickBridgePhoneApp.swift */; };
 		ABB6C8399175A21DCAA45F7E /* pair.failed.mac-after-claim.json in Resources */ = {isa = PBXBuildFile; fileRef = A6F2CE2FADB4D492C111C72A /* pair.failed.mac-after-claim.json */; };
 		AECFEB56B45C59993C2CDDB6 /* PhonePendingAuthenticatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE8A980ED3E74047E5F0701 /* PhonePendingAuthenticatorTests.swift */; };
@@ -192,6 +193,7 @@
 		986C9B7F242546D2F7B981A6 /* pair-invalid-reference-character.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair-invalid-reference-character.json"; sourceTree = "<group>"; };
 		9A28D7E8A0CB9808E8B5E1EF /* invalid-result-reason.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-reason.json"; sourceTree = "<group>"; };
 		9A94B694A3F2115B2C872DFB /* PhoneWireProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneWireProtocolTests.swift; sourceTree = "<group>"; };
+		9FF029CE9331040FF4422FF4 /* PairingScannerLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerLifecycleTests.swift; sourceTree = "<group>"; };
 		A6F2CE2FADB4D492C111C72A /* pair.failed.mac-after-claim.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair.failed.mac-after-claim.json"; sourceTree = "<group>"; };
 		A7EEF4B04B411ACA2E2FFD24 /* PhonePairingPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePairingPresentationTests.swift; sourceTree = "<group>"; };
 		A819423ED6FC50E8802225C9 /* PhoneStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneStateTests.swift; sourceTree = "<group>"; };
@@ -392,6 +394,7 @@
 			isa = PBXGroup;
 			children = (
 				E2828D53B5D1942DBF5C84B3 /* PairingLinkTests.swift */,
+				9FF029CE9331040FF4422FF4 /* PairingScannerLifecycleTests.swift */,
 				B6F28DA587801EBD819EB398 /* PhoneActionCoordinatorTests.swift */,
 				42BA4C0D99171C3686BF0677 /* PhoneClockHealthControllerTests.swift */,
 				1BE0E7F9262B9CC7CEA0B845 /* PhoneLifecycleTests.swift */,
@@ -588,6 +591,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7A00992294C6F9F23A8BC7D4 /* PairingLinkTests.swift in Sources */,
+				A5A7FA5D83A75FE31D99480E /* PairingScannerLifecycleTests.swift in Sources */,
 				109610365CF557AD54624437 /* PhoneActionCoordinatorTests.swift in Sources */,
 				4DDF8C096B020C608F5E7C5E /* PhoneClockHealthControllerTests.swift in Sources */,
 				2D08DF4588EC6158772F30B1 /* PhoneLifecycleTests.swift in Sources */,

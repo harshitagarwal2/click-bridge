@@ -35,6 +35,10 @@ struct RelaySettingsDraft: Equatable {
     }
 }
 
+enum AdvancedLegacySettingsPresentation {
+    static func showsSaveButton(isExpanded: Bool) -> Bool { isExpanded }
+}
+
 struct ContentView: View {
     let model: PhoneAppModel
 
@@ -452,10 +456,14 @@ private struct SettingsView: View {
                     Button("Cancel") { dismiss() }
                         .accessibilityIdentifier("settings.cancel")
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", action: saveAndDismiss)
-                        .disabled(!draft.canSave)
-                        .accessibilityIdentifier("settings.save")
+                if AdvancedLegacySettingsPresentation.showsSaveButton(
+                    isExpanded: advancedLegacyExpanded
+                ) {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save", action: saveAndDismiss)
+                            .disabled(!draft.canSave)
+                            .accessibilityIdentifier("settings.save")
+                    }
                 }
             }
             .onChange(of: draft.errorMessage, initial: true) { _, errorMessage in

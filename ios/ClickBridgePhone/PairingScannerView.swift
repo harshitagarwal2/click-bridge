@@ -46,6 +46,10 @@ private struct CameraCodeScanner: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: ScannerController, context: Context) {}
 
+    static func dismantleUIViewController(_ controller: ScannerController, coordinator: Coordinator) {
+        controller.stopCapture()
+    }
+
     final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
         let receive: (String) -> Void
         private var delivered = false
@@ -64,8 +68,32 @@ private struct CameraCodeScanner: UIViewControllerRepresentable {
 }
 
 @MainActor
-private final class ScannerController: UIViewController {
-    private let capture = CaptureSessionController()
+final class ScannerController: UIViewController {
+    private let capture: any CaptureSessionControlling
+
+    init(capture: any CaptureSessionControlling = CaptureSessionController()) {
+        self.capture = capture
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(captureSessionFailed),
+            name: .AVCaptureSessionRuntimeError,
+            object: capture.session
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(captureSessionFailed),
+            name: .AVCaptureSessionWasInterrupted,
+            object: capture.session
+        )
+    }
 
     func configure(delegate: AVCaptureMetadataOutputObjectsDelegate) -> Bool {
         guard let camera = AVCaptureDevice.default(for: .video),
@@ -92,17 +120,41 @@ private final class ScannerController: UIViewController {
         contentUnavailableConfiguration = configuration
     }
 
+    @objc private func captureSessionFailed() {
+        handleCaptureFailure()
+    }
+
+    func handleCaptureFailure() {
+        stopCapture()
+        showUnavailableFallback()
+    }
+
+    func stopCapture() {
+        capture.stop()
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         view.layer.sublayers?.first?.frame = view.bounds
     }
 
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        stopCapture()
+    }
+
     deinit {
-        capture.stop()
+        NotificationCenter.default.removeObserver(self)
     }
 }
 
-private final class CaptureSessionController: @unchecked Sendable {
+protocol CaptureSessionControlling: AnyObject {
+    var session: AVCaptureSession { get }
+    func start()
+    func stop()
+}
+
+private final class CaptureSessionController: CaptureSessionControlling, @unchecked Sendable {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.clickbridge.phone.pairing-camera")
 

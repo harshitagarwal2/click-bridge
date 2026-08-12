@@ -32,6 +32,15 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertTrue(content.contains("switch model.presentedFlow"))
     }
 
+    func testScannerRepresentableStopsCaptureWhenRemoved() throws {
+        let scanner = try source("ClickBridgePhone/PairingScannerView.swift")
+
+        XCTAssertTrue(scanner.contains("static func dismantleUIViewController"))
+        XCTAssertTrue(scanner.contains("controller.stopCapture()"))
+        XCTAssertTrue(scanner.contains("AVCaptureSessionRuntimeError"))
+        XCTAssertTrue(scanner.contains("AVCaptureSessionWasInterrupted"))
+    }
+
     private func source(_ relativePath: String) throws -> String {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let iosDirectory = testsDirectory.deletingLastPathComponent()
