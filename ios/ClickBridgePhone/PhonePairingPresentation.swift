@@ -56,6 +56,24 @@ struct PhonePairingPresentation: Equatable {
 
     static func shouldCancelOnBackground(_ phase: PhonePairingPhase) -> Bool {
         switch phase {
+        case .connecting, .claiming, .awaitingApproval:
+            true
+        default:
+            false
+        }
+    }
+
+    static func allowsCancellation(_ phase: PhonePairingPhase) -> Bool {
+        switch phase {
+        case .idle, .connecting, .claiming, .awaitingApproval:
+            true
+        default:
+            false
+        }
+    }
+
+    static func preventsInteractiveDismiss(_ phase: PhonePairingPhase) -> Bool {
+        switch phase {
         case .connecting, .claiming, .awaitingApproval, .awaitingCredential, .awaitingActivation:
             true
         default:

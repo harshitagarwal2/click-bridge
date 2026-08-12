@@ -30,6 +30,54 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertEqual(pairing.cancelCount, 1)
     }
 
+    func testBackgroundPreservesStagedPairingForForegroundRecovery() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        let pairing = FakePairingCoordinator(state: .init(phase: .awaitingActivation))
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.background)
+
+        XCTAssertEqual(pairing.cancelCount, 0)
+    }
+
+    func testRecoveredActiveEventStartsForegroundMonitoringOnlyOnce() async throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let pairing = FakePairingCoordinator(
+            recoveryResult: .recovered,
+            emitsActiveDuringRecovery: true,
+            beforeRecoveryResult: {
+                let pending = try XCTUnwrap(try harness.settings.pendingPairingRecoveryDescriptor())
+                try harness.settings.promotePairingCredential(pending)
+                harness.settings.relayURLString = pending.relayWebSocketURL.absoluteString
+            }
+        )
+        harness.model.installPairingClient(pairing)
+
+        harness.model.scenePhaseChanged(.active)
+        for _ in 0..<10 where harness.source.startCount == 0 { await Task.yield() }
+
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testStartOverDiscardsOnlyCurrentlyDisplayedSavedPairing() throws {
+        let harness = try Harness(token: nil, relayURL: "")
+        _ = try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+
+        XCTAssertTrue(harness.model.hasPendingPairing)
+        harness.model.startOverSavedPairing()
+
+        XCTAssertFalse(harness.model.hasPendingPairing)
+        XCTAssertNil(try harness.settings.pendingPairingRecoveryDescriptor())
+    }
+
     func testExistingCredentialRequiresExplicitReplacementBeforeStarting() throws {
         let harness = try Harness()
         let pairing = FakePairingCoordinator()
@@ -504,8 +552,19 @@ private final class FakePairingCoordinator: PhonePairingCoordinating {
     private(set) var startedLinks: [PhonePairingLink] = []
     private(set) var replacementAuthorizations: [PhonePairingReplacementAuthorization?] = []
     private(set) var cancelCount = 0
+    let recoveryResult: PhonePairingRecoveryResult
+    let emitsActiveDuringRecovery: Bool
+    let beforeRecoveryResult: (() throws -> Void)?
 
-    init(state: PhonePairingState = .init()) { self.state = state }
+    init(state: PhonePairingState = .init(),
+         recoveryResult: PhonePairingRecoveryResult = .noPending,
+         emitsActiveDuringRecovery: Bool = false,
+         beforeRecoveryResult: (() throws -> Void)? = nil) {
+        self.state = state
+        self.recoveryResult = recoveryResult
+        self.emitsActiveDuringRecovery = emitsActiveDuringRecovery
+        self.beforeRecoveryResult = beforeRecoveryResult
+    }
 
     func start(_ link: PhonePairingLink,
                replacementAuthorization: PhonePairingReplacementAuthorization?) {
@@ -522,7 +581,13 @@ private final class FakePairingCoordinator: PhonePairingCoordinating {
     }
 
     func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult {
-        .noPending
+        do { try beforeRecoveryResult?() }
+        catch { return .promotionFailed }
+        if emitsActiveDuringRecovery {
+            state = .init(phase: .active)
+            onState?(state)
+        }
+        return recoveryResult
     }
 }
 

@@ -39,9 +39,24 @@ final class PhonePairingPresentationTests: XCTestCase {
     func testOnlyInFlightPairingPhasesCancelWhenAppBackgrounds() {
         XCTAssertTrue(PhonePairingPresentation.shouldCancelOnBackground(.connecting))
         XCTAssertTrue(PhonePairingPresentation.shouldCancelOnBackground(.awaitingApproval))
-        XCTAssertTrue(PhonePairingPresentation.shouldCancelOnBackground(.awaitingActivation))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.awaitingActivation))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.awaitingCredential))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.active))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.failed))
+    }
+
+    func testCredentialStagingCannotBeCancelledOrInteractivelyDismissed() {
+        XCTAssertTrue(PhonePairingPresentation.allowsCancellation(.awaitingApproval))
+        XCTAssertFalse(PhonePairingPresentation.allowsCancellation(.awaitingCredential))
+        XCTAssertFalse(PhonePairingPresentation.allowsCancellation(.awaitingActivation))
+        XCTAssertTrue(PhonePairingPresentation.preventsInteractiveDismiss(.awaitingCredential))
+        XCTAssertTrue(PhonePairingPresentation.preventsInteractiveDismiss(.awaitingActivation))
+    }
+
+    func testDeploymentCopyNamesCompiledHostWithoutImplyingOtherHostsCanPair() {
+        XCTAssertEqual(PhoneDeployment.pairingHost, "clickbridge-sjc.duckdns.org")
+        XCTAssertTrue(PhoneDeployment.pairingAvailabilityCopy.contains(PhoneDeployment.pairingHost))
+        XCTAssertTrue(PhoneDeployment.pairingAvailabilityCopy.contains("Advanced"))
     }
 
     func testFailureCopyDoesNotEchoUnknownServerReason() {

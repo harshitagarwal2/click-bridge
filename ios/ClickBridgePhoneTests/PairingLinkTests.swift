@@ -34,6 +34,10 @@ final class PairingLinkTests: XCTestCase {
             "https://relay.example/pair#v=1&r=\(reference)&token=secret",
             "https://relay.example/pair#v=2&r=\(reference)",
             "https://relay.example/pair#v=1&r=\(reference)=",
+            "https://relay.example/%70air#v=1&r=\(reference)",
+            "https://relay.example/pair/%77eb#v=1&r=\(reference)",
+            "https://relay.example/pair#v%3D1%26r%3D\(reference)",
+            "https://relay.example/pair#v=1&r=%41\(reference.dropFirst())",
         ]
 
         for candidate in candidates {

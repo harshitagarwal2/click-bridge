@@ -93,8 +93,51 @@ final class PhonePairingClientTests: XCTestCase {
 
         XCTAssertEqual(try store.phoneToken(), credential)
         XCTAssertNil(try store.pendingPairingCredential())
+        XCTAssertEqual(store.relayURLString, "wss://relay.example/ws")
         XCTAssertEqual(normal.configurations.last?.token, credential)
         XCTAssertEqual(subject.state.phase, .active)
+    }
+
+    func testFreshPairSurvivesBackgroundForegroundAndRelaunchWithNewConfiguration() throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let secrets = PairingTestSecretStore()
+        let store = try PhoneSettingsStore(defaults: defaults, secrets: secrets)
+        let factory = FakePhoneWebSocketFactory()
+        let subject = makeSubject(store: store, factory: factory, scheduler: FakePhoneScheduler())
+        subject.start(try PhonePairingLink.parse(
+            XCTUnwrap(URL(string: "https://relay.example/pair#v=1&r=\(reference)")),
+            expectedHost: "relay.example"
+        ))
+        let socket = factory.sockets[0]
+        socket.emitOpen()
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","activePhoneCredentialVersion":1}"#)
+
+        let reopened = try PhoneSettingsStore(defaults: defaults, secrets: secrets)
+        let transport = FakePhoneActionTransport()
+        let source = FakeVolumeChangeSource(volume: 0.5)
+        let clock = FakePhoneClock()
+        let scheduler = FakePhoneScheduler()
+        let actions = PhoneActionCoordinator(transport: transport, clock: clock,
+                                             scheduler: scheduler,
+                                             haptics: FakePhoneHaptics()) { _ in }
+        let health = PhoneClockHealthController(clock: clock, scheduler: scheduler,
+                                                isActionPending: { actions.hasPendingAction }) { _ in }
+        let model = PhoneAppModel(settings: reopened,
+                                  volumeController: VolumeDeltaController(source: source),
+                                  transport: transport,
+                                  clockHealth: health,
+                                  actions: actions,
+                                  intentRouter: PhoneClickIntentRouter())
+
+        model.scenePhaseChanged(.active)
+        model.scenePhaseChanged(.background)
+        model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(transport.configurations.map(\.url.absoluteString),
+                       ["wss://relay.example/ws", "wss://relay.example/ws"])
+        XCTAssertEqual(transport.configurations.map(\.token), [credential, credential])
     }
 
     func testExplicitReplacementAuthorizationKeepsLegacyActiveUntilActivation() throws {
@@ -154,6 +197,40 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(subject.state.phase, .cancelled)
         XCTAssertEqual(factory.sockets.count, 1)
         XCTAssertTrue(scheduler.entries.isEmpty)
+    }
+
+    func testCancelAfterCredentialStagingPreservesPendingForRecovery() async throws {
+        let store = try makeStore()
+        let factory = FakePhoneWebSocketFactory()
+        let subject = makeSubject(store: store, factory: factory, scheduler: FakePhoneScheduler())
+        subject.start(try PhonePairingLink.parse(
+            XCTUnwrap(URL(string: "https://relay.example/pair#v=1&r=\(reference)")),
+            expectedHost: "relay.example"
+        ))
+        let socket = factory.sockets[0]
+        socket.emitOpen()
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+
+        subject.cancel()
+
+        XCTAssertEqual(subject.state.phase, .awaitingActivation)
+        XCTAssertEqual(try store.pendingPairingCredential(), .init(token: credential, version: 1))
+        XCTAssertFalse(socket.sentTexts.contains { $0.contains("pair.cancel.claim") })
+
+        let normal = FakePhoneActionTransport()
+        let recovery = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            randomBytes: { self.nonce }, authenticatePending: { _ in true }
+        )
+        let result = await recovery.recoverPending(
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+
+        XCTAssertEqual(result, .recovered)
+        XCTAssertEqual(try store.phoneToken(), credential)
+        XCTAssertEqual(normal.configurations.map(\.token), [credential])
     }
 
     func testCredentialWriteFailureSendsNoAcknowledgementAndKeepsNoPendingSlot() throws {
@@ -341,6 +418,7 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(authenticated.map(\.token), [credential])
         XCTAssertEqual(try store.phoneToken(), credential)
         XCTAssertNil(try store.pendingPairingCredential())
+        XCTAssertEqual(store.relayURLString, "wss://relay.example/ws")
         XCTAssertEqual(normal.configurations.map(\.token), [credential])
     }
 

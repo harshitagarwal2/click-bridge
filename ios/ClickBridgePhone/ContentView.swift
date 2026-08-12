@@ -37,7 +37,6 @@ struct RelaySettingsDraft: Equatable {
 
 struct ContentView: View {
     let model: PhoneAppModel
-    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -56,7 +55,7 @@ struct ContentView: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
-                            showingSettings = true
+                            model.showSettings()
                         } label: {
                             Label("Settings", systemImage: "gearshape")
                         }
@@ -64,17 +63,23 @@ struct ContentView: View {
                     }
                 }
         }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView(initialRelayURL: model.settings.relayURLString,
-                         hasStoredToken: model.settings.hasToken,
-                         initialError: model.state.issue?.settingsMessage,
-                         pairAgain: model.showPairingClaimant,
-                         forget: model.forgetMac,
-                         save: model.saveSettings)
-        }
-        .sheet(isPresented: Binding(get: { model.pairingSheetPresented },
-                                    set: { model.pairingSheetPresented = $0 })) {
-            PairingClaimantView(model: model)
+        .sheet(isPresented: Binding(
+            get: { model.presentedFlow == .settings || model.presentedFlow == .pairing },
+            set: { if !$0 { model.dismissPresentedFlow() } }
+        )) {
+            switch model.presentedFlow {
+            case .settings:
+                SettingsView(initialRelayURL: model.settings.relayURLString,
+                             hasStoredToken: model.settings.hasToken,
+                             initialError: model.state.issue?.settingsMessage,
+                             pairAgain: model.showPairingClaimant,
+                             forget: model.forgetMac,
+                             save: model.saveSettings)
+            case .pairing:
+                PairingClaimantView(model: model)
+            default:
+                EmptyView()
+            }
         }
         .confirmationDialog("Replace this phone’s saved connection?",
                             isPresented: Binding(get: { model.replacementConfirmationPresented },
@@ -95,7 +100,7 @@ private struct UnpairedView: View {
         ContentUnavailableView {
             Label("Connect to your Mac", systemImage: "macbook.and.iphone")
         } description: {
-            Text("Use a short-lived pairing code from Click Bridge on your Mac.")
+            Text(PhoneDeployment.pairingAvailabilityCopy)
         } actions: {
             Button("Connect to your Mac", action: connect)
                 .buttonStyle(.borderedProminent)
@@ -150,13 +155,21 @@ private struct PairingClaimantView: View {
                             .multilineTextAlignment(.center)
                         if presentation.showsProgress { ProgressView() }
                         if presentation.canTryAgain {
-                            Button("Scan a New Code") { model.showPairingClaimant() }
-                                .buttonStyle(.borderedProminent)
-                                .frame(minHeight: 44)
+                            if model.hasPendingPairing {
+                                Button("Resolve Saved Pairing", action: model.retrySavedPairing)
+                                    .buttonStyle(.borderedProminent)
+                                    .frame(minHeight: 44)
+                                Button("Start Over", role: .destructive, action: model.startOverSavedPairing)
+                                    .frame(minHeight: 44)
+                            } else {
+                                Button("Scan a New Code") { model.showPairingClaimant() }
+                                    .buttonStyle(.borderedProminent)
+                                    .frame(minHeight: 44)
+                            }
                         }
                         if model.pairingState.phase == .active {
                             Button("Done") {
-                                model.pairingSheetPresented = false
+                                model.dismissPresentedFlow()
                                 dismiss()
                             }
                             .buttonStyle(.borderedProminent)
@@ -169,17 +182,19 @@ private struct PairingClaimantView: View {
             .navigationTitle("Scan Pairing Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        model.cancelPairing()
-                        model.pairingSheetPresented = false
-                        dismiss()
+                if PhonePairingPresentation.allowsCancellation(model.pairingState.phase) {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            model.cancelPairing()
+                            model.dismissPresentedFlow()
+                            dismiss()
+                        }
+                        .accessibilityIdentifier("pairing.cancel")
                     }
-                    .accessibilityIdentifier("pairing.cancel")
                 }
             }
         }
-        .interactiveDismissDisabled(PhonePairingPresentation.shouldCancelOnBackground(model.pairingState.phase))
+        .interactiveDismissDisabled(PhonePairingPresentation.preventsInteractiveDismiss(model.pairingState.phase))
     }
 
     private var iconName: String {
@@ -333,6 +348,7 @@ private struct SettingsView: View {
     @State private var draft: RelaySettingsDraft
     @FocusState private var focusedField: SettingsField?
     @AccessibilityFocusState private var errorFocused: Bool
+    @State private var advancedLegacyExpanded = false
 
     let save: (_ relayURL: String, _ token: String) throws -> Void
     let pairAgain: () -> Void
@@ -358,7 +374,6 @@ private struct SettingsView: View {
                 if draft.hasStoredToken {
                     Section("Connection") {
                         Button("Pair Again") {
-                            dismiss()
                             pairAgain()
                         }
                         .frame(minHeight: 44)
@@ -373,41 +388,43 @@ private struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("Relay WSS URL",
-                              text: $draft.relayURL,
-                              prompt: Text("wss://relay.example/ws"))
-                        .keyboardType(.URL)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.next)
-                        .focused($focusedField, equals: .relayURL)
-                        .onSubmit { focusedField = .token }
-                        .accessibilityLabel("Relay WSS URL")
-                        .accessibilityIdentifier("settings.relayURL")
+                    DisclosureGroup("Advanced Legacy", isExpanded: $advancedLegacyExpanded) {
+                        TextField("Relay WSS URL",
+                                  text: $draft.relayURL,
+                                  prompt: Text("wss://relay.example/ws"))
+                            .keyboardType(.URL)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.next)
+                            .focused($focusedField, equals: .relayURL)
+                            .onSubmit { focusedField = .token }
+                            .accessibilityLabel("Relay WSS URL")
+                            .accessibilityIdentifier("settings.relayURL")
 
-                    SecureField(draft.hasStoredToken ? "Replacement phone token" : "Phone token",
-                                text: $draft.token)
-                        .keyboardType(.asciiCapable)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.done)
-                        .focused($focusedField, equals: .token)
-                        .onSubmit {
-                            if draft.canSave { saveAndDismiss() }
-                        }
-                        .privacySensitive()
-                        .accessibilityLabel(draft.hasStoredToken
-                            ? "Replacement phone token, optional"
-                            : "Phone token")
-                        .accessibilityIdentifier("settings.token")
-                } header: {
-                    Text("Advanced Legacy")
-                } footer: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Manual relay URL and token setup is only for legacy deployments. Pairing is recommended.")
+                        SecureField(draft.hasStoredToken ? "Replacement phone token" : "Phone token",
+                                    text: $draft.token)
+                            .keyboardType(.asciiCapable)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .submitLabel(.done)
+                            .focused($focusedField, equals: .token)
+                            .onSubmit {
+                                if draft.canSave { saveAndDismiss() }
+                            }
+                            .privacySensitive()
+                            .accessibilityLabel(draft.hasStoredToken
+                                ? "Replacement phone token, optional"
+                                : "Phone token")
+                            .accessibilityIdentifier("settings.token")
+
+                        Text(PhoneDeployment.pairingAvailabilityCopy)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         if draft.hasStoredToken {
                             Text("Leave the token blank to keep the saved token.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }

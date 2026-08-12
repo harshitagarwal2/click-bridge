@@ -34,7 +34,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.phone
-        # Deployment-specific: update the entitlement, PhoneAppModel.pairingHost,
+        # Deployment-specific: update the entitlement, PhoneDeployment.pairingHost,
         # and the relay's apple-app-site-association file together for another host.
         CODE_SIGN_ENTITLEMENTS: ClickBridgePhone/ClickBridgePhone.entitlements
         TARGETED_DEVICE_FAMILY: "1"

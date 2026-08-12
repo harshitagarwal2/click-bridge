@@ -38,7 +38,9 @@ private struct CameraCodeScanner: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> ScannerController {
         let controller = ScannerController()
-        controller.configure(delegate: context.coordinator)
+        if !controller.configure(delegate: context.coordinator) {
+            controller.showUnavailableFallback()
+        }
         return controller
     }
 
@@ -61,23 +63,33 @@ private struct CameraCodeScanner: UIViewControllerRepresentable {
     }
 }
 
+@MainActor
 private final class ScannerController: UIViewController {
-    private let session = AVCaptureSession()
+    private let capture = CaptureSessionController()
 
-    func configure(delegate: AVCaptureMetadataOutputObjectsDelegate) {
+    func configure(delegate: AVCaptureMetadataOutputObjectsDelegate) -> Bool {
         guard let camera = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: camera),
-              session.canAddInput(input) else { return }
-        session.addInput(input)
+              capture.session.canAddInput(input) else { return false }
+        capture.session.addInput(input)
         let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else { return }
-        session.addOutput(output)
+        guard capture.session.canAddOutput(output) else { return false }
+        capture.session.addOutput(output)
         output.setMetadataObjectsDelegate(delegate, queue: .main)
         output.metadataObjectTypes = [.qr]
-        let preview = AVCaptureVideoPreviewLayer(session: session)
+        let preview = AVCaptureVideoPreviewLayer(session: capture.session)
         preview.videoGravity = .resizeAspectFill
         view.layer.addSublayer(preview)
-        Task.detached { [session] in session.startRunning() }
+        capture.start()
+        return true
+    }
+
+    func showUnavailableFallback() {
+        var configuration = UIContentUnavailableConfiguration.empty()
+        configuration.image = UIImage(systemName: "camera.fill")
+        configuration.text = "Camera unavailable"
+        configuration.secondaryText = "Paste the pairing link below."
+        contentUnavailableConfiguration = configuration
     }
 
     override func viewDidLayoutSubviews() {
@@ -86,6 +98,23 @@ private final class ScannerController: UIViewController {
     }
 
     deinit {
-        if session.isRunning { session.stopRunning() }
+        capture.stop()
+    }
+}
+
+private final class CaptureSessionController: @unchecked Sendable {
+    let session = AVCaptureSession()
+    private let queue = DispatchQueue(label: "com.clickbridge.phone.pairing-camera")
+
+    func start() {
+        queue.async { [self] in
+            if !session.isRunning { session.startRunning() }
+        }
+    }
+
+    func stop() {
+        queue.async { [self] in
+            if session.isRunning { session.stopRunning() }
+        }
     }
 }

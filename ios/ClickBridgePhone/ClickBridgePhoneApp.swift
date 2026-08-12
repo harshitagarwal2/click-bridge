@@ -14,6 +14,10 @@ enum PhoneComposition {
         let transport = PhoneRelayClient(socketFactory: URLSessionPhoneWebSocketFactory(),
                                          clock: clock,
                                          scheduler: scheduler)
+        let pendingTransport = PhoneRelayClient(socketFactory: URLSessionPhoneWebSocketFactory(),
+                                                clock: clock,
+                                                scheduler: scheduler)
+        let pendingAuthenticator = PhonePendingAuthenticator(transport: pendingTransport)
         let modelBox = ModelBox()
         let actions = PhoneActionCoordinator(transport: transport,
                                              clock: clock,
@@ -37,7 +41,8 @@ enum PhoneComposition {
                                          settings: settings,
                                          normalTransport: transport,
                                          clock: clock,
-                                         scheduler: scheduler)
+                                         scheduler: scheduler,
+                                         authenticatePending: pendingAuthenticator.authenticate)
         model.installPairingClient(pairing)
         modelBox.model = model
         return model
