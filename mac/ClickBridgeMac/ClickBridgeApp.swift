@@ -152,6 +152,9 @@ private struct PairingSettingsView: View {
                 ProgressView("Creating invitation…")
             case .invitation(let invitation):
                 PairingInvitationView(invitation: invitation,
+                                      copyWebInvitation: {
+                                          controller.copyWebInvitation(invitation)
+                                      },
                                       cancel: { Task { await controller.cancel() } },
                                       refreshExpiry: { await controller.refreshExpiry() })
             case .approval:
@@ -211,6 +214,7 @@ private struct PairingSettingsView: View {
 
 private struct PairingInvitationView: View {
     let invitation: PairingController.Invitation
+    let copyWebInvitation: () -> Void
     let cancel: () -> Void
     let refreshExpiry: () async -> Void
 
@@ -229,6 +233,11 @@ private struct PairingInvitationView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(invitation.sharePayload, forType: .string)
                 }
+                Button("Copy PWA Invitation") {
+                    copyWebInvitation()
+                }
+                .accessibilityIdentifier("copy-pwa-invitation")
+                .help("Copy a web invitation for phones without the native app")
                 ShareLink(item: invitation.sharePayload) { Text("Share…") }
                 Button("Cancel", role: .cancel, action: cancel)
             }

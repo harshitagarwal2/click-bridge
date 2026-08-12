@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import ClickBridgeMac
 
@@ -6,6 +7,103 @@ final class PairingControllerTests: XCTestCase {
     private let requestID = "11111111-1111-4111-8111-111111111111"
     private let claimID = "22222222-2222-4222-8222-222222222222"
     private let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    func testCurrentUnexpiredInvitationCopiesCanonicalWebURL() async throws {
+        let controller = subject(transport: PairingTransportRecorder())
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        let pasteboard = sentinelPasteboard()
+
+        XCTAssertTrue(controller.copyWebInvitation(invitation, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string),
+                       "https://relay.example/pair/web#v=1&r=\(reference)")
+    }
+
+    func testExpiredCapturedInvitationCannotChangePasteboard() async throws {
+        let transport = PairingTransportRecorder()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { self.requestID },
+            now: { now }
+        )
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        let pasteboard = sentinelPasteboard()
+        now = invitation.expiresAt
+
+        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+    }
+
+    func testCapturedInvitationAfterClaimCannotChangePasteboard() async throws {
+        let controller = subject(transport: PairingTransportRecorder())
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        await controller.receive(.pairClaimedMac(PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_300_000,
+            clientKind: .ios
+        )))
+        let pasteboard = sentinelPasteboard()
+
+        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+    }
+
+    func testCapturedInvitationAfterCancellationCannotChangePasteboard() async throws {
+        let controller = subject(transport: PairingTransportRecorder())
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        await controller.cancel()
+        let pasteboard = sentinelPasteboard()
+
+        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+    }
+
+    func testCapturedInvitationAfterRegenerationCannotChangePasteboard() async throws {
+        let transport = PairingTransportRecorder()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { self.requestID },
+            now: { now }
+        )
+        await moveToInvitation(controller)
+        guard case .invitation(let captured) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+
+        now = captured.expiresAt.addingTimeInterval(1)
+        await controller.refreshExpiry()
+        await controller.regenerate()
+        let nextReference = Data(repeating: 1, count: 32).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        await controller.receive(.pairCreated(PairCreated(
+            requestId: requestID,
+            reference: nextReference,
+            expiresAtUnixMs: 1_600_000
+        )))
+        let pasteboard = sentinelPasteboard()
+
+        XCTAssertFalse(controller.copyWebInvitation(captured, to: pasteboard))
+        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+    }
 
     func testUnavailableCapabilityCannotCreateInvitation() async {
         let transport = PairingTransportRecorder()
@@ -725,6 +823,13 @@ final class PairingControllerTests: XCTestCase {
             requestID: { self.requestID },
             now: { Date(timeIntervalSince1970: 1_000) }
         )
+    }
+
+    private func sentinelPasteboard() -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
+        pasteboard.clearContents()
+        pasteboard.setString("sentinel", forType: .string)
+        return pasteboard
     }
 
     private func moveToApproval(_ controller: PairingController) async {
