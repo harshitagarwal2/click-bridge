@@ -37,8 +37,8 @@ const result = (actionId) => ({
   macProcessingUs: 800, mouseDownPostedUnixMs: Date.now(),
 });
 
-function client(url) {
-  const ws = new WebSocket(url);
+function client(url, options) {
+  const ws = new WebSocket(url, options);
   const inbox = [];
   const waiters = [];
   let closedValue;
@@ -354,6 +354,76 @@ test('post-auth parser rejection has no state side effect and socket remains usa
     assert.equal(server.state.macState.remoteEnabled, false);
     phone.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 99 });
     assert.equal((await phone.wait((m) => m.type === 'heartbeat.ack')).sequence, 99);
+  } finally {
+    await server.close();
+  }
+});
+
+test('unexpected post-auth parser failure is reported and closes with 1011', async () => {
+  const logs = [];
+  const log = { info: (line) => logs.push(line) };
+  const server = createServer({
+    phoneToken: PHONE_TOKEN,
+    macToken: MAC_TOKEN,
+    clickBridgeDomain: DOMAIN,
+    log,
+    parseClient: (raw, role) => {
+      if (role !== null) throw new Error('secret internal parser detail');
+      return parseClientMessage(raw, role);
+    },
+  });
+  await server.listen(0, '127.0.0.1');
+  const { port } = server.httpServer.address();
+  const phone = client(`ws://127.0.0.1:${port}/ws`);
+  try {
+    await authenticate(phone, 'phone', PHONE_TOKEN);
+    phone.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 1 });
+    assert.equal(await phone.closed(), 1011);
+    assert.ok(logs.some((line) => line.includes('message_internal_error')));
+    assert.ok(logs.every((line) => !line.includes('secret internal parser detail')));
+  } finally {
+    await server.close();
+  }
+});
+
+test('logs never contain tokens or complete hello payloads', async () => {
+  const logs = [];
+  const { server, url } = await boot({ log: { info: (line) => logs.push(line) } });
+  try {
+    const rejected = client(url);
+    await rejected.open();
+    rejected.send(hello('phone', MAC_TOKEN));
+    await rejected.closed();
+
+    const accepted = client(url);
+    await authenticate(accepted, 'phone', PHONE_TOKEN);
+    accepted.ws.send('{not-json');
+    accepted.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 4 });
+    await accepted.wait((message) => message.type === 'heartbeat.ack');
+
+    const joined = logs.join('\n');
+    assert.doesNotMatch(joined, new RegExp(PHONE_TOKEN));
+    assert.doesNotMatch(joined, new RegExp(MAC_TOKEN));
+    assert.doesNotMatch(joined, /\"type\":\"hello\"/);
+    assert.match(joined, /bad_token/);
+    assert.match(joined, /malformed_json/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('protocol ping timeout deterministically terminates a client that never pongs', async () => {
+  const pingIntervalMs = 15;
+  const pongTimeoutMs = 35;
+  const { server, url } = await boot({ pingIntervalMs, pongTimeoutMs });
+  try {
+    const phone = client(url, { autoPong: false });
+    await authenticate(phone, 'phone', PHONE_TOKEN);
+    const startedAt = performance.now();
+    assert.equal(await phone.closed(), 1006);
+    const elapsedMs = performance.now() - startedAt;
+    assert.ok(elapsedMs >= pongTimeoutMs, `terminated before pong deadline: ${elapsedMs}ms`);
+    assert.ok(elapsedMs < 250, `ping timeout was not deterministic: ${elapsedMs}ms`);
   } finally {
     await server.close();
   }

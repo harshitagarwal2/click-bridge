@@ -5,8 +5,8 @@
 //     node scripts/smoke-relay.mjs ws://127.0.0.1:8080/ws
 //
 // Asserts: authentication, state propagation, time-sync and diagnostics
-// exchanges, one forwarded request, one terminal result, and no fan-out to a
-// second unauthenticated Mac connection.
+// exchanges, authenticated same-role Mac replacement with exactly-one
+// forwarding, one terminal result, and no replay after client reconnects.
 
 import { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
@@ -35,6 +35,13 @@ function connect(label) {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
+  let closedValue;
+  let closeResolve;
+  const closePromise = new Promise((resolve) => { closeResolve = resolve; });
+  ws.on('close', (code) => {
+    closedValue = code;
+    closeResolve(code);
+  });
   ws.on('message', (d) => {
     const m = JSON.parse(d.toString());
     inbox.push(m);
@@ -45,6 +52,7 @@ function connect(label) {
   return {
     label, ws, inbox,
     open: () => ws.readyState === WebSocket.OPEN ? Promise.resolve() : openPromise,
+    closed: () => closedValue === undefined ? closePromise : Promise.resolve(closedValue),
     send: (m) => ws.send(JSON.stringify(m)),
     wait(match, ms = 5000) {
       const hit = inbox.find(match);
@@ -63,6 +71,8 @@ const hello = (role, token) => ({ type: 'hello', v: PROTOCOL_VERSION, role, toke
 const phone = connect('phone');
 const mac = connect('mac');
 let mac2;
+let mac3;
+let phone2;
 
 try {
   await Promise.all([phone.open(), mac.open()]);
@@ -107,10 +117,16 @@ try {
   await phone.wait((m) => m.type === 'diagnostics.counters' && m.requestId === requestId);
   check('diagnostic counters round trip', true);
 
-  // A second connected but unauthenticated Mac is not a relay participant and
-  // must never receive authenticated traffic.
+  // Authenticate a second Mac. Same-role replacement makes it the sole current
+  // Mac and closes the first one before the action is sent.
   mac2 = connect('mac2');
   await mac2.open();
+  mac2.send(hello('mac', MAC_TOKEN));
+  await mac2.wait((m) => m.type === 'hello.ok');
+  check('replacement mac authenticated', true);
+  check('original mac displaced', await mac.closed() === 4000);
+  mac2.send({ type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready' });
+  await phone.wait((m) => m.type === 'state' && m.macOnline && m.remoteEnabled);
 
   const issuedAtUnixMs = Date.now();
   const request = {
@@ -125,12 +141,15 @@ try {
   check('relay acknowledged as forwarded', ack.status === 'forwarded');
   check('ack carries the same actionId', ack.actionId === request.actionId);
 
-  const delivered = await mac.wait((m) => m.type === 'action.request');
+  const delivered = await mac2.wait((m) => m.type === 'action.request');
   check('request reached the current mac', delivered.actionId === request.actionId);
   await new Promise((resolve) => setTimeout(resolve, 100));
-  check('second Mac connection received nothing', mac2.inbox.length === 0);
+  check('request forwarded exactly once',
+    mac2.inbox.filter((m) => m.type === 'action.request' && m.actionId === request.actionId).length === 1);
+  check('displaced authenticated mac received no action',
+    mac.inbox.filter((m) => m.type === 'action.request' && m.actionId === request.actionId).length === 0);
 
-  mac.send({
+  mac2.send({
     type: 'action.result', v: PROTOCOL_VERSION, actionId: request.actionId,
     status: 'posted', reason: 'ok', acceptedVia: 'oci',
     macProcessingUs: 800, mouseDownPostedUnixMs: Date.now(),
@@ -141,16 +160,31 @@ try {
   check('phone received a posted result', result.status === 'posted');
   check('result is not an ack', result.type === 'action.result');
 
-  // Nothing replays.
+  // Reconnect both roles after completion. A fresh role owner receives only
+  // current state/hello traffic, never the completed request or result.
   const before = phone.inbox.length;
   await new Promise((r) => setTimeout(r, 400));
   check('no replay after completion', phone.inbox.length === before);
+
+  mac3 = connect('mac3');
+  await mac3.open();
+  mac3.send(hello('mac', MAC_TOKEN));
+  await mac3.wait((m) => m.type === 'hello.ok');
+  phone2 = connect('phone2');
+  await phone2.open();
+  phone2.send(hello('phone', PHONE_TOKEN));
+  await phone2.wait((m) => m.type === 'hello.ok');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  check('no action replay after Mac reconnect',
+    mac3.inbox.every((m) => m.type !== 'action.request' || m.actionId !== request.actionId));
+  check('no result replay after phone reconnect',
+    phone2.inbox.every((m) => m.type !== 'action.result' || m.actionId !== request.actionId));
 
   console.log(`\nround trip: ${ms.toFixed(1)} ms (loopback)`);
 } catch (err) {
   check(`unexpected failure: ${err.message}`, false);
 } finally {
-  phone.close(); mac.close(); mac2?.close();
+  phone.close(); phone2?.close(); mac.close(); mac2?.close(); mac3?.close();
 }
 
 const failed = checks.filter((c) => !c.ok).length;

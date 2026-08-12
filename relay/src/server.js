@@ -69,10 +69,6 @@ function constantTimeEquals(left, right) {
   return timingSafeEqual(leftBytes, rightBytes);
 }
 
-function protocolCode(error) {
-  return error instanceof ProtocolError ? error.code : 'unexpected_error';
-}
-
 function writeResponse(res, status, headers, body = '') {
   res.writeHead(status, headers);
   res.end(body);
@@ -185,8 +181,13 @@ export function attachWebSocketServer({
         try {
           message = parseClient(raw, null);
         } catch (error) {
-          log.info?.(JSON.stringify({ event: 'auth_rejected', code: protocolCode(error) }));
-          ws.close(4003, 'bad hello');
+          if (error instanceof ProtocolError) {
+            log.info?.(JSON.stringify({ event: 'auth_rejected', code: error.code }));
+            ws.close(4003, 'bad hello');
+          } else {
+            log.info?.(JSON.stringify({ event: 'auth_internal_error', code: 'parser_failure' }));
+            ws.close(1011, 'internal error');
+          }
           return;
         }
         const expectedToken = message.role === 'phone' ? phoneToken : macToken;
@@ -213,9 +214,16 @@ export function attachWebSocketServer({
       try {
         message = parseClient(raw, role);
       } catch (error) {
-        log.info?.(JSON.stringify({
-          event: 'message_rejected', role, code: protocolCode(error),
-        }));
+        if (error instanceof ProtocolError) {
+          log.info?.(JSON.stringify({
+            event: 'message_rejected', role, code: error.code,
+          }));
+        } else {
+          log.info?.(JSON.stringify({
+            event: 'message_internal_error', role, code: 'parser_failure',
+          }));
+          ws.close(1011, 'internal error');
+        }
         return;
       }
       if (role === 'phone') state.handlePhoneMessage(connection, message);
@@ -243,10 +251,7 @@ export function attachWebSocketServer({
   const pingTimer = setInterval(() => {
     for (const ws of wss.clients) {
       if (ws.readyState !== ws.OPEN) continue;
-      if (ws.__clickBridgePongTimer) {
-        ws.terminate();
-        continue;
-      }
+      if (ws.__clickBridgePongTimer) continue;
       try {
         ws.ping();
         const deadline = setTimeout(() => {
