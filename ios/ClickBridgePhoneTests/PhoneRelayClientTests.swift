@@ -145,6 +145,38 @@ final class PhoneRelayClientTests: XCTestCase {
         XCTAssertEqual(factory.sockets.count, 2)
     }
 
+    func testAuthenticationRejectedCloseIsTerminalAndDistinctFromInternalBackoff() {
+        let rejectedFactory = FakePhoneWebSocketFactory()
+        let rejectedScheduler = FakePhoneScheduler()
+        let rejected = makeSubject(factory: rejectedFactory, scheduler: rejectedScheduler)
+        var rejectedEvents: [PhoneTransportEvent] = []
+        rejected.onEvent = { rejectedEvents.append($0) }
+        rejected.connect(configuration: configuration)
+
+        rejectedFactory.sockets[0].emitClose(code: PhoneProtocolV1.authenticationRejectedCloseCode)
+
+        XCTAssertTrue(rejectedScheduler.entries.isEmpty)
+        XCTAssertEqual(rejectedEvents.last, .connection(
+            generation: rejected.generation,
+            state: .authenticationRejected
+        ))
+
+        let internalFactory = FakePhoneWebSocketFactory()
+        let internalScheduler = FakePhoneScheduler()
+        let internalError = makeSubject(factory: internalFactory, scheduler: internalScheduler)
+        var internalEvents: [PhoneTransportEvent] = []
+        internalError.onEvent = { internalEvents.append($0) }
+        internalError.connect(configuration: configuration)
+
+        internalFactory.sockets[0].emitClose(code: 1_011)
+
+        XCTAssertFalse(internalScheduler.entries.isEmpty)
+        XCTAssertEqual(internalEvents.last, .connection(
+            generation: internalError.generation,
+            state: .backoff
+        ))
+    }
+
     func testOrdinaryCloseStillSchedulesReconnect() {
         let factory = FakePhoneWebSocketFactory()
         let scheduler = FakePhoneScheduler()

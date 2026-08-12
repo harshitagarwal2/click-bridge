@@ -107,6 +107,13 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   let current = null;
   let initializePromise = null;
   let activationQueue = Promise.resolve();
+  let poisoned = false;
+
+  function assertUsable() {
+    if (poisoned) {
+      throw authError(AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED, 'phone auth store unavailable');
+    }
+  }
 
   async function persist(record, previousRecord = null) {
     const directory = dirname(recordPath);
@@ -127,6 +134,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
       await directoryHandle.close();
       directoryHandle = null;
     } catch {
+      if (renamed) poisoned = true;
       if (temporaryHandle) {
         try { await temporaryHandle.close(); } catch {}
       }
@@ -149,7 +157,9 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
           await rollbackDirectoryHandle.sync();
           await rollbackDirectoryHandle.close();
           rollbackDirectoryHandle = null;
+          poisoned = false;
         } catch {
+          poisoned = true;
           if (rollbackHandle) {
             try { await rollbackHandle.close(); } catch {}
           }
@@ -188,11 +198,13 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   async function initialize() {
+    assertUsable();
     initializePromise ??= initializeOnce();
     return initializePromise;
   }
 
   function snapshot() {
+    assertUsable();
     if (!current) {
       throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
     }
@@ -200,6 +212,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   function authenticateCredential(credential) {
+    assertUsable();
     const record = current;
     if (!record
         || record.schemaVersion !== SCHEMA_VERSION
@@ -229,6 +242,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   async function activate(input) {
+    assertUsable();
     const operation = activationQueue.then(async () => {
       if (typeof input !== 'object' || input === null || Array.isArray(input)) {
         throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone auth activation');
