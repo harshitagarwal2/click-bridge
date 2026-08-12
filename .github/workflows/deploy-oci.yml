@@ -39,6 +39,8 @@ jobs:
           node .github/scripts/test-workflows.mjs
           node .github/scripts/verify-workflows.mjs
           bash -n .github/scripts/deploy-oci.sh
+          bash -n scripts/bootstrap-owner-mac.sh
+          bash scripts/test-bootstrap-owner-mac.sh
 
       - name: Configure dedicated SSH identity
         env:
@@ -81,7 +83,7 @@ jobs:
           # The command substitution is intentionally preserved for the remote shell.
           # shellcheck disable=SC2016
           printf -v remote_prepare \
-            'set -eu; test -f /opt/click-bridge/shared/secrets.env; test "$(stat -c %%a /opt/click-bridge/shared/secrets.env)" = 600; install -d -m 0755 %q' \
+            'set -eu; test -f /opt/click-bridge/shared/secrets.env; test ! -L /opt/click-bridge/shared/secrets.env; test "$(stat -c %%a /opt/click-bridge/shared/secrets.env)" = 600; install -d -m 0700 /opt/click-bridge/shared/auth; test ! -L /opt/click-bridge/shared/auth; test "$(stat -c %%a /opt/click-bridge/shared/auth)" = 700; if test -e /opt/click-bridge/shared/auth/phone-auth.json || test -L /opt/click-bridge/shared/auth/phone-auth.json; then test -f /opt/click-bridge/shared/auth/phone-auth.json; test ! -L /opt/click-bridge/shared/auth/phone-auth.json; test "$(stat -c %%a /opt/click-bridge/shared/auth/phone-auth.json)" = 600; fi; install -d -m 0755 %q' \
             "$release_dir"
           # Inputs are validated above and escaped with printf %q for remote execution.
           # shellcheck disable=SC2029

@@ -27,6 +27,26 @@ secret_file_mode() {
   stat -c %a "$SHARED_ENV" 2>/dev/null || stat -f %Lp "$SHARED_ENV" 2>/dev/null
 }
 
+path_mode() {
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
+}
+
+release_supports_phone_auth_record() {
+  local directory
+  directory="$(release_directory "$1")"
+  grep -Fq 'CLICK_BRIDGE_SECRETS_FILE' "$directory/deploy/oci/compose.yaml" &&
+    grep -Fq '/opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
+      "$directory/deploy/oci/compose.yaml"
+}
+
+phone_auth_record_is_rotated_or_uncertain() {
+  [[ -e "$PHONE_AUTH_RECORD_HOST" ]] || return 1
+  grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":[1-9][0-9]*,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
+    "$PHONE_AUTH_RECORD_HOST" ||
+    ! grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":0,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
+      "$PHONE_AUTH_RECORD_HOST"
+}
+
 release_directory() {
   local release="$1"
   local expected="$RELEASES_ROOT/$release"
@@ -68,7 +88,7 @@ compose_release() {
   shift
   local directory
   directory="$(release_directory "$release")"
-  CLICK_BRIDGE_RELEASE="$release" docker compose \
+  CLICK_BRIDGE_RELEASE="$release" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
     -p "$COMPOSE_PROJECT_NAME" \
     --env-file "$SHARED_ENV" \
     -f "$directory/deploy/oci/compose.yaml" \
@@ -157,10 +177,13 @@ validate_git_release "$CLICK_BRIDGE_RELEASE"
 CLICK_BRIDGE_ROOT="$(cd "$CLICK_BRIDGE_ROOT" && pwd -P)"
 RELEASES_ROOT="$CLICK_BRIDGE_ROOT/releases"
 SHARED_ENV="$CLICK_BRIDGE_ROOT/shared/secrets.env"
+AUTH_DIRECTORY="$CLICK_BRIDGE_ROOT/shared/auth"
+PHONE_AUTH_RECORD_HOST="$AUTH_DIRECTORY/phone-auth.json"
 
 [[ -f "$SHARED_ENV" ]] || die "missing $SHARED_ENV"
+[[ ! -L "$SHARED_ENV" ]] || die 'shared secrets file cannot be a symlink'
 [[ "$(secret_file_mode)" = 600 ]] || die "$SHARED_ENV must have mode 0600"
-for required_key in PHONE_TOKEN MAC_TOKEN CLICK_BRIDGE_DOMAIN; do
+for required_key in PHONE_TOKEN MAC_TOKEN CLICK_BRIDGE_DOMAIN PAIRING_ENABLED PHONE_AUTH_RECORD; do
   [[ "$(grep -c "^${required_key}=" "$SHARED_ENV")" = 1 ]] ||
     die "$SHARED_ENV must define $required_key exactly once"
 done
@@ -170,7 +193,32 @@ MAC_TOKEN="$(sed -n 's/^MAC_TOKEN=//p' "$SHARED_ENV")"
 export -n PHONE_TOKEN MAC_TOKEN
 [[ "$CLICK_BRIDGE_DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] ||
   die 'CLICK_BRIDGE_DOMAIN is not a valid hostname'
+PAIRING_ENABLED="$(sed -n 's/^PAIRING_ENABLED=//p' "$SHARED_ENV")"
+[[ "$PAIRING_ENABLED" = 0 || "$PAIRING_ENABLED" = 1 ]] ||
+  die 'PAIRING_ENABLED must be exactly 0 or 1'
+PHONE_AUTH_RECORD_CONTAINER="$(sed -n 's/^PHONE_AUTH_RECORD=//p' "$SHARED_ENV")"
+[[ "$PHONE_AUTH_RECORD_CONTAINER" = /var/lib/click-bridge/auth/phone-auth.json ]] ||
+  die 'PHONE_AUTH_RECORD must use the persistent container path'
+if [[ "$PAIRING_ENABLED" = 1 ]]; then
+  [[ "$(grep -c '^APPLE_TEAM_ID=' "$SHARED_ENV")" = 1 ]] ||
+    die "$SHARED_ENV must define APPLE_TEAM_ID exactly once when pairing is enabled"
+  APPLE_TEAM_ID="$(sed -n 's/^APPLE_TEAM_ID=//p' "$SHARED_ENV")"
+  [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'APPLE_TEAM_ID is invalid'
+fi
+[[ -d "$AUTH_DIRECTORY" && ! -L "$AUTH_DIRECTORY" ]] ||
+  die "$AUTH_DIRECTORY must be a real directory"
+[[ "$(path_mode "$AUTH_DIRECTORY")" = 700 ]] || die "$AUTH_DIRECTORY must have mode 0700"
+if [[ -e "$PHONE_AUTH_RECORD_HOST" || -L "$PHONE_AUTH_RECORD_HOST" ]]; then
+  [[ -f "$PHONE_AUTH_RECORD_HOST" && ! -L "$PHONE_AUTH_RECORD_HOST" ]] ||
+    die 'phone auth record must be a regular file, not a symlink'
+  [[ "$(path_mode "$PHONE_AUTH_RECORD_HOST")" = 600 ]] ||
+    die 'phone auth record must have mode 0600'
+fi
 release_directory "$CLICK_BRIDGE_RELEASE" >/dev/null
+if phone_auth_record_is_rotated_or_uncertain &&
+   ! release_supports_phone_auth_record "$CLICK_BRIDGE_RELEASE"; then
+  die 'refusing a pairing-incompatible release after phone credential rotation'
+fi
 
 CURRENT_RELEASE=''
 if CURRENT_RELEASE="$(read_pointer current-release)"; then
@@ -197,6 +245,10 @@ trap - EXIT INT TERM
 
 if ! start_release "$CLICK_BRIDGE_RELEASE" || ! verify_public_release "$CLICK_BRIDGE_RELEASE"; then
   if [[ -n "$CURRENT_RELEASE" ]]; then
+    if phone_auth_record_is_rotated_or_uncertain &&
+       ! release_supports_phone_auth_record "$CURRENT_RELEASE"; then
+      die 'automatic rollback refused: prior release is pairing-incompatible'
+    fi
     printf 'Candidate failed after switch; restoring %s\n' "$CURRENT_RELEASE" >&2
     start_release "$CURRENT_RELEASE"
     verify_public_release "$CURRENT_RELEASE" ||

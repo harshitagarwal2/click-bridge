@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 DEPLOY_SCRIPT="$SCRIPT_DIR/deploy-oci.sh"
+REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 TEST_ROOT="$(mktemp -d)"
 FAKE_BIN="$TEST_ROOT/fake-bin"
 FAKE_DOCKER_LOG="$TEST_ROOT/docker.log"
@@ -290,11 +291,14 @@ assert_log_not_contains() {
 new_case_root() {
   local name="$1"
   local root="$TEST_ROOT/$name"
-  mkdir -p "$root/releases" "$root/shared"
+  mkdir -p "$root/releases" "$root/shared/auth"
+  chmod 700 "$root/shared/auth"
   printf '%s\n' \
     'PHONE_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
     'MAC_TOKEN=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
     'CLICK_BRIDGE_DOMAIN=clickbridge.example.test' \
+    'PAIRING_ENABLED=0' \
+    'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json' \
     > "$root/shared/secrets.env"
   chmod 600 "$root/shared/secrets.env"
   printf '%s\n' "$root"
@@ -304,7 +308,16 @@ add_release() {
   local root="$1"
   local release="$2"
   mkdir -p "$root/releases/$release/deploy/oci" "$root/releases/$release/relay/scripts"
-  printf '%s\n' 'services: {}' > "$root/releases/$release/deploy/oci/compose.yaml"
+  printf '%s\n' \
+    'services:' \
+    '  relay:' \
+    '    env_file:' \
+    '      - ${CLICK_BRIDGE_SECRETS_FILE}' \
+    '    environment:' \
+    '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+    '    volumes:' \
+    '      - /opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
+    > "$root/releases/$release/deploy/oci/compose.yaml"
   printf '%s\n' 'console.log("smoke fixture")' > "$root/releases/$release/relay/scripts/smoke-relay.mjs"
 }
 
@@ -324,6 +337,14 @@ run_deploy() {
 }
 
 test -f "$DEPLOY_SCRIPT" || fail 'deploy-oci.sh does not exist'
+grep -Fq '${CLICK_BRIDGE_SECRETS_FILE:-/opt/click-bridge/shared/secrets.env}' \
+  "$REPOSITORY_ROOT/deploy/oci/compose.yaml" || fail 'Compose does not inject the shared environment'
+grep -Fq '/opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' "$REPOSITORY_ROOT/deploy/oci/compose.yaml" ||
+  fail 'Compose does not bind the persistent auth directory'
+grep -Fxq 'PAIRING_ENABLED=0' "$REPOSITORY_ROOT/deploy/oci/.env.example" ||
+  fail '.env.example does not default pairing off'
+grep -Fxq 'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json' \
+  "$REPOSITORY_ROOT/deploy/oci/.env.example" || fail '.env.example lacks the canonical auth record path'
 
 SHA_A='1111111111111111111111111111111111111111'
 SHA_B='2222222222222222222222222222222222222222'
@@ -536,5 +557,73 @@ chmod 644 "$root/shared/secrets.env"
 if run_deploy "$root" "$SHA_A"; then
   fail 'unsafe secret mode unexpectedly succeeded'
 fi
+
+root="$(new_case_root invalid-pairing-flag)"
+add_release "$root" "$SHA_A"
+sed -i.bak 's/PAIRING_ENABLED=0/PAIRING_ENABLED=true/' "$root/shared/secrets.env"
+rm -f "$root/shared/secrets.env.bak"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'non-binary PAIRING_ENABLED unexpectedly succeeded'
+fi
+
+root="$(new_case_root pairing-without-team)"
+add_release "$root" "$SHA_A"
+sed -i.bak 's/PAIRING_ENABLED=0/PAIRING_ENABLED=1/' "$root/shared/secrets.env"
+rm -f "$root/shared/secrets.env.bak"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'enabled pairing without APPLE_TEAM_ID unexpectedly succeeded'
+fi
+
+root="$(new_case_root unsafe-auth-directory)"
+add_release "$root" "$SHA_A"
+chmod 755 "$root/shared/auth"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'unsafe auth directory mode unexpectedly succeeded'
+fi
+
+root="$(new_case_root symlink-auth-record)"
+add_release "$root" "$SHA_A"
+printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":0,"activePhoneVerifier":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}' > "$root/shared/elsewhere.json"
+chmod 600 "$root/shared/elsewhere.json"
+ln -s "$root/shared/elsewhere.json" "$root/shared/auth/phone-auth.json"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'symlinked auth record unexpectedly succeeded'
+fi
+
+root="$(new_case_root incompatible-active-record)"
+add_release "$root" "$SHA_A"
+printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":1,"activePhoneVerifier":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}' > "$root/shared/auth/phone-auth.json"
+chmod 600 "$root/shared/auth/phone-auth.json"
+printf '%s\n' 'services: {}' > "$root/releases/$SHA_A/deploy/oci/compose.yaml"
+: > "$FAKE_DOCKER_LOG"
+if output="$(run_deploy "$root" "$SHA_A" 2>&1)"; then
+  fail 'pairing-incompatible release unexpectedly succeeded with active rotated credential'
+fi
+case "$output" in
+  *dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd*)
+    fail 'auth verifier leaked in deployment error output' ;;
+esac
+assert_log_not_contains 'docker compose'
+
+root="$(new_case_root rollback-refused-after-rotation)"
+add_release "$root" "$SHA_A"
+add_release "$root" "$SHA_B"
+printf '%s\n' 'services: {}' > "$root/releases/$SHA_A/deploy/oci/compose.yaml"
+printf '%s\n' "$SHA_A" > "$root/current-release"
+printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":2,"activePhoneVerifier":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}' > "$root/shared/auth/phone-auth.json"
+chmod 600 "$root/shared/auth/phone-auth.json"
+: > "$FAKE_DOCKER_LOG"
+if output="$(run_deploy "$root" "$SHA_B" FAKE_SMOKE_FAIL_RELEASE="$SHA_B" 2>&1)"; then
+  fail 'failed candidate unexpectedly rolled back to an incompatible release'
+fi
+case "$output" in
+  *'automatic rollback refused: prior release is pairing-incompatible'*) ;;
+  *) fail 'rollback incompatibility was not reported' ;;
+esac
+assert_log_not_contains "release=$SHA_A docker compose"
+case "$output" in
+  *eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee*)
+    fail 'auth verifier leaked while refusing rollback' ;;
+esac
 
 printf '%s\n' 'OCI deployment script tests passed'
