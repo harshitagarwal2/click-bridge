@@ -196,6 +196,7 @@ if test "${1:-}" = run; then
       --name click-bridge-relay-candidate \
       --publish 127.0.0.1:18080:8080 \
       --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+      --volume "$CLICK_BRIDGE_ROOT/shared/auth:/var/lib/click-bridge/auth" \
       --env PORT=8080 \
       --env HOST=0.0.0.0 \
       "click-bridge-relay:$CLICK_BRIDGE_RELEASE"
@@ -209,9 +210,10 @@ case "${1:-}" in
     ;;
   compose)
     compose_file="$CLICK_BRIDGE_ROOT/releases/$CLICK_BRIDGE_RELEASE/deploy/oci/compose.yaml"
-    if args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+    if args_match compose -p oci-compat-check --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
         -f "$compose_file" config relay; then
-      if grep -Fq 'x-test-rendered-relay-compatible: true' "$compose_file"; then
+      case "$(sed -n 's/^    x-test-rendered-volume-case: //p' "$compose_file")" in
+      exact)
         printf '%s\n' \
           '    x-click-bridge-pairing-auth-contract: 1' \
           '    environment:' \
@@ -219,10 +221,61 @@ case "${1:-}" in
           '    volumes:' \
           '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
           '        target: /var/lib/click-bridge/auth' \
-          '        type: bind'
-      else
-        printf '%s\n' '    image: example.invalid/relay'
-      fi
+          '        type: bind' ;;
+      source-prefix)
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth-decoy" \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind' ;;
+      target-prefix)
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /var/lib/click-bridge/auth-decoy' \
+          '        type: bind' ;;
+      split)
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /decoy' \
+          '        type: volume' \
+          '      - source: /decoy' \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind' ;;
+      readonly)
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind' \
+          '        read_only: true' ;;
+      duplicate)
+        printf '%s\n' \
+          '    x-click-bridge-pairing-auth-contract: 1' \
+          '    environment:' \
+          '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
+          '    volumes:' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind' \
+          '      - source: '"${CLICK_BRIDGE_ROOT}/shared/auth" \
+          '        target: /var/lib/click-bridge/auth' \
+          '        type: bind' ;;
+      *) printf '%s\n' '    image: example.invalid/relay' ;;
+      esac
     elif args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
         -f "$compose_file" config --quiet ||
       args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
@@ -325,7 +378,7 @@ add_release() {
   printf '%s\n' \
     'services:' \
     '  relay:' \
-    '    x-test-rendered-relay-compatible: true' \
+    '    x-test-rendered-volume-case: exact' \
     '    env_file:' \
     '      - ${CLICK_BRIDGE_SECRETS_FILE}' \
     '    environment:' \
@@ -349,6 +402,23 @@ run_deploy() {
     FAKE_DOCKER_LOG="$FAKE_DOCKER_LOG" \
     "$@" \
     bash "$DEPLOY_SCRIPT"
+}
+
+assert_rendered_volume_case_rejected() {
+  local case_name="$1"
+  local volume_case="$2"
+  local root
+  root="$(new_case_root "$case_name")"
+  add_release "$root" "$SHA_A"
+  sed -i.bak "s/x-test-rendered-volume-case: exact/x-test-rendered-volume-case: $volume_case/" \
+    "$root/releases/$SHA_A/deploy/oci/compose.yaml"
+  rm -f "$root/releases/$SHA_A/deploy/oci/compose.yaml.bak"
+  printf '%s\n' '{"schemaVersion":1,"activePhoneCredentialVersion":1,"activePhoneVerifier":"adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad"}' \
+    > "$root/shared/auth/phone-auth.json"
+  chmod 600 "$root/shared/auth/phone-auth.json"
+  if run_deploy "$root" "$SHA_A"; then
+    fail "$volume_case rendered volume unexpectedly passed compatibility"
+  fi
 }
 
 test -f "$DEPLOY_SCRIPT" || fail 'deploy-oci.sh does not exist'
@@ -686,6 +756,12 @@ chmod 600 "$root/shared/auth/phone-auth.json"
 if run_deploy "$root" "$SHA_A"; then
   fail 'unrelated-service pairing compatibility unexpectedly succeeded'
 fi
+
+assert_rendered_volume_case_rejected rendered-source-prefix source-prefix
+assert_rendered_volume_case_rejected rendered-target-prefix target-prefix
+assert_rendered_volume_case_rejected rendered-split-fields split
+assert_rendered_volume_case_rejected rendered-read-only readonly
+assert_rendered_volume_case_rejected rendered-duplicate duplicate
 
 root="$(new_case_root rollback-refused-after-rotation)"
 add_release "$root" "$SHA_A"

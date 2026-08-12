@@ -34,17 +34,61 @@ path_mode() {
 release_supports_phone_auth_record() {
   local directory
   local rendered
+  local rendered_file
   directory="$(release_directory "$1")"
-  rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
+  rendered_file="$AUTH_DIRECTORY/.compose-compat.$$"
+  [[ ! -e "$rendered_file" ]] || return 1
+  umask 077
+  : > "$rendered_file"
+  if ! CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
     -p "${COMPOSE_PROJECT_NAME}-compat-check" \
     --env-file "$SHARED_ENV" \
     -f "$directory/deploy/oci/compose.yaml" \
-    config relay 2>/dev/null)" || return 1
+    config relay > "$rendered_file" 2>/dev/null; then
+    rm -f "$rendered_file"
+    return 1
+  fi
+  rendered="$(sed -n 'p' "$rendered_file")"
+  rm -f "$rendered_file"
   [[ "$(grep -Ec '^[[:space:]]+x-click-bridge-pairing-auth-contract: 1$' <<< "$rendered")" = 1 ]] &&
     [[ "$(grep -Ec '^[[:space:]]+PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json$' <<< "$rendered")" = 1 ]] &&
-    [[ "$(grep -Fc "source: $AUTH_DIRECTORY" <<< "$rendered")" = 1 ]] &&
-    [[ "$(grep -Fc 'target: /var/lib/click-bridge/auth' <<< "$rendered")" = 1 ]] &&
-    [[ "$(grep -Fc 'type: bind' <<< "$rendered")" = 1 ]]
+    awk -v expected_source="$AUTH_DIRECTORY" '
+      function reset_mount() {
+        source = ""; target = ""; type = ""; read_only = ""
+      }
+      function finish_mount() {
+        if (!in_mount) return
+        if (source == expected_source && target == "/var/lib/click-bridge/auth" &&
+            type == "bind" && (read_only == "" || read_only == "false")) {
+          exact_matches += 1
+        }
+        in_mount = 0
+        reset_mount()
+      }
+      /^[[:space:]]+volumes:$/ { in_volumes = 1; next }
+      in_volumes && /^[[:space:]]+-[[:space:]]/ {
+        finish_mount()
+        in_mount = 1
+      }
+      in_volumes && in_mount {
+        line = $0
+        sub(/^[[:space:]]+-?[[:space:]]*/, "", line)
+        separator = index(line, ":")
+        if (separator == 0) next
+        key = substr(line, 1, separator - 1)
+        value = substr(line, separator + 1)
+        sub(/^[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        if (key == "source") source = value
+        else if (key == "target") target = value
+        else if (key == "type") type = value
+        else if (key == "read_only") read_only = value
+      }
+      END {
+        finish_mount()
+        exit exact_matches == 1 ? 0 : 1
+      }
+    ' <<< "$rendered"
 }
 
 validate_secret_schema() {

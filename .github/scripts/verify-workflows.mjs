@@ -439,11 +439,25 @@ const unsafeShellAssignments = new Set([
 ]);
 const reviewedShellExecutables = new Set([
   ":",
+  "-d",
+  "-e",
+  "-f",
+  "-L",
+  "=",
   "[[",
+  "APPLE_TEAM_ID",
+  "CLICK_BRIDGE_DOMAIN",
+  "MAC_TOKEN",
+  "PAIRING_ENABLED",
+  "PHONE_AUTH_RECORD",
+  "PHONE_TOKEN",
   "break",
+  "case",
   "cd",
+  "chmod",
   "cleanup_candidate",
   "compose_release",
+  "continue",
   "die",
   "docker",
   "done",
@@ -454,14 +468,25 @@ const reviewedShellExecutables = new Set([
   "fi",
   "for",
   "grep",
+  "domain_count",
+  "line_number",
   "local",
+  "mac_token_count",
+  "mkdir",
   "mv",
+  "path_mode",
+  "pairing_count",
+  "phone_auth_record_is_rotated_or_uncertain",
+  "phone_token_count",
   "printf",
   "pwd",
+  "read",
   "read_pointer",
   "release_directory",
+  "release_supports_phone_auth_record",
   "required_key",
   "return",
+  "record_count",
   "rm",
   "secret_file_mode",
   "sed",
@@ -471,12 +496,14 @@ const reviewedShellExecutables = new Set([
   "sleep",
   "start_release",
   "stat",
+  "team_count",
   "tr",
   "trap",
   "true",
   "umask",
   "validate_git_release",
   "validate_pointer_release",
+  "validate_secret_schema",
   "verify_candidate",
   "verify_public_release",
   "write_pointer",
@@ -486,8 +513,12 @@ function assertSafeShellAssignments(segment) {
   for (const { value } of segment) {
     const assignment = value.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\+?=)/);
     if (!assignment) continue;
+    const emptyIfsRead =
+      assignment[1] === "IFS" &&
+      segment.map(({ value: token }) => token).join(" ") ===
+        "while IFS= read -r line";
     assert.ok(
-      !unsafeShellAssignments.has(assignment[1]) &&
+      (!unsafeShellAssignments.has(assignment[1]) || emptyIfsRead) &&
         !assignment[1].startsWith("BASH_FUNC_"),
       `deploy script must not replace command-resolution environment: ${assignment[1]}`,
     );
@@ -523,12 +554,41 @@ function deployDockerRuns(source) {
     const subcommand = subcommandToken?.value;
     const executableName = executable.split("/").at(-1);
 
+    if (executableName === "awk") {
+      const awkInvocation = segment.map(({ value }) => value).join(" ");
+      assert.ok(
+        awkInvocation.includes("-v expected_source=$AUTH_DIRECTORY") &&
+          awkInvocation.includes("function reset_mount()") &&
+          awkInvocation.includes("exit exact_matches == 1 ? 0 : 1") &&
+          !awkInvocation.includes("system("),
+        "deploy script contains an unreviewed Awk executable command",
+      );
+      continue;
+    }
+
     if (executableToken.dynamic) {
+      if (
+        segment.length === 1 &&
+        ["*", "[A-Z][A-Z0-9_]*", "[^[:space:]]*"].includes(executable)
+      ) {
+        continue;
+      }
       const quotedConditionSubstitutionTail =
         (segment.length === 2 &&
           executable === "$" &&
           subcommand === "]]" &&
           subcommandToken.dynamic === false) ||
+        (segment.length === 4 &&
+          executable.startsWith("$") &&
+          subcommand === "=~" &&
+          subcommandToken.dynamic === false &&
+          segment[3].value === "]]" &&
+          segment[3].dynamic === false) ||
+        (segment.length === 4 &&
+          executable.startsWith("$") &&
+          ["=", "!="].includes(subcommand) &&
+          segment.slice(1).every(({ dynamic }) => dynamic === false) &&
+          segment[3].value === "]]" ) ||
         (segment.length === 4 &&
           /^= \$[A-Za-z_][A-Za-z0-9_]*\)$/.test(executable) &&
           subcommand === "=" &&
@@ -636,7 +696,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     deployDockerRuns(deployScript);
   assert.deepEqual(
     dockerSubcommands,
-    ["compose", "rm", "run", "exec", "logs", "run", "run"],
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"],
     "deploy script must contain exactly the reviewed Docker command sequence",
   );
   assert.deepEqual(
@@ -644,7 +704,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
       executable,
       subcommand,
     })),
-    ["compose", "rm", "run", "exec", "logs", "run", "run"].map(
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"].map(
       (subcommand) => ({ executable: "docker", subcommand }),
     ),
     "every deployment Docker invocation must use the exact literal executable",
@@ -661,6 +721,8 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
           "127.0.0.1:18080:8080",
           "--env-file",
           "$SHARED_ENV",
+          "--volume",
+          "$AUTH_DIRECTORY:/var/lib/click-bridge/auth",
           "--env",
           "PORT=8080",
           "--env",

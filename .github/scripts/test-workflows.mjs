@@ -31,11 +31,13 @@ const validCompose = `services:\n  caddy:\n    image: ${reviewedCaddy}\n`;
 function verifierDeployScript(healthImage, smokeImage) {
   return `#!/usr/bin/env bash
 docker compose config
+docker compose config relay
 docker rm candidate
 CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
   --name "$CANDIDATE_CONTAINER_NAME" \\
   --publish 127.0.0.1:18080:8080 \\
   --env-file "$SHARED_ENV" \\
+  --volume "$AUTH_DIRECTORY:/var/lib/click-bridge/auth" \\
   --env PORT=8080 \\
   --env HOST=0.0.0.0 \\
   "click-bridge-relay:$release" >/dev/null
