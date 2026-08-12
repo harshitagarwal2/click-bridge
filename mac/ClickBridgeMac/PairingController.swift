@@ -116,6 +116,11 @@ final class PairingController: ObservableObject {
         case failed
     }
 
+    enum RecoveryAction: Equatable {
+        case retry
+        case startAgain
+    }
+
     @Published private(set) var state: State = .unavailable
 
     private let transport: any PairingTransport
@@ -133,6 +138,15 @@ final class PairingController: ObservableObject {
         case none
         case status
         case create
+        case startAgain
+    }
+
+    var recoveryAction: RecoveryAction? {
+        switch retryAction {
+        case .status, .create: return .retry
+        case .startAgain: return .startAgain
+        case .none: return nil
+        }
     }
 
     private struct SendOwnership {
@@ -198,6 +212,8 @@ final class PairingController: ObservableObject {
             await refreshStatus(capabilityAvailable: true)
         case (.failed, .create), (.expired, .create):
             await createInvitation()
+        case (.failed, .startAgain), (.denied, .startAgain), (.expired, .startAgain):
+            await refreshStatus(capabilityAvailable: true)
         default:
             return
         }
@@ -230,6 +246,7 @@ final class PairingController: ObservableObject {
             guard owns(ownership) else { return }
         } catch {
             guard owns(ownership) else { return }
+            retryAction = .startAgain
             reset(to: .failed)
         }
     }
@@ -288,7 +305,7 @@ final class PairingController: ObservableObject {
                 return
             }
         }
-        retryAction = canRegenerateInvitation ? .create : .none
+        retryAction = canRegenerateInvitation ? .create : .startAgain
         reset(to: .expired)
     }
 
@@ -340,12 +357,12 @@ final class PairingController: ObservableObject {
             try await transport.sendPairing(.pairDeny(PairDeny(requestId: requestID, claimId: claimID)))
         } catch {
             guard owns(ownership) else { return }
-            retryAction = .none
+            retryAction = .startAgain
             reset(to: .failed)
             return
         }
         guard owns(ownership) else { return }
-        retryAction = .none
+        retryAction = .startAgain
         reset(to: terminalState)
     }
 
@@ -369,15 +386,17 @@ final class PairingController: ObservableObject {
                 retryAction = .none
                 reset(to: .ready)
             default:
+                retryAction = .startAgain
                 reset(to: .failed)
             }
         case .approval where failed.claimId == currentClaimID,
              .approving where failed.claimId == currentClaimID:
-            retryAction = .none
+            retryAction = .startAgain
             switch failed.reason {
             case .denied:
                 reset(to: .denied)
             case .cancelled:
+                retryAction = .none
                 reset(to: .ready)
             case .expired:
                 reset(to: .expired)
@@ -385,11 +404,12 @@ final class PairingController: ObservableObject {
                 reset(to: .failed)
             }
         case .denying where failed.claimId == currentClaimID:
-            retryAction = .none
+            retryAction = .startAgain
             switch failed.reason {
             case .denied:
                 reset(to: .denied)
             case .cancelled:
+                retryAction = .none
                 reset(to: .ready)
             case .expired:
                 reset(to: .expired)

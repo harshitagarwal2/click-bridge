@@ -84,6 +84,51 @@ private actor GatedCloseTransport: WebSocketTransport {
     func sentMessages() -> [String] { sent }
 }
 
+private actor GatedPairingSendTransport: WebSocketTransport {
+    private var inbound: [String] = []
+    private var receiveContinuation: CheckedContinuation<String, Error>?
+    private var pairingSendContinuation: CheckedContinuation<Void, Error>?
+    private(set) var pairingSendStarted = false
+    private(set) var closeCount = 0
+    private(set) var sent: [String] = []
+
+    func connect(to url: URL) async throws {}
+    func sendText(_ text: String) async throws {
+        sent.append(text)
+        guard case .pairStatusRequest = try? StrictWireDecoder().decodeText(text) else { return }
+        pairingSendStarted = true
+        try await withCheckedThrowingContinuation { pairingSendContinuation = $0 }
+    }
+    func receiveText() async throws -> String {
+        if !inbound.isEmpty { return inbound.removeFirst() }
+        return try await withCheckedThrowingContinuation { receiveContinuation = $0 }
+    }
+    func close() async {
+        closeCount += 1
+        receiveContinuation?.resume(throwing: FakeTransportError.closed)
+        receiveContinuation = nil
+    }
+    func push(_ text: String) {
+        if let receiveContinuation {
+            self.receiveContinuation = nil
+            receiveContinuation.resume(returning: text)
+        } else {
+            inbound.append(text)
+        }
+    }
+    func completePairingSend(_ result: Result<Void, FakeTransportError>) {
+        switch result {
+        case .success:
+            pairingSendContinuation?.resume()
+        case .failure(let error):
+            pairingSendContinuation?.resume(throwing: error)
+        }
+        pairingSendContinuation = nil
+    }
+    func didStartPairingSend() -> Bool { pairingSendStarted }
+    func closes() -> Int { closeCount }
+}
+
 private final class TransportFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var transports: [any WebSocketTransport]
@@ -250,6 +295,13 @@ private struct FixedCounters: DiagnosticCounterReading {
     func diagnosticPostCounts() async -> InputPostCounts { value }
 }
 
+private actor PairingMessageRecorder {
+    private var values: [WireMessage] = []
+
+    func append(_ value: WireMessage) { values.append(value) }
+    func messages() -> [WireMessage] { values }
+}
+
 final class RelayClientTests: XCTestCase {
     private let actionID = "018f63f5-6f3d-7d21-88bc-9ef561f030de"
     private let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030ab"
@@ -329,6 +381,131 @@ final class RelayClientTests: XCTestCase {
             }
         }
         XCTAssertTrue(stateSent)
+        await client.stop()
+    }
+
+    func testAuthenticatedMacOptsIntoPairingAndRoutesOnlyStrictPairingEvents() async throws {
+        let transport = FakeWebSocketTransport()
+        let recorder = PairingMessageRecorder()
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        await client.setPairingHandler { message in await recorder.append(message) }
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let connected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(connected)
+
+        let beforeOptIn = await transport.sentMessages().compactMap { try? StrictWireDecoder().decodeText($0) }
+        XCTAssertFalse(beforeOptIn.contains { if case .pairStatusRequest = $0 { true } else { false } })
+
+        try await client.sendPairing(.pairStatusRequest(PairStatusRequest(requestId: requestID)))
+        let statusRequestSent = await eventually {
+            await transport.sentMessages().contains {
+                guard case .pairStatusRequest(let request) = try? StrictWireDecoder().decodeText($0) else { return false }
+                return request.requestId == self.requestID
+            }
+        }
+        XCTAssertTrue(statusRequestSent)
+
+        let claimID = "018f63f5-6f3d-7d21-88bc-9ef561f030ac"
+        let events: [WireMessage] = [
+            .pairStatus(PairStatus(requestId: requestID, enrollmentState: .legacy,
+                                   activePhoneCredentialVersion: 0)),
+            .pairCreated(PairCreated(requestId: requestID,
+                                     reference: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                     expiresAtUnixMs: 1_786_497_900_000)),
+            .pairClaimedMac(PairClaimedMac(requestId: requestID, claimId: claimID,
+                                           confirmationCode: "482 917",
+                                           expiresAtUnixMs: 1_786_497_900_000, clientKind: .ios)),
+            .pairCompleted(PairCompleted(requestId: requestID, claimId: claimID,
+                                         activePhoneCredentialVersion: 1)),
+            .pairFailed(PairFailed(requestId: requestID, claimId: claimID, reason: .denied)),
+        ]
+        for event in events { await transport.push(try Wire.encode(event)) }
+        let allEventsRouted = await eventually { await recorder.messages().count == events.count }
+        XCTAssertTrue(allEventsRouted)
+
+        await transport.push(try Wire.encode(HeartbeatAck(sequence: 9)))
+        try? await Task.sleep(for: .milliseconds(25))
+        let routed = await recorder.messages()
+        XCTAssertEqual(routed, events)
+        await client.stop()
+    }
+
+    func testCurrentPairingSendFailureFailsGenerationAndSchedulesReconnect() async throws {
+        let transport = GatedPairingSendTransport()
+        let sleeper = ManualSleeper()
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { try await sleeper.sleep($0) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let connected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(connected)
+
+        let send = Task {
+            try await client.sendPairing(.pairStatusRequest(PairStatusRequest(requestId: requestID)))
+        }
+        let sendStarted = await eventually { await transport.didStartPairingSend() }
+        XCTAssertTrue(sendStarted)
+        await transport.completePairingSend(.failure(.closed))
+
+        do {
+            try await send.value
+            XCTFail("Expected pairing send failure")
+        } catch {}
+        let disconnected = await eventually { await client.currentStatus() == .disconnected }
+        let closeCount = await transport.closes()
+        let reconnectScheduled = await eventually { await sleeper.count(0) == 1 }
+        XCTAssertTrue(disconnected)
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertTrue(reconnectScheduled)
+        await client.stop()
+    }
+
+    func testStalePairingSendFailureCannotFailReplacementGeneration() async throws {
+        let first = GatedPairingSendTransport()
+        let second = FakeWebSocketTransport()
+        let factory = TransportFactory([first, second])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await first.push(try Wire.encode(HelloOK(role: "mac")))
+        let firstConnected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(firstConnected)
+
+        let staleSend = Task {
+            try await client.sendPairing(.pairStatusRequest(PairStatusRequest(requestId: requestID)))
+        }
+        let sendStarted = await eventually { await first.didStartPairingSend() }
+        XCTAssertTrue(sendStarted)
+        await client.reconnect()
+        await second.push(try Wire.encode(HelloOK(role: "mac")))
+        let secondConnected = await eventually { await client.currentStatus() == .connected }
+        XCTAssertTrue(secondConnected)
+
+        await first.completePairingSend(.failure(.closed))
+        do {
+            try await staleSend.value
+            XCTFail("Expected stale send to preserve its original failure")
+        } catch {}
+        try? await Task.sleep(for: .milliseconds(25))
+
+        let status = await client.currentStatus()
+        let replacementCloseCount = await second.closes()
+        XCTAssertEqual(status, .connected)
+        XCTAssertEqual(replacementCloseCount, 0)
         await client.stop()
     }
 

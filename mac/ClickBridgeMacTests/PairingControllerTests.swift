@@ -41,6 +41,7 @@ final class PairingControllerTests: XCTestCase {
 
         await controller.refreshStatus(capabilityAvailable: true)
         XCTAssertEqual(controller.state, .failed)
+        XCTAssertEqual(controller.recoveryAction, .retry)
         await controller.regenerate()
 
         let messages = await transport.messages()
@@ -188,6 +189,7 @@ final class PairingControllerTests: XCTestCase {
         now = Date(timeIntervalSince1970: 1_002)
         await controller.refreshExpiry()
         XCTAssertEqual(controller.state, .expired)
+        XCTAssertEqual(controller.recoveryAction, .retry)
 
         await controller.regenerate()
         guard case .pairCreate = await transport.messages().last else {
@@ -209,6 +211,7 @@ final class PairingControllerTests: XCTestCase {
         await controller.beginPairing()
         await controller.confirmReplacement()
         XCTAssertEqual(controller.state, .failed)
+        XCTAssertEqual(controller.recoveryAction, .retry)
 
         await controller.regenerate()
 
@@ -217,20 +220,99 @@ final class PairingControllerTests: XCTestCase {
         }
     }
 
-    func testApprovalFailureCannotRegenerateAReplacementInvitation() async {
+    func testApprovalFailureReconcilesStatusWithoutRegeneratingInvitation() async {
         let transport = PairingTransportRecorder(results: [
             .success(()), .success(()), .failure(TestTransportError.failed)
         ])
         let controller = subject(transport: transport)
         await moveToApproval(controller)
         await controller.approve()
-        let countAfterFailure = await transport.messages().count
-
+        XCTAssertEqual(controller.recoveryAction, .startAgain)
         await controller.regenerate()
 
-        XCTAssertEqual(controller.state, .failed)
         let messagesAfterRegenerate = await transport.messages()
-        XCTAssertEqual(messagesAfterRegenerate.count, countAfterFailure)
+        XCTAssertEqual(messagesAfterRegenerate.count, 4)
+        guard case .pairStatusRequest = messagesAfterRegenerate.last else {
+            return XCTFail("Expected fresh status instead of a replacement invitation")
+        }
+    }
+
+    func testApprovalExpiryStartsAgainWithFreshStatus() async {
+        let transport = PairingTransportRecorder()
+        var now = Date(timeIntervalSince1970: 1_000)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { self.requestID },
+            now: { now }
+        )
+        await moveToApproval(controller)
+
+        now = Date(timeIntervalSince1970: 1_301)
+        await controller.refreshExpiry()
+        XCTAssertEqual(controller.state, .expired)
+        XCTAssertEqual(controller.recoveryAction, .startAgain)
+
+        await controller.regenerate()
+        guard case .pairStatusRequest = await transport.messages().last else {
+            return XCTFail("Expected fresh status after approval expiry")
+        }
+    }
+
+    func testApproveSendFailureStartsAgainWithFreshStatus() async {
+        let transport = PairingTransportRecorder(results: [
+            .success(()), .success(()), .failure(TestTransportError.failed), .success(())
+        ])
+        let controller = subject(transport: transport)
+        await moveToApproval(controller)
+
+        await controller.approve()
+        XCTAssertEqual(controller.state, .failed)
+        XCTAssertEqual(controller.recoveryAction, .startAgain)
+
+        await controller.regenerate()
+        guard case .pairStatusRequest = await transport.messages().last else {
+            return XCTFail("Expected fresh status after approve send failure")
+        }
+    }
+
+    func testDenySendFailureStartsAgainWithFreshStatus() async {
+        let transport = PairingTransportRecorder(results: [
+            .success(()), .success(()), .failure(TestTransportError.failed), .success(())
+        ])
+        let controller = subject(transport: transport)
+        await moveToApproval(controller)
+
+        await controller.deny()
+        XCTAssertEqual(controller.state, .failed)
+        XCTAssertEqual(controller.recoveryAction, .startAgain)
+
+        await controller.regenerate()
+        guard case .pairStatusRequest = await transport.messages().last else {
+            return XCTFail("Expected fresh status after deny send failure")
+        }
+    }
+
+    func testDenialCompletionStartsAgainWithFreshStatus() async {
+        let transport = PairingTransportRecorder()
+        let controller = subject(transport: transport)
+        await moveToApproval(controller)
+
+        await controller.deny()
+        XCTAssertEqual(controller.state, .denied)
+        XCTAssertEqual(controller.recoveryAction, .startAgain)
+
+        await controller.regenerate()
+        guard case .pairStatusRequest(let statusRequest) = await transport.messages().last else {
+            return XCTFail("Expected fresh status after denial")
+        }
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: statusRequest.requestId,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+        await controller.beginPairing()
+        XCTAssertEqual(controller.state, .replacementConfirmation)
     }
 
     func testSuspendedStatusFailureCannotOverwriteCapabilityRevocation() async throws {
@@ -586,6 +668,7 @@ final class PairingControllerTests: XCTestCase {
         await controller.cancel()
 
         XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertEqual(controller.recoveryAction, .retry)
         await controller.beginPairing()
         await controller.confirmReplacement()
         await controller.approve()

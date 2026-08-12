@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		029F6E99DC8A4D99B361F789 /* pair.failed.claimant.json in Resources */ = {isa = PBXBuildFile; fileRef = 3D6B672FBF36BDFFC7ECE66A /* pair.failed.claimant.json */; };
+		051894352BED05560D533C72 /* PairingPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F779F6A9CA441AF7DC5AEB94 /* PairingPresentationTests.swift */; };
 		061E9132F6535B940086214E /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 540A03DF89931A32C0E0A284 /* SettingsStore.swift */; };
 		0AF990995FBCDB7C48BF092B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E427B3E24B1E47F3B1D5B4BB /* PrivacyInfo.xcprivacy */; };
 		0E6130C5D654CD1D32C584C7 /* heartbeat.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 1CC7996AD9138ACA6E88E8AD /* heartbeat.request.json */; };
@@ -203,6 +204,7 @@
 		F140BE0D05E21B51C2626D56 /* WireMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireMessage.swift; sourceTree = "<group>"; };
 		F310508EAC5133D357A73CBA /* hello.phone.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.phone.json; sourceTree = "<group>"; };
 		F64B388DD8600451290491E0 /* time.sync.request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = time.sync.request.json; sourceTree = "<group>"; };
+		F779F6A9CA441AF7DC5AEB94 /* PairingPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPresentationTests.swift; sourceTree = "<group>"; };
 		F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClientTests.swift; sourceTree = "<group>"; };
 		FA88DE5EDDF5D4A87240A655 /* invalid-relay-ack-pairing.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-relay-ack-pairing.json"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -327,6 +329,7 @@
 				635504752060C9C6F78E9A8D /* AppStateTests.swift */,
 				2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */,
 				3D054D14298A3AB8C585BA14 /* PairingControllerTests.swift */,
+				F779F6A9CA441AF7DC5AEB94 /* PairingPresentationTests.swift */,
 				9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */,
 				29EB2ED59513A9681A749DEB /* QRCodeRendererTests.swift */,
 				F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */,
@@ -539,6 +542,7 @@
 				BB30EACE97D772798509C6D6 /* AppStateTests.swift in Sources */,
 				4C9339C67D82AB5B662F7B50 /* MacInputExecutorTests.swift in Sources */,
 				7A4955925D4FE8FDB68CABBC /* PairingControllerTests.swift in Sources */,
+				051894352BED05560D533C72 /* PairingPresentationTests.swift in Sources */,
 				41FFD1C3772E69872A80A968 /* PermissionServiceTests.swift in Sources */,
 				A44D365B4C6A99266D619A99 /* QRCodeRendererTests.swift in Sources */,
 				B09A3E66040D2BBE6B67A0BC /* RelayClientTests.swift in Sources */,
