@@ -57,6 +57,11 @@ enum RelayEndpoint {
 
 actor RelayClient {
     enum Status: Equatable, Sendable { case disconnected, connecting, connected }
+    struct StatusEvent: Sendable {
+        let status: Status
+        let credentialRevision: UInt64
+        let sequence: UInt64
+    }
     typealias Sleep = @Sendable (TimeInterval) async throws -> Void
     typealias Jitter = @Sendable (TimeInterval) -> TimeInterval
 
@@ -81,9 +86,11 @@ actor RelayClient {
     private var sequence = 0
     private var pendingHeartbeat: Int?
     private var running = false
+    private var highestCredentialOperation: UInt64 = 0
     private var status: Status = .disconnected
     private var advertisedState = MacState(remoteEnabled: false, permission: .unknown)
-    private var statusHandler: (@Sendable (Status) -> Void)?
+    private var statusSequence: UInt64 = 0
+    private var statusHandler: (@Sendable (StatusEvent) -> Void)?
     private var resultHandler: (@Sendable (ActionResult) -> Void)?
 
     init(
@@ -102,15 +109,34 @@ actor RelayClient {
         self.wallClockMilliseconds = wallClockMilliseconds
     }
 
-    func setStatusHandler(_ handler: (@Sendable (Status) -> Void)?) { statusHandler = handler }
+    func setStatusHandler(_ handler: (@Sendable (StatusEvent) -> Void)?) { statusHandler = handler }
     func setResultHandler(_ handler: (@Sendable (ActionResult) -> Void)?) { resultHandler = handler }
     func currentStatus() -> Status { status }
 
-    func configure(urlString: String, token: String, allowLocalSimulator: Bool) async throws {
-        let validated = try RelayEndpoint.validated(urlString, allowLocalSimulator: allowLocalSimulator)
+    @discardableResult
+    func configure(
+        urlString: String,
+        token: String,
+        allowLocalSimulator: Bool,
+        credentialRevision requestedRevision: UInt64? = nil
+    ) async throws -> Bool {
+        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
+        let validated: URL
+        do {
+            validated = try RelayEndpoint.validated(urlString, allowLocalSimulator: allowLocalSimulator)
+        } catch {
+            running = false
+            endpoint = nil
+            self.token = nil
+            await cancelGeneration()
+            if isCurrentCredentialOperation(operationRevision) { setStatus(.disconnected) }
+            throw error
+        }
         await cancelGeneration()
+        guard isCurrentCredentialOperation(operationRevision) else { return false }
         endpoint = validated
         self.token = token
+        return true
     }
 
     func updateAdvertisedState(_ snapshot: MacState) async {
@@ -121,30 +147,42 @@ actor RelayClient {
         catch { await generationFailed(expected, socket: socket) }
     }
 
-    func start() {
+    func start(credentialRevision requestedRevision: UInt64? = nil) {
+        if let requestedRevision, requestedRevision != highestCredentialOperation { return }
         running = true
         guard receiveTask == nil, reconnectTask == nil else { return }
         openGeneration()
     }
 
-    func stop() async {
+    @discardableResult
+    func stop(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
+        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
         running = false
         await cancelGeneration()
+        guard isCurrentCredentialOperation(operationRevision) else { return false }
         setStatus(.disconnected)
+        return true
     }
 
-    func clearConfigurationAndStop() async {
+    @discardableResult
+    func clearConfigurationAndStop(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
+        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
         running = false
         endpoint = nil
         token = nil
         await cancelGeneration()
+        guard isCurrentCredentialOperation(operationRevision) else { return false }
         setStatus(.disconnected)
+        return true
     }
 
-    func reconnect() async {
+    @discardableResult
+    func reconnect(credentialRevision requestedRevision: UInt64? = nil) async -> Bool {
+        guard let operationRevision = claimCredentialOperation(requestedRevision) else { return false }
         await cancelGeneration()
-        guard running else { return }
+        guard isCurrentCredentialOperation(operationRevision), running else { return false }
         openGeneration()
+        return true
     }
 
     private func cancelGeneration() async {
@@ -160,10 +198,27 @@ actor RelayClient {
         await old?.close()
     }
 
+    private func claimCredentialOperation(_ requestedRevision: UInt64?) -> UInt64? {
+        if let requestedRevision {
+            guard requestedRevision >= highestCredentialOperation else { return nil }
+            highestCredentialOperation = requestedRevision
+        } else {
+            highestCredentialOperation &+= 1
+        }
+        return highestCredentialOperation
+    }
+
+    private func isCurrentCredentialOperation(_ expected: UInt64) -> Bool {
+        expected == highestCredentialOperation
+    }
+
     private func setStatus(_ value: Status) {
         guard status != value else { return }
         status = value
-        statusHandler?(value)
+        statusSequence &+= 1
+        statusHandler?(StatusEvent(status: value,
+                                   credentialRevision: highestCredentialOperation,
+                                   sequence: statusSequence))
     }
 
     private func openGeneration() {
