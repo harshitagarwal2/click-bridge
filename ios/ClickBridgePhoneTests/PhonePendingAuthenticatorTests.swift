@@ -64,4 +64,18 @@ final class PhonePendingAuthenticatorTests: XCTestCase {
         XCTAssertEqual(result, .unavailable)
         XCTAssertEqual(transport.disconnectReasons, ["pending_authentication_cancelled"])
     }
+
+    func testCancellationWinsOverImmediateAuthenticationRejection() async {
+        let transport = FakePhoneActionTransport()
+        let subject = PhonePendingAuthenticator(transport: transport)
+
+        let task = Task { await subject.authenticate(configuration) }
+        await Task.yield()
+        task.cancel()
+        transport.emit(.connection(generation: transport.generation, state: .authenticationRejected))
+
+        let result = await task.value
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(transport.disconnectReasons, ["pending_authentication_cancelled"])
+    }
 }
