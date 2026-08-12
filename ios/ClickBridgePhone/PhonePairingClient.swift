@@ -7,6 +7,13 @@ enum PhonePairingPhase: Equatable, Sendable {
     case awaitingActivation, active, cancelled, failed, replaced
 }
 
+enum PhonePairingRecoveryResult: Equatable, Sendable {
+    case recovered, noPending, originMismatch, authenticationRejected
+    case storageReadFailed, storageCorrupt, promotionFailed, superseded
+}
+
+private enum PhonePairingRandomnessError: Error { case unavailable }
+
 struct PhonePairingState: Equatable, Sendable {
     var phase: PhonePairingPhase = .idle
     var confirmationCode: String?
@@ -22,7 +29,7 @@ final class PhonePairingClient {
     private let clock: any PhoneClock
     private let scheduler: any PhoneScheduler
     private let claimID: @MainActor () -> UUID
-    private let randomBytes: @MainActor () -> Data
+    private let randomBytes: @MainActor () throws -> Data
     private let authenticatePending: @MainActor (RelayConfiguration) async -> Bool
     private let decoder = StrictPhoneWireDecoder()
 
@@ -33,7 +40,8 @@ final class PhonePairingClient {
     private var socket: (any PhoneWebSocket)?
     private var timeout: ScheduledToken?
     private var currentClaimID: UUID?
-    private var pending: PhonePairingCredential?
+    private var pending: PhonePairingPendingCredential?
+    private var replacementAuthorization: PhonePairingReplacementAuthorization?
     private var relayWebSocketURL: URL?
     private var receiveState: PhonePairingReceiveState = .claiming
     private var opened = false
@@ -45,9 +53,12 @@ final class PhonePairingClient {
         clock: any PhoneClock,
         scheduler: any PhoneScheduler,
         claimID: @escaping @MainActor () -> UUID = UUID.init,
-        randomBytes: @escaping @MainActor () -> Data = {
+        randomBytes: @escaping @MainActor () throws -> Data = {
             var bytes = Data(count: 32)
-            _ = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+            let status = bytes.withUnsafeMutableBytes {
+                SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!)
+            }
+            guard status == errSecSuccess else { throw PhonePairingRandomnessError.unavailable }
             return bytes
         },
         authenticatePending: @escaping @MainActor (RelayConfiguration) async -> Bool = { _ in false }
@@ -62,18 +73,28 @@ final class PhonePairingClient {
         self.authenticatePending = authenticatePending
     }
 
-    func start(_ link: PhonePairingLink) {
+    func start(
+        _ link: PhonePairingLink,
+        replacementAuthorization: PhonePairingReplacementAuthorization? = nil
+    ) {
         retire(reason: "replaced")
+        clearSensitive()
         generation &+= 1
         let expectedGeneration = generation
         let claimID = claimID()
-        let nonceBytes = randomBytes()
+        let nonceBytes: Data
+        do { nonceBytes = try randomBytes() }
+        catch {
+            publish(.failed, failure: "pairing_unavailable")
+            return
+        }
         guard nonceBytes.count == 32 else {
             publish(.failed, failure: "pairing_unavailable")
             return
         }
         let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
         relayWebSocketURL = link.claimantWebSocketURL
+        self.replacementAuthorization = replacementAuthorization
         currentClaimID = claimID
         receiveState = .claiming
         let socket = socketFactory.makeSocket()
@@ -98,22 +119,41 @@ final class PhonePairingClient {
         publish(.cancelled)
     }
 
-    func recoverPending(relayWebSocketURL: URL) async -> Bool {
+    func recoverPending(relayWebSocketURL: URL) async -> PhonePairingRecoveryResult {
         generation &+= 1
         let expectedGeneration = generation
         retire(reason: "recover")
-        guard let pending = try? settings.pendingPairingCredential() else { return false }
-        guard let configuration = try? RelayConfiguration.validated(
-            urlString: relayWebSocketURL.absoluteString,
-            token: pending.token
-        ), await authenticatePending(configuration), generation == expectedGeneration else {
-            return false
+        clearSensitive()
+        let pending: PhonePairingPendingCredential
+        do {
+            guard let stored = try settings.pendingPairingRecoveryDescriptor() else { return .noPending }
+            pending = stored
+        } catch PhonePairingCredentialStorageError.corruptState {
+            return .storageCorrupt
+        } catch {
+            return .storageReadFailed
         }
-        guard (try? settings.promotePairingCredential(pending)) != nil,
-              generation == expectedGeneration else { return false }
+        guard PhonePairingLink.canonicalClaimantWebSocketURL(relayWebSocketURL) == pending.relayWebSocketURL else {
+            return .originMismatch
+        }
+        let configuration: RelayConfiguration
+        do {
+            configuration = try RelayConfiguration.validated(
+                urlString: pending.relayWebSocketURL.absoluteString,
+                token: pending.credential.token
+            )
+        } catch {
+            return .storageCorrupt
+        }
+        let authenticated = await authenticatePending(configuration)
+        guard generation == expectedGeneration else { return .superseded }
+        guard authenticated else { return .authenticationRejected }
+        do { try settings.promotePairingCredential(pending) }
+        catch { return .promotionFailed }
+        guard generation == expectedGeneration else { return .superseded }
         normalTransport.connect(configuration: configuration)
         publish(.active)
-        return true
+        return .recovered
     }
 
     private func bind(
@@ -150,7 +190,7 @@ final class PhonePairingClient {
         socket.onClose = { [weak self, weak socket] closure in
             guard let self, let socket, self.owns(socket, expectedGeneration) else { return }
             if closure.code == PhoneProtocolV1.credentialReplacedCloseCode {
-                self.terminate(.replaced, failure: nil, socket: socket)
+                self.terminateAuthoritative(.replaced, failure: nil, socket: socket)
             } else {
                 self.fail("disconnected", socket: socket)
             }
@@ -181,12 +221,26 @@ final class PhonePairingClient {
             schedule(after: min(PhoneProtocolV1.pairingTTL, remaining),
                      generation: expectedGeneration, socket: socket, reason: "expired")
         case .pairCredential(let offered):
-            let pending = PhonePairingCredential(token: offered.credential, version: offered.credentialVersion)
-            do { try settings.stagePairingCredential(pending) }
+            let credential = PhonePairingCredential(
+                token: offered.credential,
+                version: offered.credentialVersion
+            )
+            guard let relayWebSocketURL else {
+                fail("activation_failed", socket: socket)
+                return
+            }
+            let pending: PhonePairingPendingCredential
+            do {
+                pending = try settings.stagePairingCredential(
+                    credential,
+                    relayWebSocketURL: relayWebSocketURL,
+                    replacementAuthorization: replacementAuthorization
+                )
+            }
             catch { fail("storage_failed", socket: socket); return }
             self.pending = pending
-            let context = "clickbridge-pair-activate:v1:\(claimID.uuidString.lowercased()):\(pending.version)"
-            guard let keyBytes = Self.hexBytes(pending.token) else {
+            let context = "clickbridge-pair-activate:v1:\(claimID.uuidString.lowercased()):\(credential.version)"
+            guard let keyBytes = Self.hexBytes(credential.token) else {
                 fail("activation_failed", socket: socket)
                 return
             }
@@ -197,11 +251,12 @@ final class PhonePairingClient {
             publish(.awaitingActivation)
             send(.pairCredentialAcknowledgement(.init(
                 claimID: claimID,
-                credentialVersion: pending.version,
+                credentialVersion: credential.version,
                 proof: proof
             )), socket: socket, generation: expectedGeneration, failure: "activation_failed")
         case .pairActive(let active):
-            guard let pending, pending.version == active.activePhoneCredentialVersion else {
+            guard let pending,
+                  pending.credential.version == active.activePhoneCredentialVersion else {
                 fail("activation_failed", socket: socket)
                 return
             }
@@ -210,7 +265,7 @@ final class PhonePairingClient {
             guard let relayWebSocketURL,
                   let configuration = try? RelayConfiguration.validated(
                     urlString: relayWebSocketURL.absoluteString,
-                    token: pending.token
+                    token: pending.credential.token
                   ) else {
                 fail("activation_failed", socket: socket)
                 return
@@ -221,9 +276,11 @@ final class PhonePairingClient {
             normalTransport.connect(configuration: configuration)
             publish(.active)
         case .pairFailed(let failure):
-            terminate(failure.reason == .replaced ? .replaced : .failed,
-                      failure: failure.reason.rawValue,
-                      socket: socket)
+            terminateAuthoritative(
+                failure.reason == .replaced ? .replaced : .failed,
+                failure: failure.reason.rawValue,
+                socket: socket
+            )
         default:
             fail("invalid_response", socket: socket)
         }
@@ -266,6 +323,22 @@ final class PhonePairingClient {
         publish(phase, failure: failure)
     }
 
+    private func terminateAuthoritative(
+        _ phase: PhonePairingPhase,
+        failure: String?,
+        socket: any PhoneWebSocket
+    ) {
+        guard socket === self.socket else { return }
+        if let pending {
+            do { try settings.discardPairingCredential(pending) }
+            catch {
+                terminate(.failed, failure: "storage_failed", socket: socket)
+                return
+            }
+        }
+        terminate(phase, failure: failure, socket: socket)
+    }
+
     private func retire(reason: String) {
         if let timeout { scheduler.cancel(timeout) }
         timeout = nil
@@ -283,6 +356,7 @@ final class PhonePairingClient {
         currentClaimID = nil
         pending = nil
         relayWebSocketURL = nil
+        replacementAuthorization = nil
     }
 
     private func publish(_ phase: PhonePairingPhase, failure: String? = nil,

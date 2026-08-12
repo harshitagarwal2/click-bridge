@@ -26,7 +26,7 @@ enum PhoneSettingsStorageError: LocalizedError {
 }
 
 enum PhonePairingCredentialStorageError: LocalizedError {
-    case invalidState
+    case invalidState, corruptState
 
     var errorDescription: String? { "The saved pairing state changed. Start pairing again." }
 }
@@ -36,17 +36,63 @@ struct PhonePairingCredential: Codable, Equatable, Sendable {
     let version: Int
 }
 
+struct PhonePairingPendingCredential: Equatable, Sendable {
+    let credential: PhonePairingCredential
+    let relayWebSocketURL: URL
+    fileprivate let generation: UInt64
+
+    init(credential: PhonePairingCredential, relayWebSocketURL: URL, generation: UInt64 = 0) {
+        self.credential = credential
+        self.relayWebSocketURL = relayWebSocketURL
+        self.generation = generation
+    }
+}
+
+struct PhonePairingReplacementAuthorization: Equatable, Sendable {
+    fileprivate let activeToken: String
+    fileprivate let activeVersion: Int?
+    fileprivate let generation: UInt64
+}
+
 private struct StoredPhoneCredential: Codable, Equatable {
     enum Provenance: String, Codable { case unknown, relay }
     let token: String
     let version: Int?
     let provenance: Provenance
+    let relayWebSocketURL: String?
+
+    init(token: String, version: Int?, provenance: Provenance,
+         relayWebSocketURL: String? = nil) {
+        self.token = token
+        self.version = version
+        self.provenance = provenance
+        self.relayWebSocketURL = relayWebSocketURL
+    }
 }
 
 private struct StoredPhoneCredentialRecord: Codable, Equatable {
     let schema: Int
+    let generation: UInt64
     let active: StoredPhoneCredential?
     let pending: StoredPhoneCredential?
+
+    init(schema: Int, generation: UInt64 = 0,
+         active: StoredPhoneCredential?, pending: StoredPhoneCredential?) {
+        self.schema = schema
+        self.generation = generation
+        self.active = active
+        self.pending = pending
+    }
+
+    private enum CodingKeys: String, CodingKey { case schema, generation, active, pending }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decode(Int.self, forKey: .schema)
+        generation = try container.decodeIfPresent(UInt64.self, forKey: .generation) ?? 0
+        active = try container.decodeIfPresent(StoredPhoneCredential.self, forKey: .active)
+        pending = try container.decodeIfPresent(StoredPhoneCredential.self, forKey: .pending)
+    }
 }
 
 struct UnavailablePhoneSecretStore: SecretStoring {
@@ -135,8 +181,10 @@ final class PhoneSettingsStore {
 
     func savePhoneToken(_ token: String) throws {
         try RelayConfiguration.validateToken(token)
+        let current = try readRecord()
         try writeRecord(.init(
             schema: 1,
+            generation: try nextGeneration(current.generation),
             active: .init(token: token, version: nil, provenance: .unknown),
             pending: nil
         ))
@@ -144,7 +192,13 @@ final class PhoneSettingsStore {
     }
 
     func clearPhoneToken() throws {
-        try perform { try secrets.delete(account: Self.phoneTokenAccount) }
+        let current = try readRecord()
+        try writeRecord(.init(
+            schema: 1,
+            generation: try nextGeneration(current.generation),
+            active: nil,
+            pending: nil
+        ))
         hasToken = false
     }
 
@@ -164,9 +218,45 @@ final class PhoneSettingsStore {
         return .init(token: token, version: version)
     }
 
-    func stagePairingCredential(_ credential: PhonePairingCredential) throws {
+    func pendingPairingRecoveryDescriptor() throws -> PhonePairingPendingCredential? {
+        let current = try readRecord()
+        let pending = current.pending
+        guard pending?.provenance == .relay,
+              let token = pending?.token,
+              let version = pending?.version,
+              let origin = pending?.relayWebSocketURL,
+              let relayWebSocketURL = PhonePairingLink.canonicalClaimantWebSocketURL(URL(string: origin)) else {
+            return nil
+        }
+        return .init(
+            credential: .init(token: token, version: version),
+            relayWebSocketURL: relayWebSocketURL,
+            generation: current.generation
+        )
+    }
+
+    func replacementAuthorization() throws -> PhonePairingReplacementAuthorization? {
+        let current = try readRecord()
+        guard current.active?.provenance == .unknown,
+              let token = current.active?.token else { return nil }
+        return .init(
+            activeToken: token,
+            activeVersion: current.active?.version,
+            generation: current.generation
+        )
+    }
+
+    @discardableResult
+    func stagePairingCredential(
+        _ credential: PhonePairingCredential,
+        relayWebSocketURL: URL? = nil,
+        replacementAuthorization: PhonePairingReplacementAuthorization? = nil
+    ) throws -> PhonePairingPendingCredential {
         try RelayConfiguration.validateToken(credential.token)
         guard credential.version > 0, credential.version <= 9_007_199_254_740_991 else {
+            throw PhonePairingCredentialStorageError.invalidState
+        }
+        guard let relayWebSocketURL = PhonePairingLink.canonicalClaimantWebSocketURL(relayWebSocketURL) else {
             throw PhonePairingCredentialStorageError.invalidState
         }
         let current = try readRecord()
@@ -178,34 +268,66 @@ final class PhoneSettingsStore {
         } else if current.active == nil {
             guard credential.version == 1 else { throw PhonePairingCredentialStorageError.invalidState }
         } else {
+            guard current.active?.provenance == .unknown,
+                  credential.version == 1,
+                  replacementAuthorization?.activeToken == current.active?.token,
+                  replacementAuthorization?.activeVersion == current.active?.version,
+                  replacementAuthorization?.generation == current.generation else {
+                throw PhonePairingCredentialStorageError.invalidState
+            }
+        }
+        let newGeneration = try nextGeneration(current.generation)
+        try writeRecord(.init(
+            schema: 1,
+            generation: newGeneration,
+            active: current.active,
+            pending: .init(
+                token: credential.token,
+                version: credential.version,
+                provenance: .relay,
+                relayWebSocketURL: relayWebSocketURL.absoluteString
+            )
+        ))
+        return .init(
+            credential: credential,
+            relayWebSocketURL: relayWebSocketURL,
+            generation: newGeneration
+        )
+    }
+
+    func promotePairingCredential(_ expected: PhonePairingPendingCredential) throws {
+        let current = try readRecord()
+        let pending = current.pending
+        guard pending?.provenance == .relay,
+              current.generation == expected.generation,
+              pending?.token == expected.credential.token,
+              pending?.version == expected.credential.version,
+              pending?.relayWebSocketURL == expected.relayWebSocketURL.absoluteString else {
             throw PhonePairingCredentialStorageError.invalidState
         }
         try writeRecord(.init(
             schema: 1,
-            active: current.active,
-            pending: .init(token: credential.token, version: credential.version, provenance: .relay)
+            generation: try nextGeneration(current.generation),
+            active: pending,
+            pending: nil
         ))
-    }
-
-    func promotePairingCredential(_ expected: PhonePairingCredential) throws {
-        let current = try readRecord()
-        let pending = current.pending
-        guard pending?.provenance == .relay,
-              pending?.token == expected.token,
-              pending?.version == expected.version else {
-            throw PhonePairingCredentialStorageError.invalidState
-        }
-        try writeRecord(.init(schema: 1, active: pending, pending: nil))
         hasToken = true
     }
 
-    func discardPairingCredential(_ expected: PhonePairingCredential) throws {
+    func discardPairingCredential(_ expected: PhonePairingPendingCredential) throws {
         let current = try readRecord()
-        guard current.pending?.token == expected.token,
-              current.pending?.version == expected.version else {
+        guard current.generation == expected.generation,
+              current.pending?.token == expected.credential.token,
+              current.pending?.version == expected.credential.version,
+              current.pending?.relayWebSocketURL == expected.relayWebSocketURL.absoluteString else {
             throw PhonePairingCredentialStorageError.invalidState
         }
-        try writeRecord(.init(schema: 1, active: current.active, pending: nil))
+        try writeRecord(.init(
+            schema: 1,
+            generation: try nextGeneration(current.generation),
+            active: current.active,
+            pending: nil
+        ))
     }
 
     private func readRecord() throws -> StoredPhoneCredentialRecord {
@@ -227,7 +349,7 @@ final class PhoneSettingsStore {
               let record = try? JSONDecoder().decode(StoredPhoneCredentialRecord.self, from: data),
               record.schema == 1,
               validRecord(record) else {
-            throw PhoneSettingsStorageError.unavailable
+            throw PhonePairingCredentialStorageError.corruptState
         }
         return record
     }
@@ -242,13 +364,24 @@ final class PhoneSettingsStore {
         }
     }
 
+    private func nextGeneration(_ current: UInt64) throws -> UInt64 {
+        guard current < UInt64.max else { throw PhonePairingCredentialStorageError.invalidState }
+        return current + 1
+    }
+
     private static func valid(_ slot: StoredPhoneCredential?) -> Bool {
         guard let slot else { return true }
         guard (try? RelayConfiguration.validateToken(slot.token)) != nil else { return false }
         switch slot.provenance {
-        case .unknown: return slot.version == nil
+        case .unknown: return slot.version == nil && slot.relayWebSocketURL == nil
         case .relay:
-            return slot.version.map { $0 > 0 && $0 <= 9_007_199_254_740_991 } == true
+            guard slot.version.map({ $0 > 0 && $0 <= 9_007_199_254_740_991 }) == true else {
+                return false
+            }
+            if let origin = slot.relayWebSocketURL {
+                return PhonePairingLink.canonicalClaimantWebSocketURL(URL(string: origin)) != nil
+            }
+            return true
         }
     }
 
@@ -256,13 +389,17 @@ final class PhoneSettingsStore {
         guard valid(record.active), valid(record.pending) else { return false }
         guard let pending = record.pending else { return true }
         if let active = record.active {
-            guard active.provenance == .relay,
-                  let activeVersion = active.version,
-                  pending.version == activeVersion + 1 else { return false }
+            switch active.provenance {
+            case .relay:
+                guard let activeVersion = active.version,
+                      pending.version == activeVersion + 1 else { return false }
+            case .unknown:
+                guard pending.version == 1 else { return false }
+            }
         } else {
             guard pending.version == 1 else { return false }
         }
-        return pending.provenance == .relay
+        return pending.provenance == .relay && pending.relayWebSocketURL != nil
     }
 
     private func perform<T>(_ work: () throws -> T) throws -> T {
@@ -271,6 +408,10 @@ final class PhoneSettingsStore {
             storageError = nil
             return result
         } catch {
+            if let storageError = error as? PhonePairingCredentialStorageError {
+                self.storageError = PhoneSettingsStorageError.unavailable.localizedDescription
+                throw storageError
+            }
             let sanitized = PhoneSettingsStorageError.unavailable
             storageError = sanitized.localizedDescription
             throw sanitized

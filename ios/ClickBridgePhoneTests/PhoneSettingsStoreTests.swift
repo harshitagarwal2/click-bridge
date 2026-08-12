@@ -48,7 +48,10 @@ final class PhoneSettingsStoreTests: XCTestCase {
         )
         let pending = PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
 
-        try store.stagePairingCredential(pending)
+        let staged = try store.stagePairingCredential(
+            pending,
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
 
         XCTAssertNil(try store.phoneToken())
         XCTAssertEqual(try store.pendingPairingCredential(), pending)
@@ -57,10 +60,12 @@ final class PhoneSettingsStoreTests: XCTestCase {
             secrets: secrets
         )
         XCTAssertFalse(reopened.hasToken)
-        XCTAssertThrowsError(try store.promotePairingCredential(
-            PhonePairingCredential(token: String(repeating: "c", count: 64), version: 1)
-        ))
-        try store.promotePairingCredential(pending)
+        let origin = try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        XCTAssertThrowsError(try store.promotePairingCredential(.init(
+            credential: PhonePairingCredential(token: String(repeating: "c", count: 64), version: 1),
+            relayWebSocketURL: origin
+        )))
+        try store.promotePairingCredential(staged)
         XCTAssertEqual(try store.phoneToken(), pending.token)
         XCTAssertNil(try store.pendingPairingCredential())
     }
@@ -76,7 +81,8 @@ final class PhoneSettingsStoreTests: XCTestCase {
         XCTAssertEqual(try store.phoneToken(), token)
         XCTAssertNil(try store.activePairingCredential())
         XCTAssertThrowsError(try store.stagePairingCredential(
-            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
         ))
     }
 
@@ -87,12 +93,16 @@ final class PhoneSettingsStoreTests: XCTestCase {
             secrets: secrets
         )
         let active = PhonePairingCredential(token: token, version: 1)
-        try store.stagePairingCredential(active)
-        try store.promotePairingCredential(active)
+        let staged = try store.stagePairingCredential(
+            active,
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        try store.promotePairingCredential(staged)
         secrets.writeError = NSError(domain: "secret-value", code: 1)
 
         XCTAssertThrowsError(try store.stagePairingCredential(
-            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 2)
+            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 2),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws"))
         ))
         XCTAssertEqual(try store.phoneToken(), token)
         XCTAssertEqual(try store.activePairingCredential(), active)
@@ -111,6 +121,84 @@ final class PhoneSettingsStoreTests: XCTestCase {
             secrets: secrets
         ))
         XCTAssertEqual(secrets.value, raw)
+    }
+
+    func testPendingCredentialPersistsCanonicalRelayOriginAcrossReopen() throws {
+        let secrets = TestSecretStore()
+        let pending = PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+        let origin = try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+
+        try store.stagePairingCredential(pending, relayWebSocketURL: origin)
+        let reopened = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+
+        XCTAssertEqual(try reopened.pendingPairingRecoveryDescriptor()?.credential, pending)
+        XCTAssertEqual(try reopened.pendingPairingRecoveryDescriptor()?.relayWebSocketURL, origin)
+    }
+
+    func testUnknownLegacyCredentialRequiresExplicitExactReplacementAuthorization() throws {
+        let secrets = TestSecretStore()
+        secrets.value = token
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+        let offered = PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+        let origin = try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+
+        XCTAssertThrowsError(try store.stagePairingCredential(offered, relayWebSocketURL: origin))
+        let authorization = try XCTUnwrap(store.replacementAuthorization())
+        try store.savePhoneToken(token)
+        XCTAssertThrowsError(try store.stagePairingCredential(
+            offered,
+            relayWebSocketURL: origin,
+            replacementAuthorization: authorization
+        ))
+
+        let currentAuthorization = try XCTUnwrap(store.replacementAuthorization())
+        try store.savePhoneToken(String(repeating: "c", count: 64))
+        XCTAssertThrowsError(try store.stagePairingCredential(
+            offered,
+            relayWebSocketURL: origin,
+            replacementAuthorization: currentAuthorization
+        ))
+        let replacementForCurrent = try XCTUnwrap(store.replacementAuthorization())
+        try store.stagePairingCredential(
+            offered,
+            relayWebSocketURL: origin,
+            replacementAuthorization: replacementForCurrent
+        )
+        XCTAssertEqual(try store.phoneToken(), String(repeating: "c", count: 64))
+        XCTAssertEqual(try store.pendingPairingCredential(), offered)
+    }
+
+    func testDiscardUsesExactPendingOriginCAS() throws {
+        let secrets = TestSecretStore()
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+        let pending = PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+        let origin = try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        let staged = try store.stagePairingCredential(pending, relayWebSocketURL: origin)
+
+        XCTAssertThrowsError(try store.discardPairingCredential(.init(
+            credential: pending,
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://hostile.example/ws"))
+        )))
+        XCTAssertEqual(try store.pendingPairingCredential(), pending)
+        try store.discardPairingCredential(staged)
+        let restaged = try store.stagePairingCredential(pending, relayWebSocketURL: origin)
+        XCTAssertThrowsError(try store.discardPairingCredential(staged))
+        XCTAssertEqual(try store.pendingPairingCredential(), pending)
+        try store.discardPairingCredential(restaged)
+        XCTAssertNil(try store.pendingPairingCredential())
     }
 
     func testStorageFailureIsRedacted() throws {

@@ -28,10 +28,30 @@ struct PhonePairingLink: Equatable, Sendable {
         }
         let reference = String(fragment.dropFirst(6))
         guard canonicalReference(reference),
-              let socketURL = URL(string: "wss://\(expectedHost)/ws") else {
+              let socketURL = canonicalClaimantWebSocketURL(
+                URL(string: "wss://\(expectedHost)/ws")
+              ) else {
             throw PhonePairingLinkError.invalid
         }
         return Self(reference: reference, claimantWebSocketURL: socketURL)
+    }
+
+    static func canonicalClaimantWebSocketURL(_ url: URL?) -> URL? {
+        guard let url,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "wss",
+              let host = components.host,
+              host.range(of: "^[a-z0-9.-]+$", options: .regularExpression) != nil,
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.path == "/ws",
+              components.query == nil,
+              components.fragment == nil,
+              url.absoluteString == "wss://\(host)/ws" else {
+            return nil
+        }
+        return url
     }
 
     private static func canonicalReference(_ value: String) -> Bool {
