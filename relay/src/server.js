@@ -96,10 +96,29 @@ function rejectUpgradeForCapacity(socket) {
 }
 
 function destroyRejectedWebSocket(ws) {
-  if (ws) ws.__clickBridgeTerminal = true;
+  if (!ws) return;
   try {
-    if (typeof ws?.terminate === 'function') ws.terminate();
-    else if (typeof ws?.close === 'function') ws.close();
+    ws.__clickBridgeTerminal = true;
+  } catch {
+    // Continue with best-effort disposal even if the candidate rejects bookkeeping.
+  }
+  let terminate;
+  try {
+    terminate = ws.terminate;
+  } catch {
+    // Fall through to close when property access itself is hostile.
+  }
+  if (typeof terminate === 'function') {
+    try {
+      terminate.call(ws);
+    } catch {
+      // Admission is already revoked; disposal is best-effort.
+    }
+    return;
+  }
+  try {
+    const close = ws.close;
+    if (typeof close === 'function') close.call(ws);
   } catch {
     // Admission is already revoked; disposal is best-effort.
   }
@@ -295,30 +314,50 @@ export function attachWebSocketServer({
     let acceptedWebSocket = null;
     let candidateActive = false;
     const removeRawGuards = () => {
-      socket.off('close', onRawTerminal);
-      socket.off('error', onRawTerminal);
+      let off;
+      try {
+        off = socket.off;
+      } catch {
+        return;
+      }
+      if (typeof off !== 'function') return;
+      try { off.call(socket, 'close', onRawTerminal); } catch {}
+      try { off.call(socket, 'error', onRawTerminal); } catch {}
     };
     const removeCandidateGuards = (ws = acceptedWebSocket) => {
-      if (typeof ws?.off !== 'function') return;
-      ws.off('close', onCandidateTerminal);
-      ws.off('error', onCandidateTerminal);
+      let off;
+      try {
+        off = ws?.off;
+      } catch {
+        return;
+      }
+      if (typeof off !== 'function') return;
+      try { off.call(ws, 'close', onCandidateTerminal); } catch {}
+      try { off.call(ws, 'error', onCandidateTerminal); } catch {}
     };
     const destroyCandidate = (ws) => {
-      wss.clients.delete(ws);
+      try { wss.clients.delete(ws); } catch {}
       destroyRejectedWebSocket(ws);
     };
-    const failAttempt = (code = null) => {
-      if (phase === 'failed') return;
+    const failAttempt = (code = null, candidate = acceptedWebSocket, rollbackCommitted = false) => {
+      if (phase === 'failed' || (phase === 'committed' && !rollbackCommitted)) return;
       phase = 'failed';
       pendingAttempts.delete(attempt);
       removeRawGuards();
-      removeCandidateGuards();
       candidateActive = false;
-      admission.releaseAll();
-      destroyCandidate(acceptedWebSocket);
-      if (!socket.destroyed) socket.destroy();
+      try { admission.releaseAll(); } catch {}
+      try {
+        const destroy = socket.destroy;
+        if (typeof destroy === 'function') destroy.call(socket);
+      } catch {}
+      removeCandidateGuards(candidate);
+      destroyCandidate(candidate);
       if (code) {
-        log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code }));
+        try {
+          log.info?.(JSON.stringify({ event: 'upgrade_internal_error', code }));
+        } catch {
+          // Diagnostics cannot compromise admission cleanup.
+        }
       }
     };
     function onRawTerminal() {
@@ -352,29 +391,33 @@ export function attachWebSocketServer({
         ws.__clickBridgeAdmission = admission;
         wss.emit('connection', ws, req);
       } catch {
-        failAttempt('connection_callback_failure');
+        failAttempt('connection_callback_failure', ws, true);
       }
     };
     try {
       upgrade(req, socket, head, (ws) => {
-        if (acceptedWebSocket) {
-          if (ws !== acceptedWebSocket) destroyCandidate(ws);
-          return;
-        }
-        if (phase === 'failed' || phase === 'committed') {
-          destroyCandidate(ws);
-          return;
-        }
-        if (typeof ws?.once !== 'function' || typeof ws?.off !== 'function') {
+        try {
+          if (acceptedWebSocket) {
+            if (ws !== acceptedWebSocket) destroyCandidate(ws);
+            return;
+          }
+          if (phase === 'failed' || phase === 'committed') {
+            destroyCandidate(ws);
+            return;
+          }
+          if (typeof ws?.once !== 'function' || typeof ws?.off !== 'function') {
+            acceptedWebSocket = ws;
+            failAttempt('connection_callback_failure');
+            return;
+          }
           acceptedWebSocket = ws;
-          failAttempt('connection_callback_failure');
-          return;
+          candidateActive = ws.readyState === ws.OPEN && !ws.__clickBridgeTerminal;
+          ws.once('close', onCandidateTerminal);
+          ws.once('error', onCandidateTerminal);
+          activateAcceptedWebSocket();
+        } catch {
+          failAttempt('connection_callback_failure', ws);
         }
-        acceptedWebSocket = ws;
-        candidateActive = ws.readyState === ws.OPEN && !ws.__clickBridgeTerminal;
-        ws.once('close', onCandidateTerminal);
-        ws.once('error', onCandidateTerminal);
-        activateAcceptedWebSocket();
       });
       if (phase === 'failed') return;
       phase = 'returned';
