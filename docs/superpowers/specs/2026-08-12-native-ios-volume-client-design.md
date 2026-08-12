@@ -10,7 +10,7 @@
 
 While the native app has an active foreground session, each distinct observed change to `AVAudioSession.sharedInstance().outputVolume` may produce exactly one `action.request` through the existing OCI relay when every readiness gate is open. Both upward and downward deltas mean click. The client keeps one action in flight, never queues a volume change, never retries an action, and provides haptic feedback only after the Mac sends a matching terminal `action.result`.
 
-The PWA remains unchanged as the sequential fallback. Click Bridge supports one authenticated phone role, so the native client and PWA are not intended to stay connected simultaneously.
+The PWA remains the sequential fallback. Click Bridge supports one authenticated phone role, so the native client and PWA are not intended to stay connected simultaneously. When another phone authenticates, the relay closes the displaced phone with private WebSocket code `4004`. The displaced client shows `Another phone took over` and stops automatic reconnect until the user explicitly taps `Reconnect this phone` or saves configuration again; normal network loss still uses backoff.
 
 ## Product Contract and API Limit
 

@@ -145,7 +145,7 @@ final class FakePhoneWebSocket: PhoneWebSocket {
     var onOpen: (@MainActor () -> Void)?
     var onText: (@MainActor (String) -> Void)?
     var onBinary: (@MainActor (Data) -> Void)?
-    var onClose: (@MainActor (Error?) -> Void)?
+    var onClose: (@MainActor (PhoneWebSocketClosure) -> Void)?
     private(set) var openedURLs: [URL] = []
     private(set) var sentTexts: [String] = []
     private(set) var closes: [(URLSessionWebSocketTask.CloseCode, String)] = []
@@ -167,7 +167,10 @@ final class FakePhoneWebSocket: PhoneWebSocket {
     func emitOpen() { onOpen?() }
     func emitText(_ text: String) { onText?(text) }
     func emitBinary(_ data: Data = Data()) { onBinary?(data) }
-    func emitClose(_ error: Error? = nil) { onClose?(error) }
+    func emitClose(_ error: Error? = nil) { onClose?(.init(code: nil, error: error)) }
+    func emitClose(code: Int) {
+        onClose?(.init(code: code, error: nil))
+    }
 }
 
 @MainActor

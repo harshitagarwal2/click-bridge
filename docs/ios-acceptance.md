@@ -75,6 +75,7 @@ The relay URL is stored in UserDefaults. `PHONE_TOKEN` is stored in Keychain and
 The app can also show:
 
 - **Not connected** while the current socket is not authenticated;
+- **Another phone took over** after relay close code `4004`; this is terminal and does not auto-reconnect until the user taps **Reconnect this phone** or explicitly saves settings again;
 - **Mac offline** when the relay reports that the Mac is unavailable;
 - **Mac not ready** when Mac remote control or permission is not ready;
 - **Checking clock** while the five-sample check is incomplete;

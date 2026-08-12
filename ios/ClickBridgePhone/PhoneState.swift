@@ -1,13 +1,14 @@
 import Foundation
 
 enum PhonePrimaryStatus: Equatable, Sendable {
-    case notConnected, macOffline, macNotReady, checkingClock, clockMismatch, sending
+    case notConnected, anotherPhoneTookOver, macOffline, macNotReady, checkingClock, clockMismatch, sending
     case atVolumeBoundary(VolumeBoundary)
     case ready
 
     var title: String {
         switch self {
         case .notConnected: "Not connected"
+        case .anotherPhoneTookOver: "Another phone took over"
         case .macOffline: "Mac offline"
         case .macNotReady: "Mac not ready"
         case .checkingClock: "Checking clock"
@@ -25,6 +26,7 @@ enum PhonePrimaryStatus: Equatable, Sendable {
         case .atVolumeBoundary(.maximum):
             "Volume Up cannot create another change, so it cannot be detected. Volume Down can still trigger."
         case .notConnected: "Open settings and connect to the relay."
+        case .anotherPhoneTookOver: "Reconnect this phone when you are ready to take control again."
         case .macOffline: "Start Click Bridge on the Mac."
         case .macNotReady: "Enable remote control and macOS Accessibility permission."
         case .checkingClock: "Validating phone and Mac clocks."
@@ -44,8 +46,10 @@ struct PhoneState: Equatable, Sendable {
     var actionPhase: PhoneActionPhase = .idle
     var lastActionOutcome: String?
     var settingsError: String?
+    var phoneTakenOver = false
 
     var primaryStatus: PhonePrimaryStatus {
+        if phoneTakenOver { return .anotherPhoneTookOver }
         guard foregroundSessionActive, connection == .authenticated else { return .notConnected }
         guard mac.online else { return .macOffline }
         guard mac.remoteEnabled, mac.permission == .ready else { return .macNotReady }

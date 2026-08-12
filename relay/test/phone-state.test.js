@@ -38,6 +38,24 @@ test('connecting', () => {
   assert.equal(view(s).enabled, false);
 });
 
+test('phone takeover is terminal across lifecycle reconnects until the token is explicitly saved', () => {
+  let s = apply(initialState(),
+    { type: 'token.set', token: '1'.repeat(64) },
+    { type: 'transport.open' },
+    { type: 'transport.taken_over' },
+  );
+  assert.equal(phaseOf(s), PHASE.TAKEN_OVER);
+  assert.equal(view(s).enabled, false);
+  assert.equal(view(s).status, 'Another phone took over. Re-save the phone token to reconnect.');
+
+  s = reduce(s, { type: 'visibility', visible: false });
+  s = reduce(s, { type: 'visibility', visible: true });
+  assert.equal(phaseOf(s), PHASE.TAKEN_OVER, 'visibility does not restart a displaced phone');
+
+  s = reduce(s, { type: 'token.set', token: '1'.repeat(64) });
+  assert.equal(phaseOf(s), PHASE.CONNECTING, 'saving the token is an explicit takeover action');
+});
+
 test('mac offline', () => {
   const s = apply(initialState(),
     { type: 'token.set', token: 'x' }, { type: 'transport.open' });

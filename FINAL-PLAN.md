@@ -176,7 +176,7 @@ PWA setup is deliberately small:
 3. Add the site to the Home Screen.
 4. Launch it from the Home Screen and keep it visible while sending clicks.
 
-The PWA token is its only saved setup. The native client stores the relay WSS URL plus `PHONE_TOKEN`; the token belongs in Keychain and must never enter a URL or log. A second authenticated phone client replaces the first because the product deliberately supports one live phone, so the PWA and native client are fallbacks rather than simultaneous relay sessions.
+The PWA token is its only saved setup. The native client stores the relay WSS URL plus `PHONE_TOKEN`; the token belongs in Keychain and must never enter a URL or log. A second authenticated phone client replaces the first because the product deliberately supports one live phone, so the PWA and native client are fallbacks rather than simultaneous relay sessions. The relay closes only the displaced phone with private WebSocket code `4004` and reason `another phone took over`. Both phone clients treat that close as terminal, show `Another phone took over`, and never auto-reconnect until the user explicitly takes control again: re-save the PWA token, or tap `Reconnect this phone` in the native client. Normal network closes retain automatic backoff.
 
 Production HTTPS is part of the working architecture, not a hardening project. Installable PWAs and Screen Wake Lock rely on a secure context, and an HTTPS page must use WSS. Wake Lock is best-effort: it prevents dimming while granted but does not guarantee foreground scheduling or keep the radio warm. For an installed iPhone Home Screen web app, require iOS/iPadOS 18.4 or newer before offering the Wake Lock toggle; older versions continue without it.
 
@@ -400,7 +400,7 @@ acceptedVia is oci or tailscale. macProcessingUs uses the Mac's monotonic clock 
 ### Routing rules
 
 - Exactly one authenticated phone socket and one authenticated Mac socket exist at the relay.
-- A newly authenticated same-role socket replaces the old socket.
+- A newly authenticated same-role socket replaces the old socket. A displaced phone receives private close code `4004` and must not auto-reconnect; Mac replacement retains its existing reconnectable close behavior.
 - The closing callback clears a role only if that closing socket is still the current owner.
 - Only the phone may send action.request.
 - Only the phone may send diagnostics.request or time.sync.request.
@@ -900,7 +900,8 @@ Cover:
 - upgrade path other than /ws is rejected;
 - hello timeout;
 - wrong token and wrong-role token;
-- same-role replacement;
+- phone replacement emits terminal close code `4004`, while Mac replacement retains its reconnectable close contract;
+- a displaced PWA remains stopped across reconnect timers, visibility changes, and network changes until explicit user action;
 - old-socket close cannot clear the replacement socket;
 - Mac state propagation;
 - Mac disconnect sets macOnline false;
@@ -1191,7 +1192,7 @@ While Clock check unavailable, keep the action button disabled, show the exact f
 
 PHONE_TOKEN is stored in localStorage for this personal app. Settings must show replace-token and clear-token actions without echoing the stored token. Clearing it immediately closes the socket and returns to missing-token state.
 
-The five-second keep-warm control exists only inside a Diagnostics section, defaults off, runs only while visible and authenticated, and never replaces the 20-second heartbeat. app.js changes the persisted preference and tells TransportController to update its cadence; app.js does not create a heartbeat timer.
+The five-second keep-warm control exists only inside a Diagnostics section, defaults off, runs only while visible and authenticated, and never replaces the 20-second heartbeat. app.js changes the persisted preference and tells TransportController to update its cadence; app.js does not create a heartbeat timer. TransportController treats close code `4004` as terminal `taken_over`, cancels heartbeat and reconnect ownership, and ignores automatic lifecycle reconnect requests. Re-saving the token is the explicit user action that clears this latch and reconnects.
 
 - [ ] **Step 6: Add installation assets and explicit install guidance**
 
@@ -2440,7 +2441,7 @@ This task is required before final handoff. It adds a native SwiftUI iPhone clie
 
 - [ ] **Step 1: Create the iOS target and configuration storage**
 
-Generate a SwiftUI iOS application and unit-test target from `ios/project.yml`. Store the relay WSS URL in app settings and `PHONE_TOKEN` in Keychain. Reject non-WSS public URLs, never place the token in a URL or log, and keep exactly one authenticated phone socket. A native client connection may replace the PWA connection under the relay's existing one-phone rule; it must not change that rule.
+Generate a SwiftUI iOS application and unit-test target from `ios/project.yml`. Store the relay WSS URL in app settings and `PHONE_TOKEN` in Keychain. Reject non-WSS public URLs, never place the token in a URL or log, and keep exactly one authenticated phone socket. A native client connection may replace the PWA connection under the relay's existing one-phone rule; it must not change that rule. Preserve the WebSocket close code through the transport port. Code `4004` enters terminal `Another phone took over` state with no backoff or automatic lifecycle reconnect until the user explicitly taps `Reconnect this phone` or saves configuration again.
 
 - [ ] **Step 2: Implement foreground volume-delta semantics**
 

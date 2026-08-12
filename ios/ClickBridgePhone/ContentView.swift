@@ -48,6 +48,9 @@ struct ContentView: View {
             if model.state.clock.status == .unavailable {
                 Button("Retry clock check") { model.retryClockCheck() }
             }
+            if model.state.phoneTakenOver {
+                Button("Reconnect this phone") { model.reconnectAfterTakeover() }
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel([model.state.primaryStatus.title, model.state.primaryStatus.detail]

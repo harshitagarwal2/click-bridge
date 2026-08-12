@@ -80,6 +80,37 @@ test('intentional hidden close cannot schedule a reconnect', () => {
   assert.equal(controller.state, 'suspended');
 });
 
+test('a displaced phone stays terminal until an explicit takeover action', () => {
+  const { controller, scheduler, sockets, statuses, authenticate } = harness();
+  authenticate();
+
+  sockets[0].serverClose(4004, 'another phone took over');
+
+  assert.equal(controller.ready, false);
+  assert.equal(controller.state, 'taken_over');
+  assert.equal(statuses.at(-1).reason, 'another_phone_took_over');
+  scheduler.advance(60_000);
+  assert.equal(sockets.length, 1, 'terminal takeover never auto-reconnects');
+
+  controller.connect();
+  assert.equal(sockets.length, 1, 'automatic lifecycle connect cannot restart takeover');
+
+  controller.resume();
+  assert.equal(sockets.length, 2, 'explicit user action may take control again');
+});
+
+test('the close frame owns takeover semantics even when an error event arrives first', () => {
+  const { controller, scheduler, sockets, authenticate } = harness();
+  authenticate();
+
+  sockets[0].onerror?.(new Event('error'));
+  sockets[0].serverClose(4004, 'another phone took over');
+
+  assert.equal(controller.state, 'taken_over');
+  scheduler.advance(60_000);
+  assert.equal(sockets.length, 1);
+});
+
 for (const [name, frame] of [
   ['binary', new Uint8Array([1, 2])],
   ['oversized', 'x'.repeat(4097)],

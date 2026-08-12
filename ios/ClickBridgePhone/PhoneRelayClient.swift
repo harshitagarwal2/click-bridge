@@ -11,6 +11,7 @@ enum PhoneConnectionState: Equatable, Sendable {
     case authenticating
     case authenticated
     case backoff
+    case takenOver
 }
 
 enum PhoneTransportEvent: Equatable, Sendable {
@@ -100,9 +101,13 @@ final class PhoneRelayClient: PhoneActionTransport {
             do { _ = try self.decoder.rejectBinary(data) }
             catch { self.fail(generation: expectedGeneration, socket: socket, reason: "binary_frame") }
         }
-        socket.onClose = { [weak self, weak socket] _ in
+        socket.onClose = { [weak self, weak socket] closure in
             guard let self, let socket else { return }
-            self.fail(generation: expectedGeneration, socket: socket, reason: "socket_closed")
+            if closure.code == PhoneProtocolV1.phoneTakenOverCloseCode {
+                self.phoneWasTakenOver(generation: expectedGeneration, socket: socket)
+            } else {
+                self.fail(generation: expectedGeneration, socket: socket, reason: "socket_closed")
+            }
         }
         socket.open(url: configuration.url)
     }
@@ -192,6 +197,12 @@ final class PhoneRelayClient: PhoneActionTransport {
         invalidateCurrentSocket(reason: reason, scheduleReconnect: true)
     }
 
+    private func phoneWasTakenOver(generation expectedGeneration: Int, socket: any PhoneWebSocket) {
+        guard owns(socket: socket, generation: expectedGeneration) else { return }
+        invalidateCurrentSocket(reason: "phone_taken_over", scheduleReconnect: false)
+        publishConnection(.takenOver)
+    }
+
     private func invalidateCurrentSocket(reason: String, scheduleReconnect: Bool) {
         let oldSocket = socket
         socket = nil
@@ -253,20 +264,52 @@ final class URLSessionPhoneWebSocketFactory: PhoneWebSocketFactory {
     func makeSocket() -> any PhoneWebSocket { URLSessionPhoneWebSocket() }
 }
 
+struct URLSessionPhoneWebSocketCloseArbiter {
+    private var delivered = false
+
+    mutating func receiveFailure(_ error: Error) -> PhoneWebSocketClosure? {
+        _ = error
+        // A receive callback can fail before URLSession delivers the peer's close code.
+        // The delegate callbacks below exclusively own terminal close delivery.
+        return nil
+    }
+
+    mutating func delegateClose(code: Int) -> PhoneWebSocketClosure? {
+        claim(.init(code: code, error: nil))
+    }
+
+    mutating func taskCompletion(error: Error?, closeCode: Int) -> PhoneWebSocketClosure? {
+        guard let error else { return nil }
+        return claim(.init(code: Self.applicationCloseCode(closeCode), error: error))
+    }
+
+    private static func applicationCloseCode(_ code: Int) -> Int? {
+        code >= 3_000 ? code : nil
+    }
+
+    private mutating func claim(_ closure: PhoneWebSocketClosure) -> PhoneWebSocketClosure? {
+        guard !delivered else { return nil }
+        delivered = true
+        return closure
+    }
+}
+
 @MainActor
 final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSocketDelegate {
     var onOpen: (@MainActor () -> Void)?
     var onText: (@MainActor (String) -> Void)?
     var onBinary: (@MainActor (Data) -> Void)?
-    var onClose: (@MainActor (Error?) -> Void)?
+    var onClose: (@MainActor (PhoneWebSocketClosure) -> Void)?
 
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var closeDelivered = false
+    private var closeArbiter = URLSessionPhoneWebSocketCloseArbiter()
 
     func open(url: URL) {
         close(code: .goingAway, reason: "replace")
         closeDelivered = false
+        closeArbiter = URLSessionPhoneWebSocketCloseArbiter()
         let session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
         let task = session.webSocketTask(with: url)
         self.session = session
@@ -277,10 +320,7 @@ final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSoc
 
     func send(text: String) throws {
         guard let task else { throw URLError(.notConnectedToInternet) }
-        task.send(.string(text)) { [weak self] error in
-            guard let error else { return }
-            Task { @MainActor in self?.deliverClose(error) }
-        }
+        task.send(.string(text)) { _ in }
     }
 
     func close(code: URLSessionWebSocketTask.CloseCode, reason: String) {
@@ -307,7 +347,26 @@ final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSoc
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
-        Task { @MainActor [weak self] in self?.deliverClose(nil) }
+        Task { @MainActor [weak self] in
+            guard let self, let closure = self.closeArbiter.delegateClose(code: closeCode.rawValue) else { return }
+            self.deliverClose(closure)
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let webSocketTask = task as? URLSessionWebSocketTask else { return }
+        Task { @MainActor [weak self] in
+            guard let self, self.task === webSocketTask,
+                  let closure = self.closeArbiter.taskCompletion(
+                    error: error,
+                    closeCode: webSocketTask.closeCode.rawValue
+                  ) else { return }
+            self.deliverClose(closure)
+        }
     }
 
     private func receiveNext(from expectedTask: URLSessionWebSocketTask) {
@@ -318,10 +377,10 @@ final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSoc
                 case .success(.string(let text)): self.onText?(text)
                 case .success(.data(let data)): self.onBinary?(data)
                 case .failure(let error):
-                    self.deliverClose(error)
+                    _ = self.closeArbiter.receiveFailure(error)
                     return
                 @unknown default:
-                    self.deliverClose(URLError(.cannotDecodeContentData))
+                    self.deliverClose(.init(code: nil, error: URLError(.cannotDecodeContentData)))
                     return
                 }
                 self.receiveNext(from: expectedTask)
@@ -329,9 +388,9 @@ final class URLSessionPhoneWebSocket: NSObject, PhoneWebSocket, URLSessionWebSoc
         }
     }
 
-    private func deliverClose(_ error: Error?) {
+    private func deliverClose(_ closure: PhoneWebSocketClosure) {
         guard !closeDelivered else { return }
         closeDelivered = true
-        onClose?(error)
+        onClose?(closure)
     }
 }
