@@ -136,3 +136,26 @@ test('eligibility timer completion renders and enables the scheduled action', as
   assert.equal(calls.recorded.length, 1);
   assert.equal(calls.recorded[0].sampleIndex, 1);
 });
+
+test('production transport-loss order records the in-flight measured action before suspension', async () => {
+  const { controller, scheduler, calls } = harness();
+  await controller.start({ runId: 'r', condition: 'c' });
+  for (let index = 0; index < 10; index += 1) {
+    controller.handleMetric({ type: 'activation', actionId: `w${index}` });
+    await controller.handleMetric({ type: 'terminal', actionId: `w${index}`, status: 'posted' });
+  }
+  scheduler.advance(2_000);
+  controller.handleMetric({ type: 'activation', actionId: 'measured', activationUnixMs: 123 });
+  controller.transportLost('hidden');
+  await controller.handleMetric({ type: 'terminal', actionId: 'measured', status: 'Unknown',
+    reason: 'hidden' });
+  assert.equal(calls.recorded.length, 1);
+  assert.equal(calls.recorded[0].sampleIndex, 1);
+  assert.equal(calls.recorded[0].activationUnixMs, 123);
+  assert.equal(calls.recorded[0].status, 'Unknown');
+  assert.equal(controller.drafts.has('measured'), false);
+  assert.equal(controller.sequence.terminals, 11);
+  assert.equal(controller.sequence.suspended, true);
+  assert.equal(controller.refreshRequired, true);
+  assert.equal(calls.refresh, 10, 'transport loss must not start another alignment request');
+});

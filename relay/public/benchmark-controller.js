@@ -80,12 +80,12 @@ export class BenchmarkController {
     this.sequence.terminal();
     this.idleStartedMonotonicMs = this.monotonicNow();
     this.#scheduleEligibilityRender();
+    if (this.sequence.suspended) return;
     await this.#refresh({ force: this.refreshRequired, resumeOnSuccess: this.sequence.suspended });
   }
 
   transportLost(reason) {
     this.requests.cancelAll(reason);
-    this.drafts.clear();
     if (!this.active) return;
     this.refreshRequired = true;
     this.sequence.suspend();
