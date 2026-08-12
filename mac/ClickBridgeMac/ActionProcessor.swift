@@ -100,6 +100,9 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
         guard currentMilliseconds <= request.expiresAtUnixMs + skewToleranceMilliseconds else {
             return rejected(request.actionId, .expired, ingress, started)
         }
+        guard trustedLocalRequest || authorization == activeAuthorizationLease else {
+            return rejected(request.actionId, .remoteDisabled, ingress, started)
+        }
 
         pruneExpired(nowMilliseconds: currentMilliseconds)
         let fingerprint = request.fingerprint
@@ -127,7 +130,7 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
             result = rejected(request.actionId, .remoteDisabled, ingress, started)
         } else if !permission.isGranted() {
             result = rejected(request.actionId, .permissionRequired, ingress, started)
-        } else if trustedLocalRequest || authorization == activeAuthorizationLease {
+        } else {
             let postOutcome = poster.postLeftClickAtCurrentCursor()
             switch postOutcome {
             case .posted(let timestamp):
@@ -137,10 +140,6 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
             case .creationFailed:
                 result = rejected(request.actionId, .eventCreationFailed, ingress, started)
             }
-        } else {
-            entries.removeValue(forKey: request.actionId)
-            order.removeAll { $0 == request.actionId }
-            return rejected(request.actionId, .remoteDisabled, ingress, started)
         }
 
         entries[request.actionId] = .completed(fingerprint: fingerprint,

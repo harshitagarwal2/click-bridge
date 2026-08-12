@@ -344,6 +344,52 @@ final class ActionProcessorTests: XCTestCase {
         XCTAssertEqual(poster.callCount(), 1)
     }
 
+    func testStaleLeaseCannotCacheRemoteDisabledBeforeCurrentRetry() async {
+        let poster = LockedPoster()
+        let subject = processor(poster: poster)
+        let oldLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 1, connectionGeneration: 1)
+        )
+        let newLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 2, connectionGeneration: 2)
+        )
+        let action = request(id: "stale-while-disabled")
+
+        let stale = await subject.receive(action, via: .oci, authorization: oldLease)
+        await subject.setRemoteEnabled(true)
+        let current = await subject.receive(action, via: .oci, authorization: newLease)
+
+        XCTAssertEqual(stale.reason, .remoteDisabled)
+        XCTAssertEqual(current.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+        let tracked = await subject.trackedActionCount()
+        XCTAssertEqual(tracked, 1)
+    }
+
+    func testStaleLeaseCannotCachePermissionFailureBeforeCurrentRetry() async {
+        let poster = LockedPoster()
+        let permission = LockedPermission(false)
+        let subject = processor(poster: poster, permission: permission)
+        await subject.setRemoteEnabled(true)
+        let oldLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 1, connectionGeneration: 1)
+        )
+        let newLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 2, connectionGeneration: 2)
+        )
+        let action = request(id: "stale-without-permission")
+
+        let stale = await subject.receive(action, via: .oci, authorization: oldLease)
+        permission.set(true)
+        let current = await subject.receive(action, via: .oci, authorization: newLease)
+
+        XCTAssertEqual(stale.reason, .remoteDisabled)
+        XCTAssertEqual(current.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+        let tracked = await subject.trackedActionCount()
+        XCTAssertEqual(tracked, 1)
+    }
+
     func testDelayedOlderActivationCannotReplaceNewerLease() async {
         let poster = LockedPoster()
         let subject = processor(poster: poster)
