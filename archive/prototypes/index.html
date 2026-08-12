@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#0b0d10"/>
+<title>Click Bridge</title>
+<style>
+  :root{--bg:#0b0d10;--panel:#14181d;--ink:#e8edf2;--muted:#6b7685;--live:#35d07f;--dead:#e0524a;--press:#1f6feb}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font:400 17px/1.4 -apple-system,system-ui,sans-serif;
+    display:flex;flex-direction:column;touch-action:manipulation;
+    padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));gap:16px}
+  header{display:flex;align-items:center;justify-content:space-between}
+  .status{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:14px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--dead);transition:background .15s}
+  .dot.live{background:var(--live)}
+  .gear{background:none;border:0;color:var(--muted);font-size:20px;padding:6px;cursor:pointer}
+  main{flex:1;display:flex;align-items:center;justify-content:center}
+  .trigger{
+    width:min(74vw,340px);aspect-ratio:1;border:0;border-radius:28px;
+    background:var(--panel);color:var(--ink);font-size:28px;font-weight:600;letter-spacing:.02em;
+    box-shadow:inset 0 0 0 1px #232a31;touch-action:none;user-select:none;
+    transition:transform .04s,background .04s}
+  .trigger.hit{transform:scale(.96);background:var(--press)}
+  .trigger:disabled{opacity:.35}
+  .readout{text-align:center;color:var(--muted);font-size:14px;min-height:20px;font-variant-numeric:tabular-nums}
+  dialog{border:0;border-radius:16px;background:var(--panel);color:var(--ink);width:min(92vw,420px);padding:20px}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+  input{width:100%;padding:11px;border-radius:10px;border:1px solid #2a323a;
+    background:#0d1114;color:var(--ink);font-size:16px}
+  .row{display:flex;gap:10px;margin-top:18px}
+  .row button{flex:1;padding:12px;border-radius:10px;border:0;font-size:16px;cursor:pointer}
+  .save{background:var(--press);color:#fff}
+  .cancel{background:#222a31;color:var(--ink)}
+  @media(prefers-reduced-motion:reduce){.trigger,.dot{transition:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="status"><span class="dot" id="dot"></span><span id="st">connecting…</span></div>
+  <button class="gear" id="gear" aria-label="Settings">⚙</button>
+</header>
+<main><button class="trigger" id="btn" disabled>TAP</button></main>
+<div class="readout" id="ro"></div>
+
+<dialog id="dlg">
+  <strong>Connection</strong>
+  <label for="ri">Relay URL</label>
+  <input id="ri" placeholder="wss://your-relay.fly.dev" autocapitalize="off" spellcheck="false"/>
+  <label for="ti">Shared secret (AUTH_TOKEN)</label>
+  <input id="ti" placeholder="your secret" autocapitalize="off" spellcheck="false"/>
+  <p style="font-size:13px;color:var(--muted);margin:12px 0 0">
+    Tip: pick the relay region closest to where you physically are for lowest latency.
+  </p>
+  <div class="row">
+    <button class="cancel" id="cls">Cancel</button>
+    <button class="save"   id="sav">Save &amp; connect</button>
+  </div>
+</dialog>
+
+<script>
+const $=id=>document.getElementById(id);
+const dot=$("dot"),st=$("st"),btn=$("btn"),ro=$("ro"),dlg=$("dlg");
+
+const cfg={
+  relay:localStorage.getItem("cb_relay")||"",
+  token:localStorage.getItem("cb_token")||""
+};
+let ws=null, retry=400, warm=null;
+
+function live(on,txt){ dot.classList.toggle("live",on); st.textContent=txt; btn.disabled=!on; }
+
+function startWarm(){
+  clearInterval(warm);
+  // 1.5-second keep-warm: prevents WiFi radio from sleeping between taps.
+  // Without this, the radio can take 50–150 ms to wake on the first tap.
+  warm=setInterval(()=>{ if(ws?.readyState===1) ws.send('{"t":"p"}'); },1500);
+}
+
+function connect(){
+  if(!cfg.relay||!cfg.token){ live(false,"needs setup"); openDlg(); return; }
+  let url;
+  try{
+    const u=new URL(cfg.relay);
+    u.searchParams.set("token",cfg.token);
+    u.searchParams.set("role","sender");
+    url=u.toString();
+  }catch{ live(false,"bad URL"); return; }
+
+  live(false,"connecting…");
+  ws=new WebSocket(url);
+  ws.onopen=()=>{ retry=400; live(true,"connected"); startWarm(); };
+  ws.onclose=()=>{ clearInterval(warm); live(false,"reconnecting…"); setTimeout(connect,retry); retry=Math.min(retry*2,6000); };
+  ws.onerror=()=>{};
+  ws.onmessage=e=>{
+    let m; try{m=JSON.parse(e.data)}catch{return}
+    if(m.t==="a"){
+      ro.textContent=m.n>0
+        ?(m.at?`${Date.now()-m.at} ms · ${m.n} receiver${m.n>1?"s":""}`:`delivered to ${m.n}`)
+        :"no receiver connected";
+    }
+  };
+}
+
+// Fire on pointerdown — the instant the finger lands, not on release.
+// Saves 10–80 ms compared to the 'click' event which waits for touch end.
+btn.addEventListener("pointerdown",e=>{
+  e.preventDefault();
+  if(!ws||ws.readyState!==1) return;
+  const at=Date.now();
+  // Bare "c" would be smallest payload; use minimal JSON so ack can echo timestamp.
+  ws.send(`{"t":"c","at":${at}}`);
+  btn.classList.add("hit");
+  if(navigator.vibrate) navigator.vibrate(8);
+  ro.textContent="sent…";
+},{passive:false});
+btn.addEventListener("pointerup",  ()=>btn.classList.remove("hit"));
+btn.addEventListener("pointercancel",()=>btn.classList.remove("hit"));
+
+function openDlg(){ $("ri").value=cfg.relay; $("ti").value=cfg.token; dlg.showModal(); }
+$("gear").onclick=openDlg;
+$("cls").onclick=()=>dlg.close();
+$("sav").onclick=()=>{
+  cfg.relay=$("ri").value.trim(); cfg.token=$("ti").value.trim();
+  localStorage.setItem("cb_relay",cfg.relay); localStorage.setItem("cb_token",cfg.token);
+  dlg.close(); if(ws) ws.close(); connect();
+};
+
+// Screen wake lock: keeps display on so app stays foregrounded (requires https).
+async function keepAwake(){ try{ await navigator.wakeLock?.request("screen"); }catch{} }
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible"){ keepAwake(); if(!ws||ws.readyState>1) connect(); } });
+keepAwake();
+
+connect();
+</script>
+</body>
+</html>

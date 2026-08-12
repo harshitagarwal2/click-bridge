@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0d10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Click Bridge">
+<title>Click Bridge</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="icon" href="/icons/icon-192.png">
+<!-- No inline script or style anywhere: the relay serves a CSP with
+     script-src 'self' and style-src 'self', and Caddy passes it through
+     unchanged. Anything inline would break in production but not locally. -->
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="bar">
+  <span class="status">
+    <span id="dot" class="dot" aria-hidden="true"></span>
+    <span id="conn" class="conn">Starting…</span>
+  </span>
+  <button id="settings-open" class="icon-btn" type="button" aria-label="Settings">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <path fill="currentColor" d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8m8.9 4a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L16 3H8l-.4 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2.4l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L8 21h8l.4-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.06-.4.1-.8.1-1.2"/>
+    </svg>
+  </button>
+</header>
+
+<main class="stage">
+  <button id="click-button" class="click" type="button" disabled>CLICK</button>
+  <p class="hint">Clicks at the Mac's current cursor</p>
+  <p id="status" class="result" role="status" aria-live="polite">Starting…</p>
+</main>
+
+<dialog id="settings" class="sheet" aria-labelledby="settings-title">
+  <form method="dialog" class="sheet-form">
+    <h2 id="settings-title">Settings</h2>
+
+    <label class="field" for="token-input">Phone token</label>
+    <input id="token-input" class="input" type="text" inputmode="latin"
+           autocomplete="off" autocapitalize="none" spellcheck="false"
+           placeholder="64 hex characters">
+    <p id="token-state" class="muted">No token stored.</p>
+
+    <div class="row">
+      <button id="token-save" class="btn primary" type="button">Save</button>
+      <button id="token-clear" class="btn danger" type="button">Clear</button>
+    </div>
+
+    <h3 class="sub">Diagnostics</h3>
+    <label class="check">
+      <input id="keepwarm" type="checkbox">
+      <span>Keep-warm ping (5s) — experimental, off by default</span>
+    </label>
+    <p id="diag" class="muted mono">—</p>
+
+    <div class="row end">
+      <button class="btn" value="close" type="submit">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# Exactly one relay replica. Socket state is in memory, so a second replica
+# would let the phone and Mac land on different processes and never meet.
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/oci/Dockerfile
+    image: click-bridge-relay:${CLICK_BRIDGE_RELEASE}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+    # No published ports: reachable only on the private compose network.
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - relay
+    environment:
+      CLICK_BRIDGE_DOMAIN: ${CLICK_BRIDGE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
