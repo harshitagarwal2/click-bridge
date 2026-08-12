@@ -25,6 +25,30 @@ enum PhoneSettingsStorageError: LocalizedError {
     }
 }
 
+enum PhonePairingCredentialStorageError: LocalizedError {
+    case invalidState
+
+    var errorDescription: String? { "The saved pairing state changed. Start pairing again." }
+}
+
+struct PhonePairingCredential: Codable, Equatable, Sendable {
+    let token: String
+    let version: Int
+}
+
+private struct StoredPhoneCredential: Codable, Equatable {
+    enum Provenance: String, Codable { case unknown, relay }
+    let token: String
+    let version: Int?
+    let provenance: Provenance
+}
+
+private struct StoredPhoneCredentialRecord: Codable, Equatable {
+    let schema: Int
+    let active: StoredPhoneCredential?
+    let pending: StoredPhoneCredential?
+}
+
 struct UnavailablePhoneSecretStore: SecretStoring {
     func read(account: String) throws -> String? {
         throw PhoneSettingsStorageError.unavailable
@@ -84,7 +108,9 @@ final class PhoneSettingsStore {
         self.secrets = secrets
         relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
         do {
-            hasToken = try secrets.read(account: Self.phoneTokenAccount) != nil
+            hasToken = try Self.decodeRecord(
+                secrets.read(account: Self.phoneTokenAccount)
+            ).active != nil
         } catch {
             hasToken = false
             throw PhoneSettingsStorageError.unavailable
@@ -105,17 +131,138 @@ final class PhoneSettingsStore {
         storageError = PhoneSettingsStorageError.unavailable.localizedDescription
     }
 
-    func phoneToken() throws -> String? { try perform { try secrets.read(account: Self.phoneTokenAccount) } }
+    func phoneToken() throws -> String? { try readRecord().active?.token }
 
     func savePhoneToken(_ token: String) throws {
         try RelayConfiguration.validateToken(token)
-        try perform { try secrets.write(token, account: Self.phoneTokenAccount) }
+        try writeRecord(.init(
+            schema: 1,
+            active: .init(token: token, version: nil, provenance: .unknown),
+            pending: nil
+        ))
         hasToken = true
     }
 
     func clearPhoneToken() throws {
         try perform { try secrets.delete(account: Self.phoneTokenAccount) }
         hasToken = false
+    }
+
+    func activePairingCredential() throws -> PhonePairingCredential? {
+        let active = try readRecord().active
+        guard active?.provenance == .relay, let token = active?.token, let version = active?.version else {
+            return nil
+        }
+        return .init(token: token, version: version)
+    }
+
+    func pendingPairingCredential() throws -> PhonePairingCredential? {
+        let pending = try readRecord().pending
+        guard pending?.provenance == .relay, let token = pending?.token, let version = pending?.version else {
+            return nil
+        }
+        return .init(token: token, version: version)
+    }
+
+    func stagePairingCredential(_ credential: PhonePairingCredential) throws {
+        try RelayConfiguration.validateToken(credential.token)
+        guard credential.version > 0, credential.version <= 9_007_199_254_740_991 else {
+            throw PhonePairingCredentialStorageError.invalidState
+        }
+        let current = try readRecord()
+        guard current.pending == nil else { throw PhonePairingCredentialStorageError.invalidState }
+        if let activeVersion = current.active?.version, current.active?.provenance == .relay {
+            guard credential.version == activeVersion + 1 else {
+                throw PhonePairingCredentialStorageError.invalidState
+            }
+        } else if current.active == nil {
+            guard credential.version == 1 else { throw PhonePairingCredentialStorageError.invalidState }
+        } else {
+            throw PhonePairingCredentialStorageError.invalidState
+        }
+        try writeRecord(.init(
+            schema: 1,
+            active: current.active,
+            pending: .init(token: credential.token, version: credential.version, provenance: .relay)
+        ))
+    }
+
+    func promotePairingCredential(_ expected: PhonePairingCredential) throws {
+        let current = try readRecord()
+        let pending = current.pending
+        guard pending?.provenance == .relay,
+              pending?.token == expected.token,
+              pending?.version == expected.version else {
+            throw PhonePairingCredentialStorageError.invalidState
+        }
+        try writeRecord(.init(schema: 1, active: pending, pending: nil))
+        hasToken = true
+    }
+
+    func discardPairingCredential(_ expected: PhonePairingCredential) throws {
+        let current = try readRecord()
+        guard current.pending?.token == expected.token,
+              current.pending?.version == expected.version else {
+            throw PhonePairingCredentialStorageError.invalidState
+        }
+        try writeRecord(.init(schema: 1, active: current.active, pending: nil))
+    }
+
+    private func readRecord() throws -> StoredPhoneCredentialRecord {
+        try perform {
+            try Self.decodeRecord(secrets.read(account: Self.phoneTokenAccount))
+        }
+    }
+
+    private static func decodeRecord(_ raw: String?) throws -> StoredPhoneCredentialRecord {
+        guard let raw else { return .init(schema: 1, active: nil, pending: nil) }
+        if (try? RelayConfiguration.validateToken(raw)) != nil {
+            return .init(
+                schema: 1,
+                active: .init(token: raw, version: nil, provenance: .unknown),
+                pending: nil
+            )
+        }
+        guard let data = raw.data(using: .utf8),
+              let record = try? JSONDecoder().decode(StoredPhoneCredentialRecord.self, from: data),
+              record.schema == 1,
+              validRecord(record) else {
+            throw PhoneSettingsStorageError.unavailable
+        }
+        return record
+    }
+
+    private func writeRecord(_ record: StoredPhoneCredentialRecord) throws {
+        try perform {
+            let data = try JSONEncoder().encode(record)
+            guard let value = String(data: data, encoding: .utf8) else {
+                throw PhoneSettingsStorageError.unavailable
+            }
+            try secrets.write(value, account: Self.phoneTokenAccount)
+        }
+    }
+
+    private static func valid(_ slot: StoredPhoneCredential?) -> Bool {
+        guard let slot else { return true }
+        guard (try? RelayConfiguration.validateToken(slot.token)) != nil else { return false }
+        switch slot.provenance {
+        case .unknown: return slot.version == nil
+        case .relay:
+            return slot.version.map { $0 > 0 && $0 <= 9_007_199_254_740_991 } == true
+        }
+    }
+
+    private static func validRecord(_ record: StoredPhoneCredentialRecord) -> Bool {
+        guard valid(record.active), valid(record.pending) else { return false }
+        guard let pending = record.pending else { return true }
+        if let active = record.active {
+            guard active.provenance == .relay,
+                  let activeVersion = active.version,
+                  pending.version == activeVersion + 1 else { return false }
+        } else {
+            guard pending.version == 1 else { return false }
+        }
+        return pending.provenance == .relay
     }
 
     private func perform<T>(_ work: () throws -> T) throws -> T {

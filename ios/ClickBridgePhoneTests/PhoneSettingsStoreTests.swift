@@ -40,6 +40,79 @@ final class PhoneSettingsStoreTests: XCTestCase {
         XCTAssertNil(try store.phoneToken())
     }
 
+    func testPairingCredentialIsStagedBeforePromotionAndPromotionUsesExactSlot() throws {
+        let secrets = TestSecretStore()
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+        let pending = PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+
+        try store.stagePairingCredential(pending)
+
+        XCTAssertNil(try store.phoneToken())
+        XCTAssertEqual(try store.pendingPairingCredential(), pending)
+        let reopened = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+        XCTAssertFalse(reopened.hasToken)
+        XCTAssertThrowsError(try store.promotePairingCredential(
+            PhonePairingCredential(token: String(repeating: "c", count: 64), version: 1)
+        ))
+        try store.promotePairingCredential(pending)
+        XCTAssertEqual(try store.phoneToken(), pending.token)
+        XCTAssertNil(try store.pendingPairingCredential())
+    }
+
+    func testLegacyRawTokenMigratesWithoutBecomingRelayAuthoritative() throws {
+        let secrets = TestSecretStore()
+        secrets.value = token
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+
+        XCTAssertEqual(try store.phoneToken(), token)
+        XCTAssertNil(try store.activePairingCredential())
+        XCTAssertThrowsError(try store.stagePairingCredential(
+            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 1)
+        ))
+    }
+
+    func testFailedPairingRecordWriteLeavesPriorCredentialReadable() throws {
+        let secrets = TestSecretStore()
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+        let active = PhonePairingCredential(token: token, version: 1)
+        try store.stagePairingCredential(active)
+        try store.promotePairingCredential(active)
+        secrets.writeError = NSError(domain: "secret-value", code: 1)
+
+        XCTAssertThrowsError(try store.stagePairingCredential(
+            PhonePairingCredential(token: String(repeating: "b", count: 64), version: 2)
+        ))
+        XCTAssertEqual(try store.phoneToken(), token)
+        XCTAssertEqual(try store.activePairingCredential(), active)
+        XCTAssertNil(try store.pendingPairingCredential())
+    }
+
+    func testCorruptSkippedPairingVersionFailsClosedWithoutOverwritingKeychain() {
+        let secrets = TestSecretStore()
+        let active = String(repeating: "a", count: 64)
+        let pending = String(repeating: "b", count: 64)
+        let raw = #"{"schema":1,"active":{"token":"\#(active)","version":1,"provenance":"relay"},"pending":{"token":"\#(pending)","version":3,"provenance":"relay"}}"#
+        secrets.value = raw
+
+        XCTAssertThrowsError(try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        ))
+        XCTAssertEqual(secrets.value, raw)
+    }
+
     func testStorageFailureIsRedacted() throws {
         let supplied = token
         let secrets = TestSecretStore(writeError: NSError(domain: supplied, code: 1))
@@ -94,9 +167,9 @@ final class PhoneSettingsStoreTests: XCTestCase {
 
 private final class TestSecretStore: SecretStoring, @unchecked Sendable {
     var value: String?
-    let readError: Error?
-    let writeError: Error?
-    let deleteError: Error?
+    var readError: Error?
+    var writeError: Error?
+    var deleteError: Error?
     init(readError: Error? = nil, writeError: Error? = nil, deleteError: Error? = nil) {
         self.readError = readError
         self.writeError = writeError
