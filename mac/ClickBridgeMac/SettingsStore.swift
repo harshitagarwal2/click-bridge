@@ -42,8 +42,7 @@ final class SettingsStore: ObservableObject {
         self.secrets = secrets
         relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
         remoteEnabled = defaults.object(forKey: Self.remoteEnabledKey) as? Bool ?? false
-        do { hasToken = try secrets.read(account: Self.macTokenAccount)?.isEmpty == false }
-        catch { throw error }
+        hasToken = try secrets.read(account: Self.macTokenAccount)?.isEmpty == false
     }
 
     init(defaults: UserDefaults = .standard,
