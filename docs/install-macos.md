@@ -132,17 +132,65 @@ validate_secret_file "$SECRET_BACKUP"
 cmp -s "$SECRET_FILE" "$SECRET_BACKUP"
 ```
 
-Follow only the generation and VM-install commands in
-[OCI deployment step 7](oci-deployment.md#7-install-the-one-shared-role-token-environment);
-do not update either client yet. Keep the same interactive Mac shell open for
-the entire rotation. In that shell, run the next block directly, not in a
-subshell or standalone script. It validates the protected local transfer file,
-registers cleanup for shell exit and interruption, then validates both VM files
-and the immutable release before recreating the relay:
+Do not use the fixed transfer-file commands in the general OCI installation
+guide for rotation. Keep one interactive Mac shell open for the entire
+rotation and run the next block directly in that shell, not in a subshell or
+standalone script. It registers cleanup before generating either token, creates
+the transfer file exclusively inside a private random directory, validates it,
+uses a random remote staging file, and validates the VM files and immutable
+release before recreating the relay. Replace only the two explicit operator
+values before running it:
 
 ```bash
 set -Eeuo pipefail
-LOCAL_SECRET_FILE=/private/tmp/click-bridge-secrets.env
+export OCI_SSH_TARGET='opc@146.235.216.172'
+export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
+ROTATION_SECRET_DIR=''
+LOCAL_SECRET_FILE=''
+REMOTE_SECRET_FILE=''
+cleanup_local_rotation_secrets() {
+  local status=$?
+  trap - EXIT ERR HUP INT TERM
+  unset PHONE_TOKEN MAC_TOKEN
+  if [[ -n "${REMOTE_SECRET_FILE:-}" ]]; then
+    if ! ssh "$OCI_SSH_TARGET" "rm -f -- '$REMOTE_SECRET_FILE'"; then
+      status=1
+    fi
+  fi
+  if [[ -n "${LOCAL_SECRET_FILE:-}" ]]; then
+    if ! rm -f -- "$LOCAL_SECRET_FILE"; then
+      status=1
+    fi
+  fi
+  if [[ -n "${ROTATION_SECRET_DIR:-}" ]]; then
+    if ! rmdir -- "$ROTATION_SECRET_DIR"; then
+      status=1
+    fi
+  fi
+  return "$status"
+}
+trap cleanup_local_rotation_secrets EXIT
+trap 'status=$?; exit "$status"' ERR
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+test -n "$OCI_SSH_TARGET"
+ROTATION_SECRET_DIR=$(mktemp -d /private/tmp/click-bridge-rotation.XXXXXX)
+test ! -L "$ROTATION_SECRET_DIR"
+test "$(stat -f '%Lp' "$ROTATION_SECRET_DIR")" = 700
+LOCAL_SECRET_FILE="$ROTATION_SECRET_DIR/secrets.env"
+(umask 077; set -C; : > "$LOCAL_SECRET_FILE")
+test -f "$LOCAL_SECRET_FILE"
+test ! -L "$LOCAL_SECRET_FILE"
+test "$(stat -f '%Lp' "$LOCAL_SECRET_FILE")" = 600
+PHONE_TOKEN=$(openssl rand -hex 32)
+MAC_TOKEN=$(openssl rand -hex 32)
+test "$PHONE_TOKEN" != "$MAC_TOKEN"
+{
+  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
+  printf 'PHONE_TOKEN=%s\n' "$PHONE_TOKEN"
+  printf 'MAC_TOKEN=%s\n' "$MAC_TOKEN"
+} > "$LOCAL_SECRET_FILE"
 validate_local_secret_file() {
   local file=$1 phone_token mac_token domain_pattern
   test -f "$file"
@@ -162,26 +210,31 @@ validate_local_secret_file() {
   mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
   test "$phone_token" != "$mac_token"
 }
-cleanup_local_rotation_secrets() {
+validate_local_secret_file "$LOCAL_SECRET_FILE"
+remote_secret_candidate=$(
+  ssh "$OCI_SSH_TARGET" \
+    'umask 077; mktemp /tmp/click-bridge-secrets.XXXXXX'
+)
+[[ "$remote_secret_candidate" =~ ^/tmp/click-bridge-secrets\.[A-Za-z0-9]+$ ]]
+REMOTE_SECRET_FILE=$remote_secret_candidate
+unset remote_secret_candidate
+scp "$LOCAL_SECRET_FILE" "$OCI_SSH_TARGET:$REMOTE_SECRET_FILE"
+ssh "$OCI_SSH_TARGET" 'bash -se' -- "$REMOTE_SECRET_FILE" <<'REMOTE'
+set -Eeuo pipefail
+REMOTE_SECRET_FILE=$1
+SECRET_FILE=/opt/click-bridge/shared/secrets.env
+SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
+cleanup_remote_secret() {
   local status=$?
-  if ! rm -f -- "$LOCAL_SECRET_FILE"; then
-    printf 'Could not remove %s\n' "$LOCAL_SECRET_FILE" >&2
-    status=1
-  fi
-  unset PHONE_TOKEN MAC_TOKEN
-  trap - EXIT
+  trap - EXIT ERR HUP INT TERM
+  rm -f -- "$REMOTE_SECRET_FILE" || status=1
   return "$status"
 }
-validate_local_secret_file "$LOCAL_SECRET_FILE"
-trap cleanup_local_rotation_secrets EXIT
+trap cleanup_remote_secret EXIT
+trap 'status=$?; exit "$status"' ERR
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-test -n "${OCI_SSH_TARGET:-}"
-ssh "$OCI_SSH_TARGET" 'bash -se' <<'REMOTE'
-set -Eeuo pipefail
-SECRET_FILE=/opt/click-bridge/shared/secrets.env
-SECRET_BACKUP=/opt/click-bridge/shared/secrets.env.pre-rotation
 validate_secret_file() {
   local file=$1 phone_token mac_token domain_pattern
   test -f "$file"
@@ -201,15 +254,20 @@ validate_secret_file() {
   mac_token=$(sed -n 's/^MAC_TOKEN=//p' "$file")
   test "$phone_token" != "$mac_token"
 }
+validate_secret_file "$REMOTE_SECRET_FILE"
 validate_secret_file "$SECRET_FILE"
 validate_secret_file "$SECRET_BACKUP"
-if cmp -s "$SECRET_FILE" "$SECRET_BACKUP"; then
+cmp -s "$SECRET_FILE" "$SECRET_BACKUP"
+if cmp -s "$REMOTE_SECRET_FILE" "$SECRET_BACKUP"; then
   printf 'Replacement tokens match the rollback copy; refusing rotation.\n' >&2
   exit 1
 else
   CMP_STATUS=$?
 fi
 test "$CMP_STATUS" = 1
+install -m 0600 "$REMOTE_SECRET_FILE" "$SECRET_FILE"
+validate_secret_file "$SECRET_FILE"
+cmp -s "$REMOTE_SECRET_FILE" "$SECRET_FILE"
 export ACTIVE_RELEASE="$(tr -d '\n' < /opt/click-bridge/current-release)"
 [[ "$ACTIVE_RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || exit 1
 RELEASE_DIR="/opt/click-bridge/releases/$ACTIVE_RELEASE"
@@ -231,31 +289,25 @@ docker compose -p oci \
   -f "$COMPOSE_FILE" \
   ps
 REMOTE
+REMOTE_SECRET_FILE=''
 ```
 
 A plain `docker compose restart` is not a rotation: it preserves the old
 container environment. Run the complete external HTTPS/WSS smoke in
 [OCI deployment step 10](oci-deployment.md#10-prove-the-public-application-before-marking-it-current)
-with the new protected transfer file. Only after that succeeds, save the new
-`MAC_TOKEN` in the receiver and the new `PHONE_TOKEN` in the chosen phone client.
-Confirm the Mac is **Connected** and the phone returns to **Ready**, then remove
-the VM rollback copy and the local transfer file without reading either. Run
-this in the same Mac shell; its final assertions prove the token variables are
-no longer exported or set:
+with `"$LOCAL_SECRET_FILE"` substituted for that guide's fixed-path transfer
+file. Only after smoke succeeds, save the new `MAC_TOKEN` in the receiver and
+the new `PHONE_TOKEN` in the chosen phone client. Confirm the Mac is
+**Connected** and the phone returns to **Ready**, then remove the VM rollback
+copy and the private local transfer directory without reading either. Run this
+in the same Mac shell; its final assertions prove the token variables are no
+longer exported or set:
 
 ```bash
 set -Eeuo pipefail
-LOCAL_SECRET_FILE=/private/tmp/click-bridge-secrets.env
-cleanup_local_rotation_secrets() {
-  local status=$?
-  if ! rm -f -- "$LOCAL_SECRET_FILE"; then
-    printf 'Could not remove %s\n' "$LOCAL_SECRET_FILE" >&2
-    status=1
-  fi
-  unset PHONE_TOKEN MAC_TOKEN
-  trap - EXIT
-  return "$status"
-}
+declare -F cleanup_local_rotation_secrets >/dev/null
+test -n "${ROTATION_SECRET_DIR:-}"
+test -n "${LOCAL_SECRET_FILE:-}"
 test -n "${OCI_SSH_TARGET:-}"
 ssh "$OCI_SSH_TARGET" 'bash -se' <<'REMOTE'
 set -Eeuo pipefail
@@ -286,11 +338,12 @@ rm -f -- "$SECRET_BACKUP"
 test ! -e "$SECRET_BACKUP"
 REMOTE
 cleanup_local_rotation_secrets
-trap - HUP INT TERM
+trap - EXIT ERR HUP INT TERM
 test ! -e "$LOCAL_SECRET_FILE"
+test ! -e "$ROTATION_SECRET_DIR"
 test -z "${PHONE_TOKEN+x}"
 test -z "${MAC_TOKEN+x}"
-unset LOCAL_SECRET_FILE
+unset ROTATION_SECRET_DIR LOCAL_SECRET_FILE REMOTE_SECRET_FILE
 ```
 
 If recreation or public smoke fails, do not update the clients. Restore and
@@ -380,7 +433,9 @@ docker compose -p oci \
 Repeat the external smoke. Keep the rollback copy until recovery passes; remove
 it and the local transfer file with the cleanup block above only after the old
 clients are working again. Run that block in the original Mac shell so its trap
-is disarmed and `PHONE_TOKEN` and `MAC_TOKEN` are unset on the rollback path too.
+is disarmed, its private directory is removed, and `PHONE_TOKEN` and `MAC_TOKEN`
+are unset on the rollback path too. Exiting or interrupting that shell earlier
+runs the same cleanup automatically.
 
 ## Recover safely
 
