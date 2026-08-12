@@ -78,6 +78,27 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertTrue(harness.actions.hasPendingAction)
     }
 
+    func testPhoneTakeoverRemainsTerminalAcrossLifecycleUntilExplicitReconnect() throws {
+        let harness = try Harness()
+        harness.model.scenePhaseChanged(.active)
+        let firstConnectionCount = harness.transport.configurations.count
+
+        harness.transport.emit(.connection(generation: harness.transport.generation, state: .takenOver))
+
+        XCTAssertEqual(harness.model.state.primaryStatus, .anotherPhoneTookOver)
+        XCTAssertFalse(harness.model.canTriggerClick)
+
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount)
+        XCTAssertEqual(harness.model.state.primaryStatus, .anotherPhoneTookOver)
+
+        harness.model.reconnectAfterTakeover()
+
+        XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount + 1)
+        XCTAssertEqual(harness.model.state.primaryStatus, .notConnected)
+    }
+
     func testOnScreenClickUsesCurrentReadinessWithoutChangingVolumeObservation() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.active)

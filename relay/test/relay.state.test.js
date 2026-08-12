@@ -75,7 +75,7 @@ const posted = (actionId, now) => ({
   mouseDownPostedUnixMs: now,
 });
 
-test('old socket cannot clear replacement and domain emits a close command', () => {
+test('a displaced phone receives the terminal takeover close without clearing its replacement', () => {
   const h = harness();
   const first = h.connection('phone-a');
   const replacement = h.connection('phone-b');
@@ -85,12 +85,26 @@ test('old socket cannot clear replacement and domain emits a close command', () 
 
   assert.deepEqual(h.events.at(-1), {
     connection: first,
-    event: { kind: 'close', code: 4000, reason: 'replaced' },
+    event: { kind: 'close', code: 4004, reason: 'another phone took over' },
   });
   assert.equal(h.state.detachIfCurrent('phone', first), false);
   assert.equal(h.state.phone, replacement);
   assert.equal(h.state.detachIfCurrent('phone', replacement), true);
   assert.equal(h.state.phone, null);
+});
+
+test('Mac replacement retains the existing reconnectable close contract', () => {
+  const h = harness();
+  const first = h.connection('mac-a');
+  const replacement = h.connection('mac-b');
+
+  h.state.replaceRole('mac', first);
+  h.state.replaceRole('mac', replacement);
+
+  assert.deepEqual(h.events.at(-1), {
+    connection: first,
+    event: { kind: 'close', code: 4000, reason: 'replaced' },
+  });
 });
 
 test('Mac state propagation and disconnect reset are transport independent', () => {

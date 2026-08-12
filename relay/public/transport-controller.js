@@ -1,4 +1,9 @@
-import { encodeMessage, parseServerMessage, PROTOCOL_VERSION } from './wire-protocol.js';
+import {
+  encodeMessage,
+  parseServerMessage,
+  PHONE_TAKEN_OVER_CLOSE_CODE,
+  PROTOCOL_VERSION,
+} from './wire-protocol.js';
 import {
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
@@ -41,6 +46,7 @@ export class TransportController {
     this.socket = null;
     this.authenticated = false;
     this.suspended = false;
+    this.terminalReason = null;
     this.keepWarm = false;
     this.attempt = 0;
     this.sequence = 0;
@@ -54,9 +60,18 @@ export class TransportController {
   get ready() { return this.authenticated && this.socket?.readyState === 1; }
 
   connect() {
-    this.suspended = false;
     this.#clearReconnect();
+    if (this.terminalReason) {
+      this.#publish('taken_over', this.terminalReason);
+      return;
+    }
+    this.suspended = false;
     this.#open();
+  }
+
+  resume() {
+    this.terminalReason = null;
+    this.connect();
   }
 
   close(reason = 'intentional') {
@@ -160,8 +175,29 @@ export class TransportController {
       if (stale()) return;
       this.#failGeneration('socket_closed');
     };
-    socket.onerror = down;
-    socket.onclose = down;
+    // The close event owns reconnection because only it carries application
+    // close codes such as the terminal phone-takeover signal.
+    socket.onerror = () => {};
+    socket.onclose = (event) => {
+      if (stale()) return;
+      if (event.code === PHONE_TAKEN_OVER_CLOSE_CODE) {
+        this.#stopForTakeover();
+        return;
+      }
+      down();
+    };
+  }
+
+  #stopForTakeover() {
+    this.terminalReason = 'another_phone_took_over';
+    this.suspended = true;
+    this.authenticated = false;
+    this.attempt = 0;
+    this.#clearReconnect();
+    this.#stopHeartbeat();
+    this._generation += 1;
+    this.#teardownSocket(1000, 'taken_over');
+    this.#publish('taken_over', this.terminalReason);
   }
 
   #failGeneration(reason) {

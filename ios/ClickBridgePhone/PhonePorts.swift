@@ -38,12 +38,17 @@ protocol PhoneActionTransport: AnyObject {
     func send(_ message: PhoneClientMessage) -> Bool
 }
 
+struct PhoneWebSocketClosure {
+    let code: Int?
+    let error: Error?
+}
+
 @MainActor
 protocol PhoneWebSocket: AnyObject {
     var onOpen: (@MainActor () -> Void)? { get set }
     var onText: (@MainActor (String) -> Void)? { get set }
     var onBinary: (@MainActor (Data) -> Void)? { get set }
-    var onClose: (@MainActor (Error?) -> Void)? { get set }
+    var onClose: (@MainActor (PhoneWebSocketClosure) -> Void)? { get set }
     func open(url: URL)
     func send(text: String) throws
     func close(code: URLSessionWebSocketTask.CloseCode, reason: String)

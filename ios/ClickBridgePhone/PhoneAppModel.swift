@@ -135,6 +135,7 @@ final class PhoneAppModel: ObservableObject {
 
         settings.relayURLString = configuration.url.absoluteString
         state.settingsError = nil
+        state.phoneTakenOver = false
         if foregroundGeneration != nil {
             endForegroundSession(reason: "settings_changed")
             startForegroundSession()
@@ -144,6 +145,13 @@ final class PhoneAppModel: ObservableObject {
     }
 
     func retryClockCheck() { clockHealth.retry() }
+
+    func reconnectAfterTakeover() {
+        guard state.phoneTakenOver else { return }
+        endForegroundSession(reason: "takeover_reconnect")
+        state.phoneTakenOver = false
+        if sceneIsActive { startForegroundSession() }
+    }
 
     func applyClockHealth(_ health: ClockHealth) {
         state.clock = health
@@ -159,6 +167,7 @@ final class PhoneAppModel: ObservableObject {
     }
 
     private func startForegroundSession() {
+        guard !state.phoneTakenOver else { return }
         do {
             guard let token = try settings.phoneToken() else { return }
             let configuration = try RelayConfiguration.validated(urlString: settings.relayURLString, token: token)
@@ -214,6 +223,7 @@ final class PhoneAppModel: ObservableObject {
         case .connection(let generation, let connection):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
             state.connection = connection
+            if connection == .takenOver { state.phoneTakenOver = true }
             if connection == .authenticated {
                 startClockCheckIfReady(socketGeneration: generation)
             } else {

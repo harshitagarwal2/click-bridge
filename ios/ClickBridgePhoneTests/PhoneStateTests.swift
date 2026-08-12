@@ -7,6 +7,9 @@ final class PhoneStateTests: XCTestCase {
         XCTAssertEqual(PhonePrimaryStatus.notConnected.title, "Not connected")
         XCTAssertEqual(PhonePrimaryStatus.macOffline.title, "Mac offline")
         XCTAssertEqual(PhonePrimaryStatus.clockMismatch.title, "Clock mismatch")
+        XCTAssertEqual(PhonePrimaryStatus.anotherPhoneTookOver.title, "Another phone took over")
+        XCTAssertEqual(PhonePrimaryStatus.anotherPhoneTookOver.detail,
+                       "Reconnect this phone when you are ready to take control again.")
         XCTAssertEqual(PhonePrimaryStatus.atVolumeBoundary(.minimum).title, "At volume boundary")
         XCTAssertEqual(PhonePrimaryStatus.atVolumeBoundary(.minimum).detail,
                        "Volume Down cannot create another change, so it cannot be detected. Volume Up can still trigger.")
@@ -17,6 +20,9 @@ final class PhoneStateTests: XCTestCase {
     func testStatusPrecedence() {
         var state = PhoneState()
         XCTAssertEqual(state.primaryStatus, .notConnected)
+        state.phoneTakenOver = true
+        XCTAssertEqual(state.primaryStatus, .anotherPhoneTookOver)
+        state.phoneTakenOver = false
         state.foregroundSessionActive = true
         state.connection = .authenticated
         state.mac = .init(online: false, remoteEnabled: false, permission: .unknown)

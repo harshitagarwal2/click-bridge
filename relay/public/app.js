@@ -121,13 +121,13 @@ function handleTransportStatus(status) {
     dispatch({ type: 'transport.open' });
     return;
   }
-  if (status.state !== 'backoff' && status.state !== 'suspended') return;
+  if (!['backoff', 'suspended', 'taken_over'].includes(status.state)) return;
   benchmarkController?.transportLost(status.reason);
   benchmarkTransportGeneration = null;
   lastMacReadyGeneration = null;
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
-  dispatch({ type: 'transport.closed' });
+  dispatch({ type: status.state === 'taken_over' ? 'transport.taken_over' : 'transport.closed' });
 }
 
 const oci = createRelayTransport({
@@ -193,6 +193,7 @@ const dotClass = {
 const connectionText = {
   [PHASE.MISSING_TOKEN]: 'Not paired',
   [PHASE.HIDDEN]: 'Paused',
+  [PHASE.TAKEN_OVER]: 'Taken over',
   [PHASE.CONNECTING]: 'Connecting…',
   [PHASE.MAC_OFFLINE]: 'Mac offline',
   [PHASE.PERMISSION_REQUIRED]: 'Permission needed',
@@ -291,7 +292,7 @@ element.saveToken.addEventListener('click', () => {
     benchmarkRequests.cancelAll('token replaced');
     oci.close('token_replaced');
     dispatch({ type: 'token.set', token });
-    oci.connect();
+    oci.resume();
   });
   if (!outcome.ok) element.tokenState.textContent = outcome.message;
 });

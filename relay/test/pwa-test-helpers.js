@@ -56,9 +56,9 @@ export class FakeSocket {
     this.onmessage?.({ data });
   }
 
-  serverClose() {
+  serverClose(code = 1006, reason = '') {
     this.readyState = 3;
-    this.onclose?.({ code: 1006 });
+    this.onclose?.({ code, reason });
   }
 }
 

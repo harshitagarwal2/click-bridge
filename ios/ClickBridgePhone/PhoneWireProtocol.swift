@@ -9,6 +9,7 @@ enum PhoneProtocolV1 {
     static let heartbeatTimeout: TimeInterval = 10
     static let reconnectBase: TimeInterval = 0.25
     static let reconnectCap: TimeInterval = 8
+    static let phoneTakenOverCloseCode = 4_004
     static let clockSampleCount = 5
     static let clockExchangeTimeout: TimeInterval = 3.5
     static let clockRefreshInterval: TimeInterval = 300

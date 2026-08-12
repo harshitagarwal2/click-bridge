@@ -6,6 +6,7 @@ export const PROTOCOL_VERSION = 1;
 export const MAX_MESSAGE_BYTES = 4096;
 export const ACTION_LIFETIME_MS = 2000;
 export const TOKEN_HEX_LENGTH = 64;
+export const PHONE_TAKEN_OVER_CLOSE_CODE = 4004;
 
 export const ROLES = Object.freeze(['phone', 'mac']);
 export const ACTIONS = Object.freeze(['click']);

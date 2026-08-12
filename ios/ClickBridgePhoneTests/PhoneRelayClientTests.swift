@@ -126,6 +126,60 @@ final class PhoneRelayClientTests: XCTestCase {
         XCTAssertEqual(delays, [0.25, 0.5, 1, 2, 4, 8, 8])
     }
 
+    func testPhoneTakenOverCloseDoesNotReconnectUntilExplicitConnect() {
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(factory: factory, scheduler: scheduler, randomUnit: { 0.5 })
+        var events: [PhoneTransportEvent] = []
+        subject.onEvent = { events.append($0) }
+        subject.connect(configuration: configuration)
+
+        factory.sockets[0].emitClose(code: PhoneProtocolV1.phoneTakenOverCloseCode)
+
+        XCTAssertTrue(scheduler.entries.isEmpty)
+        XCTAssertEqual(factory.sockets.count, 1)
+        XCTAssertEqual(events.last, .connection(generation: subject.generation, state: .takenOver))
+
+        subject.connect(configuration: configuration)
+
+        XCTAssertEqual(factory.sockets.count, 2)
+    }
+
+    func testOrdinaryCloseStillSchedulesReconnect() {
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(factory: factory, scheduler: scheduler, randomUnit: { 0.5 })
+        subject.connect(configuration: configuration)
+
+        factory.sockets[0].emitClose(code: 1_006)
+
+        XCTAssertEqual(scheduler.entries.map(\.delay), [0.125])
+    }
+
+    func testURLSessionReceiveFailureWaitsForDelegateSemanticClose() {
+        let error = URLError(.networkConnectionLost)
+        var arbiter = URLSessionPhoneWebSocketCloseArbiter()
+
+        XCTAssertNil(arbiter.receiveFailure(error))
+        XCTAssertEqual(
+            arbiter.delegateClose(code: PhoneProtocolV1.phoneTakenOverCloseCode)?.code,
+            PhoneProtocolV1.phoneTakenOverCloseCode
+        )
+        XCTAssertNil(arbiter.taskCompletion(error: error, closeCode: 0))
+    }
+
+    func testURLSessionTaskCompletionOwnsOrdinaryTransportFailure() throws {
+        let error = URLError(.networkConnectionLost)
+        var arbiter = URLSessionPhoneWebSocketCloseArbiter()
+
+        let closure = try XCTUnwrap(
+            arbiter.taskCompletion(error: error, closeCode: 0)
+        )
+
+        XCTAssertNil(closure.code)
+        XCTAssertEqual((closure.error as? URLError)?.code, .networkConnectionLost)
+    }
+
     func testOldSocketCallbacksCannotAffectNewGeneration() {
         let factory = FakePhoneWebSocketFactory()
         let scheduler = FakePhoneScheduler()

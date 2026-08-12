@@ -212,14 +212,14 @@ test('wrong token, wrong-role token, and non-hello authentication are closed', a
   }
 });
 
-test('same-role authentication replaces the old socket without clearing the replacement', async () => {
+test('phone authentication closes the displaced phone with the terminal takeover code', async () => {
   const { server, url } = await boot();
   try {
     const first = client(url);
     await authenticate(first, 'phone', PHONE_TOKEN);
     const replacement = client(url);
     await authenticate(replacement, 'phone', PHONE_TOKEN);
-    assert.equal(await first.closed(), 4000);
+    assert.equal(await first.closed(), 4004);
     assert.notEqual(server.state.phone, null);
     replacement.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 5 });
     assert.equal((await replacement.wait((m) => m.type === 'heartbeat.ack')).sequence, 5);

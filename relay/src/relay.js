@@ -2,6 +2,7 @@ import { performance } from 'node:perf_hooks';
 
 import {
   CLOCK_SKEW_TOLERANCE_MS,
+  PHONE_TAKEN_OVER_CLOSE_CODE,
   PROTOCOL_VERSION,
   RELAY_PENDING_TTL_MS,
 } from './constants.js';
@@ -51,7 +52,10 @@ export class RelayState {
       this.macState = { remoteEnabled: false, permission: 'unknown' };
     }
     if (previous && previous !== connection) {
-      this.#emit(previous, { kind: 'close', code: 4000, reason: 'replaced' });
+      const close = role === 'phone'
+        ? { code: PHONE_TAKEN_OVER_CLOSE_CODE, reason: 'another phone took over' }
+        : { code: 4000, reason: 'replaced' };
+      this.#emit(previous, { kind: 'close', ...close });
       this.log('role_replaced', { role });
     }
     return previous ?? null;
