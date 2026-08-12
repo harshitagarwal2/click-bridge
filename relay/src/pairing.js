@@ -29,6 +29,30 @@ function invitationVerifier(reference) {
   return bytes.length === 32 && bytes.toString('base64url') === reference ? sha256(bytes) : null;
 }
 
+function phoneSnapshot(phone) {
+  if (phone === null || (typeof phone !== 'object' && typeof phone !== 'function')) return null;
+  let connection;
+  let generation;
+  let credentialVersion;
+  try {
+    connection = Reflect.getOwnPropertyDescriptor(phone, 'connection');
+    generation = Reflect.getOwnPropertyDescriptor(phone, 'generation');
+    credentialVersion = Reflect.getOwnPropertyDescriptor(phone, 'credentialVersion');
+  } catch {
+    return null;
+  }
+  if (!connection || !Object.hasOwn(connection, 'value') || !connection.value
+      || !generation || !Object.hasOwn(generation, 'value')
+      || !credentialVersion || !Object.hasOwn(credentialVersion, 'value')) {
+    return null;
+  }
+  return Object.freeze({
+    connection: connection.value,
+    generation: generation.value,
+    credentialVersion: credentialVersion.value,
+  });
+}
+
 function failureForMac(session, reason) {
   const message = {
     type: 'pair.failed',
@@ -118,6 +142,7 @@ export class PairingCoordinator {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
     if (this.#isActivating()) return 'activation_in_progress';
+    if (this.#completed && !this.#completed.reconciled) return 'activation_in_progress';
     if (this.#session && this.#expired(this.#session)) {
       this.#terminate('expired');
     }
@@ -404,7 +429,8 @@ export class PairingCoordinator {
       this.#log('pairing_phone_resolution_failed');
       return false;
     }
-    if (!Array.isArray(phones) || !phones.every((phone) => phone?.connection
+    const snapshots = Array.isArray(phones) ? Array.from(phones, phoneSnapshot) : null;
+    if (!snapshots || !snapshots.every((phone) => phone
         && Number.isSafeInteger(phone.generation) && phone.generation >= 0
         && Number.isSafeInteger(phone.credentialVersion) && phone.credentialVersion >= 0
         && phone.credentialVersion < completed.credentialVersion
@@ -413,7 +439,7 @@ export class PairingCoordinator {
       return false;
     }
     const closed = new Set();
-    for (const phone of phones) {
+    for (const phone of snapshots) {
       if (closed.has(phone.connection)) continue;
       closed.add(phone.connection);
       try {

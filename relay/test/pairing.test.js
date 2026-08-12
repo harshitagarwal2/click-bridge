@@ -610,6 +610,18 @@ test('durable activation remains unreconciled until logical deauthorization succ
   ].includes(message.type)), false);
   assert.equal(h.coordinator.observe().phase, 'committed');
 
+  h.randomBuffers.push(Buffer.alloc(32, 0x61));
+  const createdBeforeRetry = h.events.filter(({ message }) => message.type === 'pair.created').length;
+  assert.equal(h.coordinator.create(
+    MAC, 3, createMessage('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+  ), 'activation_in_progress');
+  assert.equal(h.randomBuffers.length, 1);
+  assert.equal(
+    h.events.filter(({ message }) => message.type === 'pair.created').length,
+    createdBeforeRetry,
+  );
+  assert.equal(h.coordinator.observe().phase, 'committed');
+
   h.setDeauthorizationResult(null);
   assert.equal(await acknowledge(h), 'ok');
   assert.equal(h.activateCalls(), 1);
@@ -617,6 +629,81 @@ test('durable activation remains unreconciled until logical deauthorization succ
   assert.deepEqual(h.events.slice(-2).map(({ message }) => message.type), [
     'pair.active', 'pair.completed',
   ]);
+});
+
+test('deauthorization captures own data descriptors once before any close', async () => {
+  const descriptorReads = new Map();
+  const values = {
+    connection: OLD_PHONE,
+    generation: 4,
+    credentialVersion: 7,
+  };
+  const phone = new Proxy({}, {
+    get() {
+      throw new Error('ordinary property reads are forbidden');
+    },
+    getOwnPropertyDescriptor(_target, property) {
+      descriptorReads.set(property, (descriptorReads.get(property) ?? 0) + 1);
+      if (!Object.hasOwn(values, property)) return undefined;
+      return {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: values[property],
+      };
+    },
+  });
+  const h = harness({ deauthorizationFailure: [phone] });
+  connectAndCreate(h);
+  claim(h);
+  approve(h);
+
+  assert.equal(await acknowledge(h), 'ok');
+  assert.deepEqual(h.closes, [{
+    connection: OLD_PHONE, code: 4004, reason: 'credential_replaced',
+  }]);
+  assert.deepEqual(Object.fromEntries(descriptorReads), {
+    connection: 1, generation: 1, credentialVersion: 1,
+  });
+});
+
+test('accessor, inherited, claimant, and current phone entries fail closed before any close', async () => {
+  let getterCalls = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, 'connection', {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return OLD_PHONE;
+    },
+  });
+  Object.defineProperties(accessor, {
+    generation: { configurable: true, value: 4 },
+    credentialVersion: { configurable: true, value: 7 },
+  });
+  const inherited = Object.create({
+    connection: OLD_PHONE, generation: 4, credentialVersion: 7,
+  });
+  const invalidLists = [
+    Array(1),
+    [accessor],
+    [inherited],
+    [{ connection: PHONE, generation: 5, credentialVersion: 7 }],
+    [{ connection: NEW_ACTIVE_PHONE, generation: 10, credentialVersion: 8 }],
+    [
+      { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
+      accessor,
+    ],
+  ];
+  for (const phones of invalidLists) {
+    const h = harness({ deauthorizationFailure: phones });
+    connectAndCreate(h);
+    claim(h);
+    approve(h);
+    assert.equal(await acknowledge(h), 'reconciliation_failed');
+    assert.equal(h.closes.length, 0);
+  }
+  assert.equal(getterCalls, 0);
 });
 
 test('malformed deauthorization results cannot publish activation success', async () => {
