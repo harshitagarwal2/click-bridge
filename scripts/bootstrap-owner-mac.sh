@@ -36,16 +36,27 @@ if [[ -n "$secrets_file" && -n "$ssh_host" ]] || [[ -z "$secrets_file" && -z "$s
 fi
 
 umask 077
-token_file="$(mktemp "${TMPDIR:-/tmp}/click-bridge-owner-token.XXXXXX")"
+token_dir="${TMPDIR:-/tmp}/click-bridge-owner-token.$$.$RANDOM.$RANDOM"
+token_file="$token_dir/credential"
 helper_pid=''
-cleanup() { rm -f "$token_file"; }
+cleanup() {
+  rm -f -- "$token_file"
+  rmdir "$token_dir" 2>/dev/null || true
+}
 on_signal() {
-  if [[ -n "$helper_pid" ]]; then kill -TERM "$helper_pid" 2>/dev/null || true; fi
+  trap '' INT TERM HUP
+  if [[ -n "$helper_pid" ]]; then
+    kill -TERM -- "$helper_pid" 2>/dev/null || true
+    wait "$helper_pid" 2>/dev/null || true
+    helper_pid=''
+  fi
   cleanup
   exit 130
 }
-trap cleanup EXIT
 trap on_signal INT TERM HUP
+mkdir -m 700 -- "$token_dir"
+trap cleanup EXIT
+: > "$token_file"
 chmod 600 "$token_file"
 
 if [[ -n "$secrets_file" ]]; then
