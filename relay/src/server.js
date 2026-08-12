@@ -38,6 +38,7 @@ const STATIC_FILES = new Map([
   ['/phone-settings-store.js', ['phone-settings-store.js', 'text/javascript; charset=utf-8']],
   ['/wake-lock-controller.js', ['wake-lock-controller.js', 'text/javascript; charset=utf-8']],
   ['/benchmark-session.js', ['benchmark-session.js', 'text/javascript; charset=utf-8']],
+  ['/benchmark-controller.js', ['benchmark-controller.js', 'text/javascript; charset=utf-8']],
   ['/direct-transport.js', ['direct-transport.js', 'text/javascript; charset=utf-8']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
   ['/icons/icon-192.png', ['icons/icon-192.png', 'image/png']],

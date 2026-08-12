@@ -1,4 +1,9 @@
 import { ClockHealthController } from './clock-health-controller.js';
+import {
+  BenchmarkRequestRouter, BenchmarkRunSequence, BenchmarkSession,
+  CounterSnapshotRequester, createIdleSchedule,
+} from './benchmark-session.js';
+import { BenchmarkController } from './benchmark-controller.js';
 import { PhoneSettingsStore } from './phone-settings-store.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
@@ -29,6 +34,12 @@ const scheduler = createRuntimeScheduler(window);
 let state = initialState();
 let lastMacReadyGeneration = null;
 let clockHealth;
+let benchmarkSession;
+let benchmarkController;
+let benchmarkSchedule = [];
+let benchmarkBlockIndex = 0;
+let benchmarkRequests;
+let benchmarkTransportGeneration = null;
 
 function dispatch(event) {
   state = reduce(state, event);
@@ -48,17 +59,30 @@ const coordinator = new TransportCoordinator({
   getState: () => state,
   dispatch,
   transports: () => [transportPort()],
-  selectTransports: (ports) => ports.filter((port) => port.name === 'oci').slice(0, 1),
-  clock: { now: () => Date.now(), monotonicNow: () => performance.now() },
+  selectTransports: (ports) => benchmarkController?.active && !benchmarkController.canActivate
+    ? [] : ports.filter((port) => port.name === 'oci').slice(0, 1),
+  clock: { now: () => Date.now(), monotonicNow: () => performance.now(),
+    epochMonotonicNow: () => performance.timeOrigin + performance.now() },
   scheduler,
   getClockDiagnostics: () => clockHealth?.diagnostics ?? null,
   onBusyChange: (busy) => clockHealth?.actionStateChanged(busy),
+  onMetric: (metric) => {
+    benchmarkController?.handleMetric(metric, { keepWarm: element.keepWarm.checked,
+      normalHeartbeat: '20s', network: navigator.connection?.effectiveType ?? 'unknown' })
+      .catch((error) => { element.diagnostics.textContent = error.message; render(); });
+  },
 });
 
 function handleInbound(message, transport) {
   if (message.type === 'time.sync.response') {
+    if (benchmarkRequests.handle(message, transport.generation)) return;
     clockHealth.handleMessage(message);
     render();
+    return;
+  }
+
+  if (message.type === 'diagnostics.counters') {
+    benchmarkRequests.handle(message, transport.generation);
     return;
   }
 
@@ -73,6 +97,8 @@ function handleInbound(message, transport) {
     if (ready && lastMacReadyGeneration !== transport.generation) {
       lastMacReadyGeneration = transport.generation;
       clockHealth.start();
+      benchmarkController?.transportReady()
+        .catch((error) => { element.diagnostics.textContent = error.message; render(); });
     } else if (!ready) {
       lastMacReadyGeneration = null;
       clockHealth.macNotReady();
@@ -88,10 +114,16 @@ function handleInbound(message, transport) {
 
 function handleTransportStatus(status) {
   if (status.state === 'ready') {
+    if (benchmarkTransportGeneration !== null && benchmarkTransportGeneration !== oci.generation) {
+      benchmarkController.transportLost('socket generation changed');
+    }
+    benchmarkTransportGeneration = oci.generation;
     dispatch({ type: 'transport.open' });
     return;
   }
   if (status.state !== 'backoff' && status.state !== 'suspended') return;
+  benchmarkController?.transportLost(status.reason);
+  benchmarkTransportGeneration = null;
   lastMacReadyGeneration = null;
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
@@ -103,6 +135,38 @@ const oci = createRelayTransport({
   token: () => state.token,
   onMessage: handleInbound,
   onStatus: handleTransportStatus,
+});
+
+benchmarkRequests = new BenchmarkRequestRouter({
+  send: (message) => oci.send(message),
+  getGeneration: () => oci.generation,
+  scheduler,
+  epochNow: () => performance.timeOrigin + performance.now(),
+});
+
+const counterSnapshots = new CounterSnapshotRequester({
+  request: () => benchmarkRequests.requestCounters(),
+});
+
+benchmarkSession = new BenchmarkSession({
+  exchangeTimeSync: () => benchmarkRequests.exchangeTimeSync(),
+  counterSnapshots,
+  isActionPending: () => coordinator.busy,
+});
+
+benchmarkController = new BenchmarkController({
+  session: benchmarkSession,
+  requests: benchmarkRequests,
+  scheduler,
+  monotonicNow: () => performance.now(),
+  createSequence: () => {
+    if (benchmarkSchedule.length === 0) benchmarkSchedule = createIdleSchedule();
+    benchmarkBlockIndex += 1;
+    return new BenchmarkRunSequence({ schedule: benchmarkSchedule,
+      monotonicNow: () => performance.now(), blockIndex: benchmarkBlockIndex });
+  },
+  isActionPending: () => coordinator.busy,
+  onRender: () => render(),
 });
 
 clockHealth = new ClockHealthController({
@@ -140,7 +204,8 @@ const connectionText = {
 
 function render() {
   const model = view(state);
-  element.button.disabled = !model.enabled;
+  const benchmarkBlocked = benchmarkController.active && !benchmarkController.canActivate;
+  element.button.disabled = !model.enabled || benchmarkBlocked;
   element.retryClock.hidden = !model.retryClockVisible;
   element.status.textContent = model.status;
   element.status.className = `result ${
@@ -157,6 +222,18 @@ function render() {
   element.diagnostics.textContent = diagnostics
     ? `offset ${diagnostics.offsetMs.toFixed(1)} ms ±${diagnostics.uncertaintyMs.toFixed(1)} ms · sample ${Math.round(diagnostics.sampleAgeMs)} ms old · late results ${state.lateResultCount}`
     : `late results ${state.lateResultCount}`;
+  if (benchmarkController.active) {
+    const next = benchmarkController.current;
+    element.diagnostics.textContent += benchmarkController.complete
+      ? ' · benchmark 100/100; finish and export'
+      : next.recorded
+        ? ` · benchmark ${next.sampleIndex - 1}/100; ${next.eligible
+          ? 'tap now' : `wait ${(next.remainingMs / 1_000).toFixed(1)}s`} (${next.scheduledIdleSeconds}s gap)`
+        : ` · warm-up ${benchmarkController.sequence.terminals}/10`;
+  }
+  benchmarkFinish.disabled = !benchmarkController.active || !benchmarkController.complete
+    || benchmarkController.refreshing || coordinator.busy;
+  benchmarkStart.disabled = benchmarkController.active || benchmarkController.refreshing;
 }
 
 function pointerDescriptor(event) {
@@ -211,6 +288,7 @@ element.saveToken.addEventListener('click', () => {
   }
   settings.setToken(token);
   element.tokenInput.value = '';
+  benchmarkRequests.cancelAll('token replaced');
   oci.close('token_replaced');
   dispatch({ type: 'token.set', token });
   oci.connect();
@@ -220,6 +298,7 @@ element.clearToken.addEventListener('click', () => {
   settings.clearToken();
   coordinator.abandon('token_cleared');
   clockHealth.macNotReady();
+  benchmarkRequests.cancelAll('token cleared');
   oci.close('token_cleared');
   dispatch({ type: 'token.cleared' });
 });
@@ -238,6 +317,63 @@ function legacyIOSWakeLockUnavailable() {
   const minor = Number(match[2]);
   return major < 18 || (major === 18 && minor < 4);
 }
+
+function downloadCsv(name, contents) {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([contents], { type: 'text/csv;charset=utf-8' }));
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+const benchmarkControls = document.createElement('div');
+const benchmarkStart = document.createElement('button');
+const benchmarkFinish = document.createElement('button');
+const benchmarkExport = document.createElement('button');
+benchmarkStart.type = benchmarkFinish.type = benchmarkExport.type = 'button';
+benchmarkStart.textContent = 'Start benchmark';
+benchmarkFinish.textContent = 'Finish benchmark';
+benchmarkExport.textContent = 'Export benchmark CSV';
+benchmarkFinish.disabled = true;
+benchmarkExport.disabled = true;
+benchmarkControls.append(benchmarkStart, benchmarkFinish, benchmarkExport);
+element.diagnostics.insertAdjacentElement('afterend', benchmarkControls);
+
+benchmarkStart.addEventListener('click', async () => {
+  if (!view(state).enabled) return;
+  const condition = window.prompt('Condition label (network-mode-keepwarm-session)');
+  if (!condition) return;
+  benchmarkStart.disabled = true;
+  try {
+    await benchmarkController.start({ runId: crypto.randomUUID(), condition });
+    benchmarkFinish.disabled = true;
+  } catch (error) {
+    element.diagnostics.textContent = error.message;
+    benchmarkStart.disabled = false;
+  }
+  render();
+});
+
+benchmarkFinish.addEventListener('click', async () => {
+  if (coordinator.busy || benchmarkController.refreshing || !benchmarkController.complete) return;
+  const octoCounterStart = Number(window.prompt('Octo counter before run', '0'));
+  const octoCounterEnd = Number(window.prompt('Octo counter after run', '0'));
+  try {
+    await benchmarkController.finish({ octoCounterStart, octoCounterEnd });
+    benchmarkFinish.disabled = true;
+    benchmarkExport.disabled = false;
+    benchmarkStart.disabled = false;
+  } catch (error) {
+    element.diagnostics.textContent = error.message;
+  }
+  render();
+});
+
+benchmarkExport.addEventListener('click', () => {
+  const files = benchmarkController.exportCsv();
+  downloadCsv('measurements.csv', files.measurements);
+  downloadCsv('run-evidence.csv', files.evidence);
+});
 
 const wakeLockLegacyUnavailable = legacyIOSWakeLockUnavailable();
 const wakeLockController = new WakeLockController({
@@ -260,6 +396,7 @@ const wakeLockController = new WakeLockController({
 });
 
 function goHidden() {
+  benchmarkController.transportLost('hidden');
   coordinator.abandon('hidden');
   clockHealth.macNotReady();
   dispatch({ type: 'visibility', visible: false });
@@ -282,7 +419,14 @@ window.addEventListener('pageshow', () => {
   if (document.visibilityState === 'visible') goVisible();
 });
 window.addEventListener('online', () => {
+  benchmarkController.transportLost('network changed');
   if (document.visibilityState === 'visible' && state.token && !oci.ready) oci.connect();
+});
+navigator.connection?.addEventListener?.('change', () => {
+  if (!benchmarkController.active) return;
+  benchmarkController.transportLost('network changed');
+  benchmarkController.transportReady()
+    .catch((error) => { element.diagnostics.textContent = error.message; render(); });
 });
 
 const savedToken = settings.getToken();

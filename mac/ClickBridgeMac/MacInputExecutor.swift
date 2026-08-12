@@ -19,11 +19,13 @@ final class MacInputExecutor: InputPosting, @unchecked Sendable {
     typealias EventConstruction = @Sendable () -> ClickEventPair?
     typealias EventPosting = @Sendable (ClickEvent) -> Void
     typealias GapSleeping = @Sendable (UInt32) -> Void
+    typealias WallClockMilliseconds = @Sendable () -> Double
 
     private let clickGapMs: UInt32
     private let constructEvents: EventConstruction
     private let postEvent: EventPosting
     private let sleepMicroseconds: GapSleeping
+    private let wallClockMilliseconds: WallClockMilliseconds
     private let lock = NSLock()
     private var counts = InputPostCounts.zero
 
@@ -31,17 +33,21 @@ final class MacInputExecutor: InputPosting, @unchecked Sendable {
         clickGapMs: UInt32 = UInt32(Constants.clickGapMs),
         constructEvents: @escaping EventConstruction = { MacInputExecutor.makeNativeEvents() },
         postEvent: @escaping EventPosting = { MacInputExecutor.postNativeEvent($0) },
-        sleepMicroseconds: @escaping GapSleeping = { usleep($0) }
+        sleepMicroseconds: @escaping GapSleeping = { usleep($0) },
+        wallClockMilliseconds: @escaping WallClockMilliseconds = {
+            Date().timeIntervalSince1970 * 1_000
+        }
     ) {
         self.clickGapMs = clickGapMs
         self.constructEvents = constructEvents
         self.postEvent = postEvent
         self.sleepMicroseconds = sleepMicroseconds
+        self.wallClockMilliseconds = wallClockMilliseconds
     }
 
     func postLeftClickAtCurrentCursor() -> InputPostOutcome {
         guard let events = constructEvents() else { return .creationFailed }
-        let mouseDownUnixMs = Date().timeIntervalSince1970 * 1_000
+        let mouseDownUnixMs = wallClockMilliseconds()
         postEvent(events.down)
         lock.withLock {
             counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount + 1,

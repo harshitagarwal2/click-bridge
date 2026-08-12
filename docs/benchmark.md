@@ -23,6 +23,19 @@
    stay in the reliability totals.
 6. A subgroup under 100 samples gets median, max, and count — **no p95 or p99
    claim**.
+7. `relay/scripts/summarize-latency.mjs` is the canonical nearest-rank oracle.
+   Tail p95/p99 are emitted only when a condition has at least 95 Posted rows.
+8. `benchmarks/measurements.csv` and `benchmarks/run-evidence.csv` remain raw,
+   append-only evidence. Physical acceptance is NOT RUN while they are header-only.
+
+The PWA Diagnostics controls collect 20 sequential sync samples at run start,
+select the minimum non-negative RTT, refresh after every 25 terminal actions,
+take Mac counter snapshots outside the timed sequence, retain rows in memory,
+and export only after an explicit user action. The locked randomized idle
+schedule is enforced by disabling activation until each gap elapses. Diagnostic
+requests belong to one socket generation and are canceled on disconnect or
+visibility loss. A run cannot finish unless the before/after Mac down/up deltas
+and operator-observed Octo delta exactly equal the run's Posted row count.
 
 ## Schedule
 

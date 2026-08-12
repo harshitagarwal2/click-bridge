@@ -17,7 +17,7 @@ function readyState() {
   ].reduce(reduce, initialState());
 }
 
-function harness() {
+function harness(onMetric = () => {}) {
   const scheduler = new FakeScheduler(1000);
   let state = readyState();
   const sent = [];
@@ -29,13 +29,40 @@ function harness() {
     dispatch: (event) => { state = reduce(state, event); },
     transports: () => [port],
     selectTransports: (ports) => ports.filter((candidate) => candidate.name === 'oci').slice(0, 1),
-    clock: { now: () => scheduler.now, monotonicNow: () => scheduler.now },
+    clock: { now: () => scheduler.now, monotonicNow: () => scheduler.now,
+      epochMonotonicNow: () => scheduler.now + 10_000 },
     scheduler,
     idGenerator: () => ID,
     getClockDiagnostics: () => ({ offsetMs: 10, uncertaintyMs: 5, sampleAgeMs: 100 }),
+    onMetric,
   });
   return { coordinator, scheduler, sent, getState: () => state };
 }
+
+test('metrics expose activation, ack, terminal timing, and late results without changing state', () => {
+  const metrics = [];
+  const { coordinator, scheduler, getState } = harness((event) => metrics.push(event));
+  coordinator.activate();
+  scheduler.advance(5);
+  coordinator.handleMessage('oci', {
+    type: 'relay.ack', v: 1, actionId: ID, status: 'forwarded', reason: 'ok', relayProcessingUs: 4,
+  });
+  scheduler.advance(7);
+  coordinator.handleMessage('oci', {
+    type: 'action.result', v: 1, actionId: ID, status: 'posted', reason: 'ok',
+    acceptedVia: 'oci', macProcessingUs: 8, mouseDownPostedUnixMs: 1011,
+  });
+  coordinator.handleMessage('oci', {
+    type: 'action.result', v: 1, actionId: ID, status: 'posted', reason: 'ok',
+    acceptedVia: 'oci', macProcessingUs: 8, mouseDownPostedUnixMs: 1011,
+  });
+  assert.deepEqual(metrics.map((event) => event.type), ['activation', 'ack', 'terminal', 'late-result']);
+  assert.equal(metrics.every(Object.isFrozen), true);
+  assert.equal(metrics[1].ackMs, 5);
+  assert.equal(metrics[0].activationUnixMs, 11_000);
+  assert.equal(metrics[2].confirmationMs, 12);
+  assert.equal(phaseOf(getState()), PHASE.POSTED);
+});
 
 test('createActionRequest returns one immutable request with a two-second expiry', () => {
   const request = createActionRequest({ nowUnixMs: 1000, actionId: ID });
@@ -53,6 +80,14 @@ test('Milestone 1 sends one logical action over OCI and never regenerates it', (
   assert.equal(sent.length, 1);
   assert.equal(sent[0].actionId, ID);
   assert.equal(getState().action.id, ID);
+});
+
+test('normal path without benchmark observer adds no send or timer ownership', () => {
+  const { coordinator, sent, scheduler } = harness();
+  coordinator.onMetric = () => {};
+  coordinator.activate();
+  assert.equal(sent.length, 1);
+  assert.equal(scheduler.tasks.size, 1);
 });
 
 test('relay acknowledgement cannot produce Posted', () => {
@@ -73,6 +108,17 @@ test('terminal relay rejection keeps the wire reason and current clock diagnosti
   assert.equal(phaseOf(getState()), PHASE.REJECTED);
   assert.equal(getState().last.reason, 'expired');
   assert.equal(getState().last.clockDiagnostics.sampleAgeMs, 100);
+});
+
+test('terminal relay rejection emits one terminal metric before releasing socket ownership', () => {
+  const metrics = [];
+  const { coordinator } = harness((event) => metrics.push(event));
+  coordinator.activate();
+  coordinator.handleMessage('oci', {
+    type: 'relay.ack', v: 1, actionId: ID, status: 'rejected', reason: 'expired', relayProcessingUs: 4,
+  });
+  assert.deepEqual(metrics.map((event) => event.type), ['activation', 'ack', 'terminal']);
+  assert.equal(coordinator.busy, false);
 });
 
 test('result timeout becomes Unknown and a late result cannot replace it', () => {
