@@ -1,7 +1,0 @@
-// Copy to Local.xcconfig (git-ignored) to sign with an Apple Development
-// identity instead of ad-hoc. Worth doing: an ad-hoc rebuild changes the
-// binary's cdhash, so macOS treats it as a new app and you must re-grant
-// input permission after EVERY build.
-//
-// DEVELOPMENT_TEAM = ABCDE12345
-// CODE_SIGN_IDENTITY = Apple Development

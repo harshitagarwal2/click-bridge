@@ -7,34 +7,45 @@ final class AppState: ObservableObject {
     @Published var connection: RelayClient.Status = .disconnected
     @Published var permission: PermissionState = .unknown
     @Published var lastResult: String = "—"
-    @Published var lastIngress: ActionIngress?
 
     let settings: SettingsStore
     let permissionService = PostEventPermissionService()
+
+    /// The bridge between main-actor UI state and the non-isolated actor that
+    /// decides whether to click. See SharedMacState for why this is not an
+    /// `await` into the main actor.
+    private let shared = SharedMacState()
+
     private let processor: ActionProcessor
     private let client: RelayClient
     private var cancellables = Set<AnyCancellable>()
-    private var permissionTimer: Timer?
 
     init(settings: SettingsStore = SettingsStore()) {
         self.settings = settings
 
         let permissionService = PostEventPermissionService()
-        let toggle = ToggleReader(settings: settings)
+        self.shared.setRemoteEnabled(settings.remoteEnabled)
+        self.shared.setPermission(permissionService.permissionState)
+
         self.processor = ActionProcessor(
             poster: MacInputExecutor(),
             permission: permissionService,
-            toggle: toggle
+            toggle: shared                      // synchronous, thread-safe
         )
         self.client = RelayClient(processor: processor, ingress: .oci)
 
+        // Keep the shared snapshot in step with the menu-bar toggle.
         settings.$remoteEnabled
             .dropFirst()
-            .sink { [weak self] _ in Task { await self?.publish() } }
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.shared.setRemoteEnabled(value)
+                Task { await self.publish() }
+            }
             .store(in: &cancellables)
 
-        Task { await configureClient() }
         refreshPermission()
+        Task { await configureClient() }
     }
 
     private func configureClient() async {
@@ -43,10 +54,9 @@ final class AppState: ObservableObject {
         await client.setOnStatus { [weak self] status in
             Task { @MainActor in self?.connection = status }
         }
-        await client.setStateProvider { [weak self] in
-            guard let self else { return (false, .unknown) }
-            return (self.settings.remoteEnabled, self.permissionService.permissionState)
-        }
+        // Captures only the Sendable box — never the main-actor AppState.
+        let shared = self.shared
+        await client.setStateProvider { shared.snapshot }
     }
 
     func start() {
@@ -75,10 +85,10 @@ final class AppState: ObservableObject {
 
     func refreshPermission() {
         let next = permissionService.permissionState
-        if next != permission {
-            permission = next
-            Task { await publish() }
-        }
+        shared.setPermission(next)
+        guard next != permission else { return }
+        permission = next
+        Task { await publish() }
     }
 
     func diagnostics() async -> (down: Int, up: Int) {
@@ -86,14 +96,7 @@ final class AppState: ObservableObject {
     }
 }
 
-private struct ToggleReader: RemoteToggleReading {
-    let settings: SettingsStore
-    func isRemoteEnabled() -> Bool {
-        MainActor.assumeIsolated { settings.remoteEnabled }
-    }
-}
-
-// Small async setters so the actor's closures stay isolated.
+// Small async setters so the actor's closures stay isolated to it.
 extension RelayClient {
     func setOnStatus(_ fn: @escaping @Sendable (Status) -> Void) { onStatus = fn }
     func setStateProvider(
@@ -107,29 +110,48 @@ struct ClickBridgeApp: App {
 
     var body: some Scene {
         MenuBarExtra("Click Bridge", systemImage: "cursorarrow.click") {
-            Text(connectionLabel)
-            Text(permissionLabel)
-            Divider()
-
-            Toggle("Remote control enabled", isOn: $app.settings.remoteEnabled)
-
-            Divider()
-            Text("Last: \(app.lastResult)")
-
-            Divider()
-            Button("Reconnect") { app.reconnect() }
-            if app.permission != .ready {
-                Button("Grant Input Permission…") { app.requestPermission() }
-            }
-            SettingsLink { Text("Settings…") }
-            Divider()
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+            MenuContent(app: app, settings: app.settings)
         }
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(app: app)
+            SettingsView(app: app, settings: app.settings)
         }
+    }
+}
+
+/// Observes the SettingsStore directly. `AppState.settings` is a plain `let`,
+/// so `$app.settings.remoteEnabled` is not a writable key path — and even if it
+/// were, a change inside the store would not redraw a view observing AppState.
+struct MenuContent: View {
+    @ObservedObject var app: AppState
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        Text(connectionLabel)
+        Text(permissionLabel)
+        Divider()
+
+        Toggle("Remote control enabled", isOn: $settings.remoteEnabled)
+
+        Divider()
+        Text("Last: \(app.lastResult)")
+
+        Divider()
+        Button("Reconnect") { app.reconnect() }
+        if app.permission != .ready {
+            Button("Grant Input Permission…") { app.requestPermission() }
+        }
+        if #available(macOS 14.0, *) {
+            SettingsLink { Text("Settings…") }
+        } else {
+            Button("Settings…") {
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+        }
+        Divider()
+        Button("Quit") { NSApplication.shared.terminate(nil) }
     }
 
     private var connectionLabel: String {
@@ -147,13 +169,14 @@ struct ClickBridgeApp: App {
 
 struct SettingsView: View {
     @ObservedObject var app: AppState
+    @ObservedObject var settings: SettingsStore
     @State private var token = ""
     @State private var note = ""
 
     var body: some View {
         Form {
             Section("Relay") {
-                TextField("Relay URL", text: $app.settings.relayURLString,
+                TextField("Relay URL", text: $settings.relayURLString,
                           prompt: Text("wss://your-host/ws"))
                     .textFieldStyle(.roundedBorder)
             }
@@ -166,11 +189,11 @@ struct SettingsView: View {
                     Button("Save") { save() }
                         .disabled(token.count != 64)
                     Button("Clear") {
-                        app.settings.macToken = nil
+                        settings.macToken = nil
                         note = "Token cleared."
                     }
                 }
-                Text(app.settings.hasToken ? "A token is stored." : "No token stored.")
+                Text(settings.hasToken ? "A token is stored." : "No token stored.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !note.isEmpty {
                     Text(note).font(.caption).foregroundStyle(.secondary)
@@ -194,7 +217,7 @@ struct SettingsView: View {
             note = "Token must be 64 lowercase hex characters."
             return
         }
-        app.settings.macToken = value
+        settings.macToken = value
         token = ""
         note = "Token saved."
         app.reconnect()

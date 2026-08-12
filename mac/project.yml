@@ -31,8 +31,10 @@ settings:
     ENABLE_HARDENED_RUNTIME: NO
 
 configFiles:
-  Debug: Config/Local.xcconfig
-  Release: Config/Local.xcconfig
+  # Base.xcconfig is versioned and optionally includes the ignored local
+  # signing override, so fresh clones and CI do not depend on a secret file.
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
 
 targets:
   ClickBridgeMac:
@@ -59,15 +61,20 @@ targets:
     platform: macOS
     sources:
       - path: ClickBridgeMacTests
+      # Canonical fixtures are shared with the Node suite — one contract, two
+      # implementations reading the same bytes. This must be a source entry
+      # with an explicit resources build phase; `resources:` is not a target
+      # property in XcodeGen and was silently ignored.
+      - path: ../contracts/fixtures
+        buildPhase: resources
     dependencies:
       - target: ClickBridgeMac
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.mac.tests
-    # Canonical fixtures are shared with the Node suite — one contract, two
-    # implementations reading the same bytes.
-    resources:
-      - ../contracts/fixtures
+        # The test bundle has no hand-written Info.plist; without this the
+        # code-signing step fails before a single test compiles.
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   ClickBridgeMac:

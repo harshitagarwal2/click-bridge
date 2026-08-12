@@ -32,6 +32,11 @@ export const KEEPWARM_INTERVAL_MS = 5000;
 
 export const TOKEN_HEX_LENGTH = 64;
 
+// Application close code for "another connection took over your role".
+// Distinct from a network drop (1005/1006) so the displaced client can stop
+// reconnecting instead of racing its replacement forever.
+export const CLOSE_ROLE_REPLACED = 4004;
+
 export const ROLES = Object.freeze(['phone', 'mac']);
 export const ACTIONS = Object.freeze(['click']);
 export const INGRESSES = Object.freeze(['oci', 'tailscale']);

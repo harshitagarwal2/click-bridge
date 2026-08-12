@@ -9,7 +9,6 @@ import { stat } from 'node:fs/promises';
 import { join, normalize, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
-import { WebSocketServer } from 'ws';
 
 import { RelayState } from './relay.js';
 import { CONTENT_SECURITY_POLICY, SECURITY_HEADERS } from './csp.js';
@@ -54,7 +53,25 @@ function isValidToken(t) {
 
 export { CONTENT_SECURITY_POLICY };
 
-export function createServer({ phoneToken, macToken, publicDir = PUBLIC_DIR, log = console }) {
+/**
+ * Default WebSocket server factory: the `ws` package.
+ *
+ * Imported lazily and injectable so the socket-level tests can drive the real
+ * server through a minimal RFC 6455 implementation in an environment with no
+ * package registry. Production always uses `ws`.
+ */
+export async function defaultWssFactory(options) {
+  const { WebSocketServer } = await import('ws');
+  return new WebSocketServer(options);
+}
+
+export async function createServer({
+  phoneToken,
+  macToken,
+  publicDir = PUBLIC_DIR,
+  log = console,
+  wssFactory = defaultWssFactory,
+}) {
   if (!isValidToken(phoneToken)) throw new Error('PHONE_TOKEN must be 64 lowercase hex characters');
   if (!isValidToken(macToken)) throw new Error('MAC_TOKEN must be 64 lowercase hex characters');
   if (constantTimeEquals(phoneToken, macToken)) throw new Error('PHONE_TOKEN and MAC_TOKEN must differ');
@@ -101,7 +118,7 @@ export function createServer({ phoneToken, macToken, publicDir = PUBLIC_DIR, log
 
   httpServer.on('connection', (socket) => socket.setNoDelay(true));
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+  const wss = await wssFactory({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 
   httpServer.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -220,7 +237,7 @@ if (isMain) {
 
   let server;
   try {
-    server = createServer({ phoneToken, macToken });
+    server = await createServer({ phoneToken, macToken });
   } catch (err) {
     console.error(`startup refused: ${err.message}`);
     process.exit(1);

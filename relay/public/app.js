@@ -15,7 +15,7 @@ const el = {
   settings: $('settings'), open: $('settings-open'),
   tokenInput: $('token-input'), tokenState: $('token-state'),
   save: $('token-save'), clear: $('token-clear'),
-  keepwarm: $('keepwarm'), diag: $('diag'),
+  keepwarm: $('keepwarm'), diag: $('diag'), reclaim: $('reclaim'),
 };
 
 let state = initialState();
@@ -46,8 +46,13 @@ const oci = new TransportController({
   token: () => state.token,
   onMessage: (msg) => { coordinator.handleMessage('oci', msg); render(); },
   onStatus: (s) => {
-    dispatch({ type: s === 'open' ? 'transport.open' : 'transport.closed' });
-    if (s === 'closed') coordinator.reset();
+    const EVENT = {
+      open: 'transport.open',
+      closed: 'transport.closed',
+      replaced: 'transport.replaced',
+    };
+    dispatch({ type: EVENT[s] ?? 'transport.closed' });
+    if (s !== 'open') coordinator.reset();
   },
 });
 
@@ -69,11 +74,13 @@ const DOT = {
   [PHASE.SENDING]: 'warn', [PHASE.FORWARDED]: 'warn',
   [PHASE.CLOCK_CHECKING]: 'warn', [PHASE.CLOCK_UNHEALTHY]: 'error',
   [PHASE.REJECTED]: 'error', [PHASE.UNKNOWN]: 'warn',
+  [PHASE.REPLACED]: 'error',
 };
 
 const CONN = {
   [PHASE.MISSING_TOKEN]: 'Not paired',
   [PHASE.HIDDEN]: 'Paused',
+  [PHASE.REPLACED]: 'Taken over',
   [PHASE.CONNECTING]: 'Connecting…',
   [PHASE.MAC_OFFLINE]: 'Mac offline',
   [PHASE.PERMISSION_REQUIRED]: 'Permission needed',
@@ -88,9 +95,11 @@ function render() {
   el.status.textContent = v.status;
   el.status.className = `result ${
     v.phase === PHASE.POSTED ? 'posted'
-      : v.phase === PHASE.REJECTED || v.phase === PHASE.CLOCK_UNHEALTHY ? 'error'
+      : v.phase === PHASE.REJECTED || v.phase === PHASE.CLOCK_UNHEALTHY
+        || v.phase === PHASE.REPLACED ? 'error'
         : v.phase === PHASE.UNKNOWN ? 'warn' : ''}`;
   el.dot.className = `dot ${DOT[v.phase] ?? ''}`;
+  el.reclaim.hidden = v.phase !== PHASE.REPLACED;
   el.conn.textContent = CONN[v.phase] ?? 'Mac ready';
 
   el.tokenState.textContent = state.token
@@ -143,9 +152,20 @@ el.save.addEventListener('click', () => {
   store.token = value;
   el.tokenInput.value = '';
   dispatch({ type: 'token.set', token: value });
-  oci.reconnect();
+  reclaim();                                      // unconditional: clears a replaced gate too
   el.tokenState.textContent = 'Token saved.';
 });
+
+// The only in-page way out of REPLACED. Deliberate, because taking the slot
+// back evicts the other phone — which is fine when the user meant it, and a
+// permanent ping-pong when it happens automatically.
+function reclaim() {
+  dispatch({ type: 'transport.reclaim' });
+  oci.suspend();
+  oci.connect();
+}
+
+el.reclaim.addEventListener('click', reclaim);
 
 el.clear.addEventListener('click', () => {
   store.token = null;

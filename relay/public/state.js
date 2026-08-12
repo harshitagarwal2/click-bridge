@@ -4,6 +4,7 @@
 export const PHASE = Object.freeze({
   MISSING_TOKEN: 'missing_token',
   HIDDEN: 'hidden',
+  REPLACED: 'replaced',
   CONNECTING: 'connecting',
   MAC_OFFLINE: 'mac_offline',
   PERMISSION_REQUIRED: 'permission_required',
@@ -35,6 +36,8 @@ export function initialState() {
     /** a pointer activation is awaiting the synthetic click that belongs to it */
     pointerArmed: false,
     lateResultCount: 0,
+    /** another phone took this token's slot; we are deliberately not retrying */
+    replaced: false,
   };
 }
 
@@ -49,10 +52,10 @@ const clearVolatile = (s) => ({
 export function reduce(state, event) {
   switch (event.type) {
     case 'token.set':
-      return { ...state, token: event.token };
+      return { ...state, token: event.token, replaced: false };
 
     case 'token.cleared':
-      return { ...clearVolatile(state), token: null, action: null, last: null };
+      return { ...clearVolatile(state), token: null, action: null, last: null, replaced: false };
 
     case 'visibility':
       if (event.visible === state.visible) return state;
@@ -63,10 +66,11 @@ export function reduce(state, event) {
           ? { ...s, action: null, last: { outcome: 'unknown', reason: 'hidden', ms: null } }
           : s;
       }
-      return { ...clearVolatile(state), visible: true };
+      // Foregrounding is a deliberate act, so it also reclaims a replaced slot.
+      return { ...clearVolatile(state), visible: true, replaced: false };
 
     case 'transport.open':
-      return { ...state, connected: true };
+      return { ...state, connected: true, replaced: false };
 
     case 'transport.closed': {
       const s = clearVolatile(state);
@@ -74,6 +78,21 @@ export function reduce(state, event) {
         ? { ...s, action: null, last: { outcome: 'unknown', reason: 'disconnected', ms: null } }
         : s;
     }
+
+    // Displaced by a second phone holding the same token. Distinct from
+    // `transport.closed` because nothing will retry on its own.
+    case 'transport.replaced':
+      return {
+        ...clearVolatile(state),
+        replaced: true,
+        action: null,
+        last: state.action
+          ? { outcome: 'unknown', reason: 'replaced', ms: null }
+          : state.last,
+      };
+
+    case 'transport.reclaim':
+      return { ...state, replaced: false };
 
     case 'mac.state':
       return {
@@ -154,6 +173,7 @@ export function reduce(state, event) {
 export function phaseOf(state) {
   if (!state.token) return PHASE.MISSING_TOKEN;
   if (!state.visible) return PHASE.HIDDEN;
+  if (state.replaced) return PHASE.REPLACED;
   if (state.action) {
     return state.action.phase === 'forwarded' ? PHASE.FORWARDED : PHASE.SENDING;
   }
@@ -192,6 +212,7 @@ export function view(state) {
   switch (phase) {
     case PHASE.MISSING_TOKEN: status = 'Enter the phone token'; break;
     case PHASE.HIDDEN: status = 'Paused'; break;
+    case PHASE.REPLACED: status = 'Another phone took over'; break;
     case PHASE.CONNECTING: status = 'Connecting…'; break;
     case PHASE.MAC_OFFLINE: status = 'Open Click Bridge on the Mac'; break;
     case PHASE.PERMISSION_REQUIRED: status = 'Grant input permission on the Mac'; break;

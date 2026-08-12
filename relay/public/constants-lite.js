@@ -20,3 +20,5 @@ export const PHONE_RECONNECT_BASE_MS = 250;
 export const PHONE_RECONNECT_CAP_MS = 8000;
 
 export const KEEPWARM_INTERVAL_MS = 5000;
+
+export const CLOSE_ROLE_REPLACED = 4004;

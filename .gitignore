@@ -1,10 +1,12 @@
 node_modules/
 build/
 DerivedData/
+.derived-data*/
+mac/ClickBridgeMac.xcodeproj/
+mac/Config/Local.xcconfig
 .env
 deploy/oci/.env
 deploy/oci/.env.previous
-mac/Config/Local.xcconfig
 *.dmg
 .DS_Store
 benchmarks/*.csv

@@ -8,7 +8,7 @@
 // forwarded request, one terminal result, and that a second Mac never receives
 // the request.
 
-import { WebSocket } from 'ws';
+// Node's built-in global WebSocket client: no dependency needed.
 import { randomUUID } from 'node:crypto';
 import { PROTOCOL_VERSION, ACTION_LIFETIME_MS } from '../src/constants.js';
 
@@ -31,8 +31,9 @@ function connect(label) {
   const ws = new WebSocket(url);
   const inbox = [];
   const waiters = [];
-  ws.on('message', (d) => {
-    const m = JSON.parse(d.toString());
+  ws.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string') return;
+    const m = JSON.parse(event.data);
     inbox.push(m);
     for (let i = waiters.length - 1; i >= 0; i--) {
       if (waiters[i].match(m)) { waiters[i].resolve(m); waiters.splice(i, 1); }
@@ -40,7 +41,10 @@ function connect(label) {
   });
   return {
     label, ws, inbox,
-    open: () => new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); }),
+    open: () => new Promise((res, rej) => {
+      ws.addEventListener('open', res, { once: true });
+      ws.addEventListener('error', rej, { once: true });
+    }),
     send: (m) => ws.send(JSON.stringify(m)),
     wait(match, ms = 5000) {
       const hit = inbox.find(match);

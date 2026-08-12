@@ -15,6 +15,7 @@ import {
   PROTOCOL_VERSION,
   RELAY_PENDING_TTL_MS,
   CLOCK_SKEW_TOLERANCE_MS,
+  CLOSE_ROLE_REPLACED,
 } from './constants.js';
 
 const micros = () => Number(process.hrtime.bigint() / 1000n);
@@ -61,7 +62,10 @@ export class RelayState {
     if (previous && previous !== conn) {
       this.log('role_replaced', { role });
       try {
-        previous.close();
+        // Coded close, not a bare one: a bare close arrives as 1005 and is
+        // indistinguishable from a network drop, so the displaced client
+        // reconnects, displaces its replacement, and the two ping-pong forever.
+        previous.close(CLOSE_ROLE_REPLACED, 'role replaced');
       } catch { /* already gone */ }
     }
     if (role === 'mac') {

@@ -100,6 +100,65 @@ test('hidden', () => {
   assert.equal(view(s).enabled, false);
 });
 
+test('replaced is its own state, not Connecting', () => {
+  const s = reduce(readyState(), { type: 'transport.replaced' });
+  assert.equal(phaseOf(s), PHASE.REPLACED);
+  assert.equal(view(s).enabled, false, 'the button must be dead');
+  // Connecting would imply something is retrying. Nothing is.
+  assert.notEqual(phaseOf(s), PHASE.CONNECTING);
+  assert.match(view(s).status, /took over/i);
+});
+
+test('replacement marks an in-flight action Unknown', () => {
+  let s = reduce(readyState(), { type: 'action.sent', actionId: ID });
+  s = reduce(s, { type: 'transport.replaced' });
+  assert.equal(s.action, null);
+  assert.deepEqual(s.last, { outcome: 'unknown', reason: 'replaced', ms: null });
+});
+
+test('replacement without an in-flight action preserves the last outcome', () => {
+  let s = reduce(readyState(), { type: 'action.sent', actionId: ID });
+  s = reduce(s, { type: 'action.result', actionId: ID, status: 'posted', reason: 'ok', ms: 30 });
+  const before = s.last;
+  s = reduce(s, { type: 'transport.replaced' });
+  assert.deepEqual(s.last, before, 'a completed result is not rewritten');
+});
+
+test('only a deliberate act leaves the replaced state', () => {
+  const replaced = reduce(readyState(), { type: 'transport.replaced' });
+
+  // Events that arrive on their own must not clear it.
+  for (const event of [
+    { type: 'transport.closed' },
+    { type: 'mac.state', macOnline: true, remoteEnabled: true, permission: 'ready' },
+    { type: 'clock.health', healthy: true, offsetMs: 0, uncertaintyMs: 1 },
+  ]) {
+    assert.equal(reduce(replaced, event).replaced, true, `${event.type} cleared it`);
+  }
+
+  // Deliberate acts do.
+  for (const event of [
+    { type: 'transport.reclaim' },
+    { type: 'token.set', token: '2'.repeat(64) },
+    { type: 'token.cleared' },
+    { type: 'transport.open' },
+  ]) {
+    assert.equal(reduce(replaced, event).replaced, false, `${event.type} should clear it`);
+  }
+
+  // As does coming back to the foreground, which is what the user actually does.
+  const returned = apply(replaced,
+    { type: 'visibility', visible: false },
+    { type: 'visibility', visible: true });
+  assert.equal(returned.replaced, false, 'foregrounding reclaims');
+});
+
+test('being replaced while hidden still reads as Paused', () => {
+  let s = reduce(readyState(), { type: 'visibility', visible: false });
+  s = reduce(s, { type: 'transport.replaced' });
+  assert.equal(phaseOf(s), PHASE.HIDDEN, 'hidden outranks replaced');
+});
+
 // ---------------------------------------------------------------------------
 // The ack/result distinction
 // ---------------------------------------------------------------------------

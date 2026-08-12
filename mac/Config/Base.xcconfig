@@ -1,0 +1,8 @@
+// Deterministic defaults for a local build with no Apple account.
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+// A personal override can provide DEVELOPMENT_TEAM and CODE_SIGN_IDENTITY.
+// The optional include keeps a fresh checkout buildable without that file.
+#include? "Local.xcconfig"

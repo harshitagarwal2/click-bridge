@@ -9,6 +9,7 @@ import {
   HEARTBEAT_TIMEOUT_MS,
   PHONE_RECONNECT_BASE_MS,
   PHONE_RECONNECT_CAP_MS,
+  CLOSE_ROLE_REPLACED,
 } from './constants-lite.js';
 
 export class TransportController {
@@ -41,6 +42,7 @@ export class TransportController {
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
     this.heartbeatDeadline = null;
+    this.pendingSequence = null;
     this.sequence = 0;
     /** Explicit gate: set BEFORE an intentional close so callbacks cannot reconnect. */
     this.suspended = false;
@@ -93,17 +95,31 @@ export class TransportController {
         return;
       }
       if (msg.type === 'heartbeat.ack') {
-        this.clearTimeout(this.heartbeatDeadline);
-        this.heartbeatDeadline = null;
+        // Only the outstanding sequence counts. Accepting any ack would let a
+        // stale or replayed frame satisfy the liveness check and keep a dead
+        // path looking alive.
+        if (msg.sequence === this.pendingSequence) {
+          this.clearTimeout(this.heartbeatDeadline);
+          this.heartbeatDeadline = null;
+          this.pendingSequence = null;
+        }
         return;
       }
       if (!this.authenticated) return;
       this.onMessage(msg);
     };
 
-    const down = () => {
+    const down = (event) => {
       if (stale()) return;
       this.authenticated = false;
+      if (event?.code === CLOSE_ROLE_REPLACED) {
+        // Terminal, not a drop. Another phone holds the role now; reconnecting
+        // would evict it, which would evict us back, forever. Only a deliberate
+        // user act (foregrounding, or the reclaim control) resumes.
+        this.suspend();
+        this.onStatus('replaced');
+        return;
+      }
       this.#stopHeartbeat();
       this.onStatus('closed');
       this.#scheduleReconnect();
@@ -117,6 +133,7 @@ export class TransportController {
     const beat = () => {
       if (!this.authenticated || this.suspended) return;
       this.sequence += 1;
+      this.pendingSequence = this.sequence;
       this.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: this.sequence });
       this.heartbeatDeadline = this.setTimeout(() => {
         // No acknowledgement: treat the path as dead and cycle it.
@@ -132,6 +149,7 @@ export class TransportController {
     this.clearTimeout(this.heartbeatDeadline);
     this.heartbeatTimer = null;
     this.heartbeatDeadline = null;
+    this.pendingSequence = null;
   }
 
   #scheduleReconnect() {

@@ -23,6 +23,27 @@ struct FakeToggle: RemoteToggleReading {
     func isRemoteEnabled() -> Bool { enabled }
 }
 
+/// Advanceable clock that is safe to capture in an `@escaping @Sendable`
+/// closure. Capturing a mutable `var` there is a concurrency error under strict
+/// checking, so the mutable state lives behind a lock in a reference type.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(_ start: Date = Date()) { current = start }
+
+    func now() -> Date {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.lock(); current = current.addingTimeInterval(seconds); lock.unlock()
+    }
+
+    var unixMs: Double { now().timeIntervalSince1970 * 1000 }
+}
+
 private func makeRequest(
     id: String = UUID().uuidString.lowercased(),
     issued: Double = Date().timeIntervalSince1970 * 1000
@@ -206,18 +227,18 @@ final class ActionProcessorTests: XCTestCase {
 
     func testTTLCleanupNeverAdmitsADuplicateInsideTheWindow() async {
         let poster = FakePoster()
-        var clock = Date()
+        let clock = TestClock()
         let p = ActionProcessor(
             poster: poster,
             permission: FakePermission(),
             toggle: FakeToggle(),
-            now: { clock },
+            now: { clock.now() },
             ttl: 300
         )
-        let request = makeRequest(issued: clock.timeIntervalSince1970 * 1000)
+        let request = makeRequest(issued: clock.unixMs)
 
         _ = await p.receive(request, via: .oci)
-        clock = clock.addingTimeInterval(299)                 // still protected
+        clock.advance(299)                                    // still protected
         let dup = await p.receive(request, via: .oci)
 
         XCTAssertEqual(dup.status, .posted, "served from cache")
@@ -226,20 +247,23 @@ final class ActionProcessorTests: XCTestCase {
 
     func testCompletedEntriesAreEvictedAfterTheTTL() async {
         let poster = FakePoster()
-        var clock = Date()
+        let clock = TestClock()
         let p = ActionProcessor(
             poster: poster,
             permission: FakePermission(),
             toggle: FakeToggle(),
-            now: { clock },
+            now: { clock.now() },
             ttl: 300
         )
-        _ = await p.receive(makeRequest(issued: clock.timeIntervalSince1970 * 1000), via: .oci)
-        XCTAssertEqual(await p.trackedCount(), 1)
+        _ = await p.receive(makeRequest(issued: clock.unixMs), via: .oci)
+        // Hoisted: `await` is not allowed inside an XCTAssert autoclosure.
+        let trackedAfterFirst = await p.trackedCount()
+        XCTAssertEqual(trackedAfterFirst, 1)
 
-        clock = clock.addingTimeInterval(600)
-        _ = await p.receive(makeRequest(issued: clock.timeIntervalSince1970 * 1000), via: .oci)
-        XCTAssertEqual(await p.trackedCount(), 1, "the stale entry was pruned")
+        clock.advance(600)
+        _ = await p.receive(makeRequest(issued: clock.unixMs), via: .oci)
+        let trackedAfterPrune = await p.trackedCount()
+        XCTAssertEqual(trackedAfterPrune, 1, "the stale entry was pruned")
     }
 
     /// Randomised arrival order across both ingresses, repeated many times.

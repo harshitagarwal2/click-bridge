@@ -10,13 +10,14 @@ import {
   PROTOCOL_VERSION,
   ACTION_LIFETIME_MS,
   CLOCK_SKEW_TOLERANCE_MS,
+  CLOSE_ROLE_REPLACED,
 } from '../src/constants.js';
 
 function fakeConn(name) {
   return {
-    name, sent: [], closed: false,
+    name, sent: [], closed: false, closeCode: null,
     send(s) { this.sent.push(JSON.parse(s)); },
-    close() { this.closed = true; },
+    close(code = null) { this.closed = true; this.closeCode = code; },
   };
 }
 
@@ -58,6 +59,32 @@ test('old socket close cannot clear its replacement', () => {
 
   assert.equal(s.detachIfCurrent('phone', second), true);
   assert.equal(s.phone, null);
+
+  s.dispose();
+});
+
+test('a displaced socket is closed with a distinct application code', () => {
+  // A bare close() reaches the browser as 1005, which is indistinguishable
+  // from a network drop — so the displaced client reconnects, displaces its
+  // replacement, and the two ping-pong forever. The code is the whole fix.
+  for (const role of ['phone', 'mac']) {
+    const s = new RelayState();
+    const first = fakeConn('first');
+    s.replaceRole(role, first);
+    s.replaceRole(role, fakeConn('second'));
+
+    assert.equal(first.closed, true, `${role}: displaced socket closed`);
+    assert.equal(first.closeCode, CLOSE_ROLE_REPLACED, `${role}: wrong close code`);
+    s.dispose();
+  }
+});
+
+test('re-installing the same connection does not close it', () => {
+  const s = new RelayState();
+  const only = fakeConn('only');
+  s.replaceRole('phone', only);
+  s.replaceRole('phone', only);
+  assert.equal(only.closed, false, 'a socket must not evict itself');
   s.dispose();
 });
 

@@ -31,6 +31,14 @@ export class TransportCoordinator {
     this.clockTimer = null;
     /** Diagnostics only; never mutates action.result. */
     this.firstResultVia = null;
+    /**
+     * Milestone 2. When false, one action goes down ONE ready transport.
+     * When true, the identical immutable request goes down every ready
+     * transport and the Mac's actor decides which one actually clicks.
+     */
+    this.hedging = false;
+    this.preferredName = 'oci';
+    this.pathsSent = null;
   }
 
   // -- activation ----------------------------------------------------------
@@ -63,12 +71,11 @@ export class TransportCoordinator {
     this.firstResultVia = null;
     this.dispatch({ type: 'action.sent', actionId: request.actionId });
 
-    // Milestone 1 selects one path. Milestone 2 may send on every ready
-    // transport — the identical immutable request, never a regenerated one.
-    for (const t of ready) {
-      t.controller.send(request);
-      if (!this.hedging) break;
-    }
+    // The request object is built once and never regenerated: every transport
+    // sends the identical immutable payload with the identical actionId.
+    const targets = this.hedging ? ready : [this.preferred(ready)];
+    this.pathsSent = targets.map((t) => t.name).join('+');
+    for (const t of targets) t.controller.send(request);
 
     this.clearTimeout(this.resultTimer);
     this.resultTimer = this.setTimeout(() => {
@@ -76,6 +83,11 @@ export class TransportCoordinator {
     }, PHONE_RESULT_TIMEOUT_MS);
 
     return 'sent';
+  }
+
+  /** Which single transport to use when not hedging. */
+  preferred(ready) {
+    return ready.find((t) => t.name === this.preferredName) ?? ready[0];
   }
 
   cancelPointer() {
