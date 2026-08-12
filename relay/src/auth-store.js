@@ -134,6 +134,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
       await directoryHandle.close();
       directoryHandle = null;
     } catch {
+      if (renamed) poisoned = true;
       if (temporaryHandle) {
         try { await temporaryHandle.close(); } catch {}
       }
@@ -156,6 +157,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
           await rollbackDirectoryHandle.sync();
           await rollbackDirectoryHandle.close();
           rollbackDirectoryHandle = null;
+          poisoned = false;
         } catch {
           poisoned = true;
           if (rollbackHandle) {
@@ -240,6 +242,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   async function activate(input) {
+    assertUsable();
     const operation = activationQueue.then(async () => {
       if (typeof input !== 'object' || input === null || Array.isArray(input)) {
         throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone auth activation');

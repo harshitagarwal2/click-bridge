@@ -343,12 +343,17 @@ test('a failed activation preserves the prior durable and in-memory record and r
   assert.deepEqual((await readdir(directory)).sort(), ['phone-auth.json']);
 });
 
-test('a directory fsync failure after rename rolls the durable record back before rejecting', async () => {
+test('a post-rename durability failure suspends every authority until rollback is fully durable', async () => {
   const { directory, recordPath } = await temporaryRecordPath();
   const initialStore = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_A, fs: realFs, crypto: realCrypto, log: () => {} });
   await initialStore.initialize();
 
   let failNextDirectorySync = true;
+  let directorySyncFailed = false;
+  let rollbackCloseStarted;
+  let releaseRollbackClose;
+  const rollbackCloseGate = new Promise((resolve) => { rollbackCloseStarted = resolve; });
+  const rollbackCloseRelease = new Promise((resolve) => { releaseRollbackClose = resolve; });
   const failingFs = {
     ...realFs,
     async open(path, flags, mode) {
@@ -358,22 +363,62 @@ test('a directory fsync failure after rename rolls the durable record back befor
         async sync() {
           if (failNextDirectorySync) {
             failNextDirectorySync = false;
+            directorySyncFailed = true;
             throw new Error('injected directory fsync failure');
           }
           return handle.sync();
         },
-        async close() { return handle.close(); },
+        async close() {
+          if (directorySyncFailed) {
+            directorySyncFailed = false;
+            rollbackCloseStarted();
+            await rollbackCloseRelease;
+          }
+          return handle.close();
+        },
       };
     },
   };
   const store = createPhoneAuthStore({ recordPath, initialPhoneToken: TOKEN_B, fs: failingFs, crypto: realCrypto, log: () => {} });
   await store.initialize();
 
-  await assert.rejects(
-    store.activate({ expectedVersion: 0, credentialVersion: 1, verifier: VERIFIER_B }),
-    /persist auth record failed/,
-  );
+  const activation = store.activate({ expectedVersion: 0, credentialVersion: 1, verifier: VERIFIER_B });
+  await rollbackCloseGate;
+
+  const queuedActivation = store.activate(null);
+  let queuedActivationSettled = false;
+  queuedActivation.catch(() => { queuedActivationSettled = true; });
+  try {
+    assert.throws(
+      () => store.snapshot(),
+      (error) => error instanceof AuthStoreError
+        && error.code === AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED,
+    );
+    assert.throws(
+      () => store.authenticateCredential(TOKEN_A),
+      (error) => error instanceof AuthStoreError
+        && error.code === AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED,
+    );
+    await captureAuthStoreError(
+      () => store.matchesCredential(TOKEN_A),
+      AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED,
+    );
+    await captureAuthStoreError(
+      () => store.initialize(),
+      AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED,
+    );
+    await Promise.resolve();
+    assert.equal(queuedActivationSettled, true);
+  } finally {
+    releaseRollbackClose();
+  }
+
+  await assert.rejects(activation, /persist auth record failed/);
+  await assert.rejects(queuedActivation);
   assert.equal(store.snapshot().activePhoneCredentialVersion, 0);
+  assert.deepEqual(store.authenticateCredential(TOKEN_A), { credentialVersion: 0 });
+  assert.equal(await store.matchesCredential(TOKEN_A), true);
+  assert.equal(await store.matchesCredential(TOKEN_B), false);
   assert.equal(await readFile(recordPath, 'utf8'), expectedRecord(0, VERIFIER_A));
   assert.deepEqual((await readdir(directory)).sort(), ['phone-auth.json']);
 });
