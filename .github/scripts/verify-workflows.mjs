@@ -210,6 +210,12 @@ function shellCommandSegments(source) {
       escaped = false;
       continue;
     }
+    if (quote !== "'" && character === "$" && source[index + 1] === "(") {
+      word += "$";
+      wordDynamic = true;
+      index = shellCommandSubstitutionEnd(source, index + 2);
+      continue;
+    }
     if (quote === '"' && character === "\\") {
       escaped = true;
       continue;
@@ -349,6 +355,90 @@ function shellCommandSubstitutionBodies(source) {
     }
   }
   return bodies;
+}
+
+function validateDeploymentSecretFlow(source) {
+  for (const secretName of ["PHONE_TOKEN", "MAC_TOKEN"]) {
+    const references = source.match(
+      new RegExp(`\\$(?:\\{${secretName}\\}|${secretName}\\b)`, "g"),
+    ) ?? [];
+    assert.equal(
+      references.length,
+      1,
+      `deploy script must use ${secretName} only in the reviewed smoke-container environment assignment`,
+    );
+  }
+  const credentialSegments = shellCommandSegments(source).filter((segment) => {
+    const values = segment.map(({ value }) => value);
+    return values.includes("PHONE_TOKEN=$PHONE_TOKEN") ||
+      values.includes("MAC_TOKEN=$MAC_TOKEN");
+  });
+  assert.equal(
+    credentialSegments.length,
+    1,
+    "deploy script must keep credential values in one reviewed command",
+  );
+  const credentialValues = credentialSegments[0].map(({ value }) => value);
+  const credentialCommandIndex = shellCommandInvocationIndex(credentialSegments[0]);
+  assert.deepEqual(
+    credentialValues.slice(0, credentialCommandIndex + 2),
+    [
+      "CLICK_BRIDGE_RELEASE=$release",
+      "PHONE_TOKEN=$PHONE_TOKEN",
+      "MAC_TOKEN=$MAC_TOKEN",
+      "docker",
+      "run",
+    ],
+    "deploy script must keep credential values confined to the reviewed smoke-container environment assignment",
+  );
+  assert.equal(
+    source.includes(".compose-compat."),
+    false,
+    "deploy script must not persist credential-resolved Compose output",
+  );
+
+  const composeSubstitutions = shellCommandSubstitutionBodies(source)
+    .map((body) => shellCommandSegments(body))
+    .flat()
+    .filter((segment) => {
+      const commandIndex = shellCommandInvocationIndex(segment);
+      return commandIndex >= 0 &&
+        segment[commandIndex].value === "docker" &&
+        segment[commandIndex + 1]?.value === "compose";
+    });
+  assert.equal(
+    composeSubstitutions.length,
+    1,
+    "deploy script must capture exactly one Compose compatibility render in memory",
+  );
+  assert.deepEqual(
+    composeSubstitutions[0].map(({ value }) => value),
+    [
+      "CLICK_BRIDGE_RELEASE=$1",
+      "CLICK_BRIDGE_SECRETS_FILE=$SHARED_ENV",
+      "docker",
+      "compose",
+      "-p",
+      "${COMPOSE_PROJECT_NAME}-compat-check",
+      "--env-file",
+      "$SHARED_ENV",
+      "-f",
+      "$directory/deploy/oci/compose.yaml",
+      "config",
+      "relay",
+      "2>/dev/null",
+    ],
+    "Compose compatibility render must use exact argv and suppress stderr while stdout is captured",
+  );
+  assert.equal(
+    source.match(/if ! rendered="\$\(/g)?.length,
+    1,
+    "Compose compatibility output must be captured directly into rendered",
+  );
+  assert.ok(
+    source.includes('config relay 2>/dev/null)"; then'),
+    "Compose compatibility capture must fail closed without emitting stderr",
+  );
 }
 
 const dockerRunOptionsWithValues = new Set([
@@ -531,11 +621,9 @@ function deployDockerRuns(source) {
   const subcommands = [];
   for (const substitution of shellCommandSubstitutionBodies(source)) {
     const nestedDocker = deployDockerRuns(substitution);
-    assert.deepEqual(
-      nestedDocker.subcommands,
-      [],
-      "deploy script must not invoke Docker from a command substitution",
-    );
+    runs.push(...nestedDocker.runs);
+    invocations.push(...nestedDocker.invocations);
+    subcommands.push(...nestedDocker.subcommands);
   }
   for (const segment of shellCommandSegments(source)) {
     assertSafeShellAssignments(segment);
@@ -603,7 +691,7 @@ function deployDockerRuns(source) {
 
     assert.ok(
       reviewedShellExecutables.has(executableName),
-      `deploy script contains an unreviewed executable command: ${executableName}`,
+      `deploy script contains an unreviewed executable command: ${executableName}: ${JSON.stringify(segment)}`,
     );
     if (executableName === "docker") {
       assert.equal(
@@ -687,6 +775,8 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     [reviewedCaddy],
     "Caddy must use exactly the reviewed digest; tag-only references are forbidden",
   );
+
+  validateDeploymentSecretFlow(deployScript);
 
   const {
     invocations: dockerInvocations,

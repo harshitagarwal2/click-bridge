@@ -60,7 +60,7 @@ else
     die 'SSH host must be USER@HOST'
   ssh -o BatchMode=yes -- "$ssh_host" \
     'set -eu; f=/opt/click-bridge/shared/secrets.env; test -f "$f"; test ! -L "$f"; test "$(stat -c %a "$f")" = 600; test "$(grep -c "^MAC_TOKEN=" "$f")" = 1; awk -F= '\''$1 == "MAC_TOKEN" { print substr($0, index($0, "=") + 1) }'\'' "$f"' \
-    > "$token_file" || die 'could not retrieve the owner credential'
+    > "$token_file" 2>/dev/null || die 'could not retrieve the owner credential'
 fi
 
 [[ "$(file_mode "$token_file")" = 600 ]] || die 'temporary credential file is unsafe'

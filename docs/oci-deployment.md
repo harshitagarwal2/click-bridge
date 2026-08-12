@@ -270,16 +270,23 @@ or deliberate two-role rotation, generate a temporary mode-0600 transfer file
 on the Mac without printing the tokens:
 
 ```bash
+# click-bridge-secrets-recipe:start
+set -Eeuo pipefail
 umask 077
 export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 PHONE_TOKEN="$(openssl rand -hex 32)"
 MAC_TOKEN="$(openssl rand -hex 32)"
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
 {
-  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
   printf 'PHONE_TOKEN=%s\n' "$PHONE_TOKEN"
   printf 'MAC_TOKEN=%s\n' "$MAC_TOKEN"
-} > /private/tmp/click-bridge-secrets.env
-test "$(wc -l < /private/tmp/click-bridge-secrets.env | tr -d ' ')" = 3
+  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
+  printf '%s\n' 'PAIRING_ENABLED=0'
+  printf '%s\n' 'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json'
+} > "$CLICK_BRIDGE_SECRETS_FILE"
+chmod 600 "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(wc -l < "$CLICK_BRIDGE_SECRETS_FILE" | tr -d ' ')" = 5
+# click-bridge-secrets-recipe:end
 ```
 
 Install the new/rotated canonical VM copy outside every release:
@@ -295,13 +302,23 @@ Do not generate `DIRECT_TOKEN` unless Task 11 begins.
 
 ### Pairing persistence and owner-Mac bootstrap
 
-Pairing is deliberately off by default. Before enabling it, add the public
-ten-character Apple Team ID and retain the canonical container path:
+Pairing is deliberately off by default. Enable it only by editing the existing
+`PAIRING_ENABLED=0` line to `PAIRING_ENABLED=1` and adding `APPLE_TEAM_ID`
+exactly once. The canonical auth-record line remains unchanged:
 
-```dotenv
-PAIRING_ENABLED=1
-PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json
-APPLE_TEAM_ID=XXXXXXXXXX
+```bash
+# click-bridge-pairing-enable-recipe:start
+set -Eeuo pipefail
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
+test "$(grep -c '^PAIRING_ENABLED=0$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=' "$CLICK_BRIDGE_SECRETS_FILE" || true)" = 0
+sed -i.bak 's/^PAIRING_ENABLED=0$/PAIRING_ENABLED=1/' "$CLICK_BRIDGE_SECRETS_FILE"
+rm -f "$CLICK_BRIDGE_SECRETS_FILE.bak"
+printf '%s\n' 'APPLE_TEAM_ID=XXXXXXXXXX' >> "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(grep -c '^PAIRING_ENABLED=1$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=XXXXXXXXXX$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(stat -f %Lp "$CLICK_BRIDGE_SECRETS_FILE" 2>/dev/null || stat -c %a "$CLICK_BRIDGE_SECRETS_FILE")" = 600
+# click-bridge-pairing-enable-recipe:end
 ```
 
 The deployment script requires `/opt/click-bridge/shared/auth` to be a real

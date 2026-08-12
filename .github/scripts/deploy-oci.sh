@@ -34,22 +34,14 @@ path_mode() {
 release_supports_phone_auth_record() {
   local directory
   local rendered
-  local rendered_file
   directory="$(release_directory "$1")"
-  rendered_file="$AUTH_DIRECTORY/.compose-compat.$$"
-  [[ ! -e "$rendered_file" ]] || return 1
-  umask 077
-  : > "$rendered_file"
-  if ! CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
+  if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
     -p "${COMPOSE_PROJECT_NAME}-compat-check" \
     --env-file "$SHARED_ENV" \
     -f "$directory/deploy/oci/compose.yaml" \
-    config relay > "$rendered_file" 2>/dev/null; then
-    rm -f "$rendered_file"
+    config relay 2>/dev/null)"; then
     return 1
   fi
-  rendered="$(sed -n 'p' "$rendered_file")"
-  rm -f "$rendered_file"
   [[ "$(grep -Ec '^[[:space:]]+x-click-bridge-pairing-auth-contract: 1$' <<< "$rendered")" = 1 ]] &&
     [[ "$(grep -Ec '^[[:space:]]+PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json$' <<< "$rendered")" = 1 ]] &&
     awk -v expected_source="$AUTH_DIRECTORY" '

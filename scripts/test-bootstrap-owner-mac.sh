@@ -35,12 +35,14 @@ cat > "$FAKE_BIN/ssh" <<'FAKE_SSH'
 set -Eeuo pipefail
 printf 'ssh-args=%s\n' "$*" >> "$FAKE_LOG"
 printf '%s\n' "$EXPECTED_TOKEN"
+if test "${FAKE_SSH_LEAK_STDERR:-0}" = 1; then printf '%s\n' "$EXPECTED_TOKEN" >&2; fi
 FAKE_SSH
 chmod +x "$FAKE_BIN/ssh"
 
 run_bootstrap() {
   env PATH="$FAKE_BIN:/usr/bin:/bin" EXPECTED_TOKEN="$TOKEN" FAKE_LOG="$FAKE_LOG" TMPDIR="$TOKEN_TMP" \
     FAKE_SWIFT_FAIL="${FAKE_SWIFT_FAIL:-0}" FAKE_SWIFT_DELAY="${FAKE_SWIFT_DELAY:-}" \
+    FAKE_SSH_LEAK_STDERR="${FAKE_SSH_LEAK_STDERR:-0}" \
     bash "$BOOTSTRAP" "$@"
 }
 
@@ -63,6 +65,10 @@ output="$(run_bootstrap --relay-url https://relay.example.test --ssh-host opc@re
 test -z "$output" || fail 'SSH bootstrap emitted output on success'
 grep -Fq 'ssh-args=' "$FAKE_LOG" || fail 'SSH source was not used'
 if grep -Fq "$TOKEN" "$FAKE_LOG"; then fail 'token leaked into SSH arguments or log'; fi
+
+output="$(FAKE_SSH_LEAK_STDERR=1 run_bootstrap \
+  --relay-url https://relay.example.test --ssh-host opc@relay.example.test 2>&1)"
+test -z "$output" || fail 'SSH bootstrap forwarded credential-bearing helper stderr'
 
 if output="$(FAKE_SWIFT_FAIL=1 run_bootstrap --relay-url wss://relay.example.test/ws \
     --secrets-file "$secrets" 2>&1)"; then

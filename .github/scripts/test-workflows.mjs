@@ -31,7 +31,13 @@ const validCompose = `services:\n  caddy:\n    image: ${reviewedCaddy}\n`;
 function verifierDeployScript(healthImage, smokeImage) {
   return `#!/usr/bin/env bash
 docker compose config
-docker compose config relay
+if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \\
+  -p "\${COMPOSE_PROJECT_NAME}-compat-check" \\
+  --env-file "$SHARED_ENV" \\
+  -f "$directory/deploy/oci/compose.yaml" \\
+  config relay 2>/dev/null)"; then
+  return 1
+fi
 docker rm candidate
 CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
   --name "$CANDIDATE_CONTAINER_NAME" \\
@@ -510,6 +516,43 @@ assert.doesNotThrow(() =>
     deployScript: `# $DOCKER run --rm node:latest true\nprintf '%s\\n' 'docker run --rm node:latest true'\n${validDeployScript}`,
   }),
 );
+
+for (const [shape, mutation] of [
+  [
+    "PHONE_TOKEN printf",
+    `${validDeployScript}printf '%s\\n' "$PHONE_TOKEN"\n`,
+  ],
+  [
+    "MAC_TOKEN grep input",
+    `${validDeployScript}grep -F token <<< "$MAC_TOKEN"\n`,
+  ],
+  [
+    "PHONE_TOKEN sed input",
+    `${validDeployScript}sed -n p <<< "$PHONE_TOKEN"\n`,
+  ],
+  [
+    "missing Compose stderr suppression",
+    validDeployScript.replace("config relay 2>/dev/null", "config relay"),
+  ],
+  [
+    "removed Compose output capture",
+    validDeployScript.replace(
+      'if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose',
+      'if ! CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose',
+    ).replace('config relay 2>/dev/null)"; then', "config relay 2>/dev/null; then"),
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: mutation,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|Compose|capture|stderr|output|command sequence/,
+    `deployment validation must reject ${shape}`,
+  );
+}
 
 function readRequired(relativePath) {
   const absolutePath = path.join(repositoryRoot, relativePath);

@@ -1901,16 +1901,42 @@ two-role rotation uses the generation path below.
 On the Mac, generate a temporary mode-0600 transfer file without printing either token:
 
 ~~~bash
+# click-bridge-secrets-recipe:start
+set -Eeuo pipefail
 umask 077
 export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 PHONE_TOKEN="$(openssl rand -hex 32)"
 MAC_TOKEN="$(openssl rand -hex 32)"
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
 {
-  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
   printf 'PHONE_TOKEN=%s\n' "$PHONE_TOKEN"
   printf 'MAC_TOKEN=%s\n' "$MAC_TOKEN"
-} > /private/tmp/click-bridge-secrets.env
-test "$(wc -l < /private/tmp/click-bridge-secrets.env | tr -d ' ')" = 3
+  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
+  printf '%s\n' 'PAIRING_ENABLED=0'
+  printf '%s\n' 'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json'
+} > "$CLICK_BRIDGE_SECRETS_FILE"
+chmod 600 "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(wc -l < "$CLICK_BRIDGE_SECRETS_FILE" | tr -d ' ')" = 5
+# click-bridge-secrets-recipe:end
+~~~
+
+Pairing remains off in that canonical five-line file. Enable it only by editing
+the existing `PAIRING_ENABLED=0` line to `PAIRING_ENABLED=1` and adding the
+public ten-character `APPLE_TEAM_ID` exactly once:
+
+~~~bash
+# click-bridge-pairing-enable-recipe:start
+set -Eeuo pipefail
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
+test "$(grep -c '^PAIRING_ENABLED=0$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=' "$CLICK_BRIDGE_SECRETS_FILE" || true)" = 0
+sed -i.bak 's/^PAIRING_ENABLED=0$/PAIRING_ENABLED=1/' "$CLICK_BRIDGE_SECRETS_FILE"
+rm -f "$CLICK_BRIDGE_SECRETS_FILE.bak"
+printf '%s\n' 'APPLE_TEAM_ID=XXXXXXXXXX' >> "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(grep -c '^PAIRING_ENABLED=1$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=XXXXXXXXXX$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(stat -f %Lp "$CLICK_BRIDGE_SECRETS_FILE" 2>/dev/null || stat -c %a "$CLICK_BRIDGE_SECRETS_FILE")" = 600
+# click-bridge-pairing-enable-recipe:end
 ~~~
 
 Transfer it and install the single canonical VM copy outside every release:
