@@ -1,28 +1,27 @@
-// The canonical Content-Security-Policy.
-//
-// Emitted by the relay's own static handler so localhost and production
-// enforce the same rules; Caddy passes this header through unchanged rather
-// than defining a second copy that could drift.
-//
-// Kept dependency-free so tests can import it without `ws`.
+export function createContentSecurityPolicy(clickBridgeDomain) {
+  return [
+    "default-src 'self'",
+    `connect-src 'self' wss://${clickBridgeDomain} wss://*.ts.net ws://127.0.0.1:* ws://localhost:*`,
+    "img-src 'self'",
+    "style-src 'self'",
+    "script-src 'self'",
+    "manifest-src 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'none'",
+  ].join('; ');
+}
 
-export const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  // ws:/wss: covers the local http dev origin, the production origin, and a
-  // Milestone 2 Tailscale listener on *.ts.net.
-  "connect-src 'self' ws: wss:",
-  "img-src 'self' data:",
-  "style-src 'self'",
-  "script-src 'self'",
-  "manifest-src 'self'",
-  "base-uri 'none'",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "form-action 'none'",
-].join('; ');
+export function createSecurityHeaders(clickBridgeDomain) {
+  return Object.freeze({
+    'Content-Security-Policy': createContentSecurityPolicy(clickBridgeDomain),
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  });
+}
 
-export const SECURITY_HEADERS = Object.freeze({
-  'Content-Security-Policy': CONTENT_SECURITY_POLICY,
-  'X-Content-Type-Options': 'nosniff',
-  'Referrer-Policy': 'no-referrer',
-});
+// Kept for environment-neutral asset-policy tests. The production handler
+// always creates the canonical value from validated CLICK_BRIDGE_DOMAIN.
+export const CONTENT_SECURITY_POLICY = createContentSecurityPolicy('localhost');
+export const SECURITY_HEADERS = createSecurityHeaders('localhost');

@@ -4,9 +4,9 @@
 //   PHONE_TOKEN=<64hex> MAC_TOKEN=<64hex> \
 //     node scripts/smoke-relay.mjs ws://127.0.0.1:8080/ws
 //
-// Asserts: authentication, state propagation, one time-sync exchange, one
-// forwarded request, one terminal result, and that a second Mac never receives
-// the request.
+// Asserts: authentication, state propagation, time-sync and diagnostics
+// exchanges, one forwarded request, one terminal result, and no fan-out to a
+// second unauthenticated Mac connection.
 
 import { WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +31,10 @@ function connect(label) {
   const ws = new WebSocket(url);
   const inbox = [];
   const waiters = [];
+  const openPromise = new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
   ws.on('message', (d) => {
     const m = JSON.parse(d.toString());
     inbox.push(m);
@@ -40,7 +44,7 @@ function connect(label) {
   });
   return {
     label, ws, inbox,
-    open: () => new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); }),
+    open: () => ws.readyState === WebSocket.OPEN ? Promise.resolve() : openPromise,
     send: (m) => ws.send(JSON.stringify(m)),
     wait(match, ms = 5000) {
       const hit = inbox.find(match);
@@ -89,11 +93,24 @@ try {
   await phone.wait((m) => m.type === 'time.sync.response');
   check('time sync round trip', true);
 
-  // A second Mac must never receive the request.
+  // Diagnostic counter exchange.
+  const requestId = randomUUID();
+  phone.send({ type: 'diagnostics.request', v: PROTOCOL_VERSION, requestId });
+  const diagnosticsRequest = await mac.wait(
+    (m) => m.type === 'diagnostics.request' && m.requestId === requestId,
+  );
+  mac.send({
+    type: 'diagnostics.counters', v: PROTOCOL_VERSION,
+    requestId: diagnosticsRequest.requestId,
+    mouseDownPostCount: 0, mouseUpPostCount: 0,
+  });
+  await phone.wait((m) => m.type === 'diagnostics.counters' && m.requestId === requestId);
+  check('diagnostic counters round trip', true);
+
+  // A second connected but unauthenticated Mac is not a relay participant and
+  // must never receive authenticated traffic.
   mac2 = connect('mac2');
   await mac2.open();
-  mac2.send(hello('mac', MAC_TOKEN));
-  await mac2.wait((m) => m.type === 'hello.ok');
 
   const issuedAtUnixMs = Date.now();
   const request = {
@@ -108,12 +125,12 @@ try {
   check('relay acknowledged as forwarded', ack.status === 'forwarded');
   check('ack carries the same actionId', ack.actionId === request.actionId);
 
-  const delivered = await mac2.wait((m) => m.type === 'action.request');
+  const delivered = await mac.wait((m) => m.type === 'action.request');
   check('request reached the current mac', delivered.actionId === request.actionId);
-  check('displaced mac received nothing',
-    mac.inbox.filter((m) => m.type === 'action.request').length === 0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  check('second Mac connection received nothing', mac2.inbox.length === 0);
 
-  mac2.send({
+  mac.send({
     type: 'action.result', v: PROTOCOL_VERSION, actionId: request.actionId,
     status: 'posted', reason: 'ok', acceptedVia: 'oci',
     macProcessingUs: 800, mouseDownPostedUnixMs: Date.now(),

@@ -1,108 +1,77 @@
-// Stateless one-phone / one-Mac relay logic.
-//
-// Deliberately transport-agnostic: a "connection" is any object with
-// send(string) and close(). server.js supplies real WebSockets; tests supply
-// fakes. Nothing here touches the network or persists anything.
+import { performance } from 'node:perf_hooks';
 
 import {
-  parseClientMessage,
-  encodeMessage,
-  isExpired,
-  ProtocolError,
-} from './protocol.js';
-
-import {
+  CLOCK_SKEW_TOLERANCE_MS,
   PROTOCOL_VERSION,
   RELAY_PENDING_TTL_MS,
-  CLOCK_SKEW_TOLERANCE_MS,
 } from './constants.js';
 
-const micros = () => Number(process.hrtime.bigint() / 1000n);
+const VALID_ROLES = new Set(['phone', 'mac']);
 
+/**
+ * Transport-independent, in-memory routing state.
+ *
+ * Messages entering this object have already passed the strict role parser.
+ * `emit` is the only output port and receives relay commands rather than wire
+ * bytes, keeping WebSockets and encoding in server.js.
+ */
 export class RelayState {
-  constructor(options = {}) {
+  constructor({
+    now = () => Date.now(),
+    monotonicNowUs = () => performance.now() * 1000,
+    schedule = (fn, ms) => setTimeout(fn, ms),
+    cancel = (timer) => clearTimeout(timer),
+    emit = () => false,
+    log = () => {},
+    pendingTtlMs = RELAY_PENDING_TTL_MS,
+    skewToleranceMs = CLOCK_SKEW_TOLERANCE_MS,
+  } = {}) {
+    this.now = now;
+    this.monotonicNowUs = monotonicNowUs;
+    this.schedule = schedule;
+    this.cancel = cancel;
+    this.emit = emit;
+    this.log = log;
+    this.pendingTtlMs = pendingTtlMs;
+    this.skewToleranceMs = skewToleranceMs;
+
     this.phone = null;
     this.mac = null;
     this.macState = { remoteEnabled: false, permission: 'unknown' };
-
-    /** actionId -> { phone, timer } */
-    this.pending = new Map();
-    /** syncId -> { phone, timer } */
-    this.syncPending = new Map();
-
-    this.now = options.now ?? (() => Date.now());
-    this.setTimeout = options.setTimeout ?? setTimeout;
-    this.clearTimeout = options.clearTimeout ?? clearTimeout;
-    this.log = options.log ?? (() => {});
-    this.pendingTtlMs = options.pendingTtlMs ?? RELAY_PENDING_TTL_MS;
-    this.skewToleranceMs = options.skewToleranceMs ?? CLOCK_SKEW_TOLERANCE_MS;
+    this.pendingActions = new Map();
+    this.pendingSync = new Map();
+    this.pendingDiagnostics = new Map();
   }
 
-  // -- plumbing ------------------------------------------------------------
-
-  #send(conn, message) {
-    if (!conn) return false;
-    try {
-      conn.send(encodeMessage(message));
-      return true;
-    } catch (err) {
-      this.log('send_failed', { type: message.type, error: err.code ?? err.message });
-      return false;
-    }
-  }
-
-  /**
-   * Install `conn` as the current socket for `role`, closing any previous one.
-   * Returns the displaced connection, if any.
-   */
-  replaceRole(role, conn) {
+  replaceRole(role, connection) {
+    this.#assertRole(role);
     const previous = this[role];
-    this[role] = conn;
-    if (previous && previous !== conn) {
-      this.log('role_replaced', { role });
-      try {
-        previous.close();
-      } catch { /* already gone */ }
-    }
+    this[role] = connection;
     if (role === 'mac') {
-      // A fresh Mac has not published state yet.
       this.macState = { remoteEnabled: false, permission: 'unknown' };
+    }
+    if (previous && previous !== connection) {
+      this.#emit(previous, { kind: 'close', code: 4000, reason: 'replaced' });
+      this.log('role_replaced', { role });
     }
     return previous ?? null;
   }
 
-  /**
-   * Clear `role` ONLY if `conn` is still the current owner. Without this guard
-   * a replaced socket's late close callback would null out its replacement.
-   */
-  detachIfCurrent(role, conn) {
-    if (this[role] !== conn) return false;
+  detachIfCurrent(role, connection) {
+    this.#assertRole(role);
+    if (this[role] !== connection) return false;
     this[role] = null;
-    if (role === 'mac') {
+    if (role === 'phone') {
+      this.#dropOwnedRoutes(connection);
+    } else {
       this.macState = { remoteEnabled: false, permission: 'unknown' };
       this.publishState();
     }
-    if (role === 'phone') this.#dropRoutesOwnedBy(conn);
     return true;
   }
 
-  #dropRoutesOwnedBy(conn) {
-    for (const [id, entry] of this.pending) {
-      if (entry.phone === conn) {
-        this.clearTimeout(entry.timer);
-        this.pending.delete(id);
-      }
-    }
-    for (const [id, entry] of this.syncPending) {
-      if (entry.phone === conn) {
-        this.clearTimeout(entry.timer);
-        this.syncPending.delete(id);
-      }
-    }
-  }
-
   publishState() {
-    this.#send(this.phone, {
+    return this.#send(this.phone, {
       type: 'state',
       v: PROTOCOL_VERSION,
       macOnline: this.mac !== null,
@@ -111,154 +80,181 @@ export class RelayState {
     });
   }
 
-  #route(map, id, conn) {
-    const timer = this.setTimeout(() => {
-      map.delete(id);
-      this.log('route_expired', { id });
-    }, this.pendingTtlMs);
-    if (typeof timer?.unref === 'function') timer.unref();
-    map.set(id, { phone: conn, timer });
-  }
-
-  #resolve(map, id) {
-    const entry = map.get(id);
-    if (!entry) return null;
-    this.clearTimeout(entry.timer);
-    map.delete(id);
-    return entry;
-  }
-
-  // -- message handling ----------------------------------------------------
-
-  /**
-   * Handle one authenticated frame.
-   * @returns {'ok'|'ignored'} — invalid frames after auth are ignored, never fatal.
-   */
-  handleMessage(role, conn, raw) {
-    const startedUs = micros();
-    let msg;
-    try {
-      msg = parseClientMessage(raw, role);
-    } catch (err) {
-      if (err instanceof ProtocolError) {
-        this.log('invalid_message', { role, code: err.code });
-        return 'ignored';
-      }
-      throw err;
-    }
-
-    // A frame from a socket that has already been replaced is not authoritative.
-    if (this[role] !== conn) {
-      this.log('stale_socket_message', { role, type: msg.type });
+  handlePhoneMessage(connection, message) {
+    if (connection !== this.phone) {
+      this.log('stale_socket_message', { role: 'phone', type: message.type });
       return 'ignored';
     }
-
-    switch (msg.type) {
+    switch (message.type) {
       case 'heartbeat.request':
-        this.#send(conn, {
-          type: 'heartbeat.ack', v: PROTOCOL_VERSION, sequence: msg.sequence,
+        this.#send(connection, {
+          type: 'heartbeat.ack', v: PROTOCOL_VERSION, sequence: message.sequence,
         });
         return 'ok';
+      case 'action.request':
+        return this.#handleActionRequest(connection, message);
+      case 'time.sync.request':
+        return this.#forwardWithRoute(
+          this.pendingSync, message.syncId, connection, this.mac, message, 'sync',
+        );
+      case 'diagnostics.request':
+        return this.#forwardWithRoute(
+          this.pendingDiagnostics, message.requestId, connection, this.mac, message, 'diagnostics',
+        );
+      default:
+        this.log('unexpected_validated_message', { role: 'phone', type: message.type });
+        return 'ignored';
+    }
+  }
 
-      case 'heartbeat.ack':
+  handleMacMessage(connection, message) {
+    if (connection !== this.mac) {
+      this.log('stale_socket_message', { role: 'mac', type: message.type });
+      return 'ignored';
+    }
+    switch (message.type) {
+      case 'heartbeat.request':
+        this.#send(connection, {
+          type: 'heartbeat.ack', v: PROTOCOL_VERSION, sequence: message.sequence,
+        });
         return 'ok';
-
       case 'mac.state':
         this.macState = {
-          remoteEnabled: msg.remoteEnabled,
-          permission: msg.permission,
+          remoteEnabled: message.remoteEnabled,
+          permission: message.permission,
         };
         this.publishState();
         return 'ok';
-
-      case 'action.request':
-        return this.#handleActionRequest(conn, msg, startedUs);
-
       case 'action.result':
-        return this.#handleActionResult(msg);
-
-      case 'time.sync.request':
-        return this.#handleSyncRequest(conn, msg);
-
+        return this.#routeResponse(this.pendingActions, message.actionId, message, 'action');
       case 'time.sync.response':
-        return this.#handleSyncResponse(msg);
-
+        return this.#routeResponse(this.pendingSync, message.syncId, message, 'sync');
+      case 'diagnostics.counters':
+        return this.#routeResponse(
+          this.pendingDiagnostics, message.requestId, message, 'diagnostics',
+        );
       default:
-        this.log('unhandled_type', { type: msg.type });
+        this.log('unexpected_validated_message', { role: 'mac', type: message.type });
         return 'ignored';
     }
   }
 
-  #ack(conn, actionId, status, startedUs) {
-    this.#send(conn, {
+  #handleActionRequest(connection, message) {
+    const startedUs = this.monotonicNowUs();
+    if (this.now() > message.expiresAtUnixMs + this.skewToleranceMs) {
+      this.log('action_expired', { actionId: message.actionId });
+      this.#ack(connection, message.actionId, 'rejected', 'expired', startedUs);
+      return 'ok';
+    }
+    if (this.pendingActions.has(message.actionId)) {
+      this.log('action_duplicate_in_flight', { actionId: message.actionId });
+      this.#ack(connection, message.actionId, 'rejected', 'invalid_request', startedUs);
+      return 'ok';
+    }
+    if (!this.mac) {
+      this.#ack(connection, message.actionId, 'mac_offline', 'mac_offline', startedUs);
+      return 'ok';
+    }
+
+    const entry = this.#addRoute(this.pendingActions, message.actionId, connection, 'action');
+    if (!this.#send(this.mac, message)) {
+      this.#removeRoute(this.pendingActions, message.actionId, entry);
+      this.#ack(connection, message.actionId, 'rejected', 'invalid_request', startedUs);
+      return 'ok';
+    }
+    this.#ack(connection, message.actionId, 'forwarded', 'ok', startedUs);
+    return 'ok';
+  }
+
+  #ack(connection, actionId, status, reason, startedUs) {
+    this.#send(connection, {
       type: 'relay.ack',
       v: PROTOCOL_VERSION,
       actionId,
       status,
-      relayProcessingUs: Math.max(0, micros() - startedUs),
+      reason,
+      relayProcessingUs: Math.max(0, this.monotonicNowUs() - startedUs),
     });
   }
 
-  #handleActionRequest(conn, msg, startedUs) {
-    if (isExpired(msg, this.now(), this.skewToleranceMs)) {
-      this.log('action_expired', { actionId: msg.actionId });
-      this.#ack(conn, msg.actionId, 'rejected', startedUs);
-      return 'ok';
+  #forwardWithRoute(map, id, owner, destination, message, routeType) {
+    if (!destination || map.has(id)) {
+      this.log(`${routeType}_not_forwarded`, { reason: destination ? 'duplicate_id' : 'mac_offline' });
+      return 'ignored';
     }
-    if (this.pending.has(msg.actionId)) {
-      this.log('action_duplicate_in_flight', { actionId: msg.actionId });
-      this.#ack(conn, msg.actionId, 'rejected', startedUs);
-      return 'ok';
+    const entry = this.#addRoute(map, id, owner, routeType);
+    if (!this.#send(destination, message)) {
+      this.#removeRoute(map, id, entry);
+      return 'ignored';
     }
-    if (!this.mac) {
-      this.#ack(conn, msg.actionId, 'mac_offline', startedUs);
-      return 'ok';
-    }
-
-    const forwarded = this.#send(this.mac, msg);
-    if (!forwarded) {
-      this.#ack(conn, msg.actionId, 'rejected', startedUs);
-      return 'ok';
-    }
-    this.#route(this.pending, msg.actionId, conn);
-    this.#ack(conn, msg.actionId, 'forwarded', startedUs);
     return 'ok';
   }
 
-  #handleActionResult(msg) {
-    const entry = this.#resolve(this.pending, msg.actionId);
+  #routeResponse(map, id, message, routeType) {
+    const entry = map.get(id);
     if (!entry) {
-      this.log('result_without_route', { actionId: msg.actionId });
+      this.log(`${routeType}_without_route`, { id });
       return 'ignored';
     }
-    // Never hand a replaced phone's result to its replacement.
-    if (entry.phone !== this.phone) {
-      this.log('result_for_replaced_phone', { actionId: msg.actionId });
+    this.#removeRoute(map, id, entry);
+    if (entry.owner !== this.phone) {
+      this.log(`${routeType}_for_replaced_phone`, { id });
       return 'ignored';
     }
-    this.#send(entry.phone, msg);
-    return 'ok';
+    return this.#send(entry.owner, message) ? 'ok' : 'ignored';
   }
 
-  #handleSyncRequest(conn, msg) {
-    if (!this.mac) return 'ignored';
-    if (!this.#send(this.mac, msg)) return 'ignored';
-    this.#route(this.syncPending, msg.syncId, conn);
-    return 'ok';
+  #addRoute(map, id, owner, routeType) {
+    const entry = { owner, timer: null };
+    entry.timer = this.schedule(() => {
+      if (map.get(id) === entry) map.delete(id);
+      this.log('route_expired', { routeType, id });
+    }, this.pendingTtlMs);
+    entry.timer?.unref?.();
+    map.set(id, entry);
+    return entry;
   }
 
-  #handleSyncResponse(msg) {
-    const entry = this.#resolve(this.syncPending, msg.syncId);
-    if (!entry || entry.phone !== this.phone) return 'ignored';
-    this.#send(entry.phone, msg);
-    return 'ok';
+  #removeRoute(map, id, entry) {
+    if (map.get(id) !== entry) return false;
+    map.delete(id);
+    this.cancel(entry.timer);
+    return true;
   }
 
-  /** Release every timer. Used on shutdown and between tests. */
+  #dropOwnedRoutes(owner) {
+    for (const map of [this.pendingActions, this.pendingSync, this.pendingDiagnostics]) {
+      for (const [id, entry] of map) {
+        if (entry.owner === owner) this.#removeRoute(map, id, entry);
+      }
+    }
+  }
+
+  #send(connection, message) {
+    if (!connection) return false;
+    return this.#emit(connection, { kind: 'message', message });
+  }
+
+  #emit(connection, event) {
+    try {
+      return this.emit(connection, event) !== false;
+    } catch (error) {
+      this.log('emit_failed', {
+        kind: event.kind,
+        code: typeof error?.code === 'string' ? error.code : 'emit_error',
+      });
+      return false;
+    }
+  }
+
+  #assertRole(role) {
+    if (!VALID_ROLES.has(role)) throw new TypeError(`invalid role: ${role}`);
+  }
+
   dispose() {
-    for (const { timer } of this.pending.values()) this.clearTimeout(timer);
-    for (const { timer } of this.syncPending.values()) this.clearTimeout(timer);
-    this.pending.clear();
-    this.syncPending.clear();
+    for (const map of [this.pendingActions, this.pendingSync, this.pendingDiagnostics]) {
+      for (const entry of map.values()) this.cancel(entry.timer);
+      map.clear();
+    }
   }
 }
