@@ -48,15 +48,20 @@ function harness(overrides = {}) {
   const starts = [];
   let cancels = 0;
   let forgets = 0;
-  const ui = createPairingUI({
+  let ui;
+  ui = createPairingUI({
     elements,
     enabled: overrides.enabled ?? true,
     paired: overrides.paired ?? false,
     expectedHost: 'click.example',
     readClipboard: overrides.readClipboard ?? (async () => LINK),
     startPairing(reference) { starts.push(reference); },
-    cancelPairing() { cancels += 1; },
-    async forgetPairing() { forgets += 1; return overrides.forgetResult ?? true; },
+    cancelPairing() { cancels += 1; overrides.cancelPairing?.(ui); },
+    async forgetPairing() {
+      forgets += 1;
+      if (overrides.forgetPairing) return overrides.forgetPairing();
+      return overrides.forgetResult ?? true;
+    },
     lifecycleTarget,
   });
   return { ui, elements, lifecycleTarget, starts, cancels: () => cancels, forgets: () => forgets };
@@ -214,6 +219,23 @@ test('Forget waits for durable removal before showing the unpaired state', async
   ui.destroy();
 });
 
+for (const [name, result] of [['success', true], ['failure', false]]) {
+  test(`a stale Forget ${name} cannot overwrite a newer pairing attempt`, async () => {
+    const pending = deferred();
+    const h = harness({ paired: true, forgetPairing: () => pending.promise });
+
+    h.elements.forget.dispatchEvent(event('click'));
+    h.ui.start({ pairingVersion: 1, reference: REFERENCE });
+    pending.resolve(result);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(h.starts, [REFERENCE]);
+    assert.equal(h.elements.heading.textContent, 'Pair this browser');
+    assert.equal(h.elements.message.textContent, 'Claiming the pairing link…');
+    assert.equal(h.elements.alert.hidden, true);
+  });
+}
+
 test('Escape and page hide cancel an in-progress claimant lifecycle', () => {
   const h = harness();
   h.ui.handleState({ phase: 'claiming' });
@@ -235,4 +257,27 @@ test('page hide cancels startup credential recovery before it can activate', () 
   assert.equal(h.cancels(), 1);
   assert.equal(h.elements.code.textContent, '');
   assert.equal(h.elements.code.hidden, true);
+});
+
+test('reentrant cancellation publishes a stable home state and does not cancel twice', () => {
+  const h = harness({ cancelPairing: (ui) => ui.handleState({ phase: 'cancelled' }) });
+  h.ui.handleState({ phase: 'claiming' });
+
+  h.lifecycleTarget.dispatchEvent(event('pagehide'));
+  h.lifecycleTarget.dispatchEvent(event('pagehide'));
+
+  assert.equal(h.cancels(), 1);
+  assert.equal(h.elements.heading.textContent, 'Pair this browser');
+  assert.equal(h.elements.message.textContent, 'Open a pairing link from your Mac, or paste it here.');
+});
+
+test('destroy ignores a reentrant controller state publication', () => {
+  const h = harness({ cancelPairing: (ui) => ui.handleState({ phase: 'cancelled' }) });
+  h.ui.handleState({ phase: 'claiming' });
+  h.elements.heading.focused = false;
+
+  h.ui.destroy();
+
+  assert.equal(h.cancels(), 1);
+  assert.equal(h.elements.heading.focused, false);
 });

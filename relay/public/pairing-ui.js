@@ -63,6 +63,7 @@ export function createPairingUI({
     elements.message.textContent = 'Open a pairing link from your Mac, or paste it here.';
     elements.paste.hidden = false;
     elements.cancel.hidden = true;
+    elements.forget.disabled = false;
     elements.heading.focus();
   }
 
@@ -74,6 +75,7 @@ export function createPairingUI({
     elements.alert.hidden = true;
     elements.paste.hidden = true;
     elements.cancel.hidden = false;
+    elements.forget.disabled = false;
     elements.heading.textContent = 'Pair this browser';
     elements.message.textContent = 'Claiming the pairing link…';
     elements.heading.focus();
@@ -96,6 +98,7 @@ export function createPairingUI({
     elements.alert.hidden = true;
     elements.paste.hidden = true;
     elements.cancel.hidden = false;
+    elements.forget.disabled = false;
     elements.heading.textContent = 'Reconnecting this browser';
     elements.message.textContent = 'Checking the saved pairing…';
     elements.heading.focus();
@@ -113,7 +116,7 @@ export function createPairingUI({
   }
 
   function handleState(next) {
-    if (!enabled) return;
+    if (!enabled || !listenersActive) return;
     activePhase = next.phase;
     elements.alert.hidden = true;
     if (next.phase !== 'awaiting_approval') clearSensitiveUI();
@@ -187,15 +190,20 @@ export function createPairingUI({
 
   function cancelInProgress() {
     if (!IN_PROGRESS.has(activePhase)) return;
-    cancelPairing();
-    clearSensitiveUI();
+    operationGeneration += 1;
     activePhase = 'cancelled';
+    clearSensitiveUI();
+    cancelPairing();
   }
 
   async function forget() {
+    const generation = ++operationGeneration;
     elements.forget.disabled = true;
     let removed = false;
-    try { removed = await forgetPairing(); } finally { elements.forget.disabled = false; }
+    try { removed = await forgetPairing(); } finally {
+      if (listenersActive && generation === operationGeneration) elements.forget.disabled = false;
+    }
+    if (!listenersActive || generation !== operationGeneration) return;
     if (removed) showPairingHome();
     else showFailure('storage_failed');
   }
