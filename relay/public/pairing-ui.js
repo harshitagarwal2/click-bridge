@@ -236,7 +236,7 @@ export function createPairingUI({
     if (event.key === 'Escape') cancelInProgress();
   };
   const onPageHide = () => {
-    operationGeneration += 1;
+    if (activePhase !== 'forgetting') operationGeneration += 1;
     cancelInProgress();
   };
   const onPairAgain = () => showPairingHome();

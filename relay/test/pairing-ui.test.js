@@ -273,9 +273,13 @@ test('Forget waits for durable removal before showing the unpaired state', async
 });
 
 for (const [name, clearResult] of [['success', true], ['failure', false]]) {
-  test(`real claimant and UI keep Forget paired until durable clear ${name}`, async () => {
+  test(`pagehide and pageshow preserve deferred Forget ${name} ownership`, async () => {
     const cleared = deferred();
     let durableActive = { credential: 'a'.repeat(64), version: 1 };
+    let visible = true;
+    let transportReady = true;
+    const appliedTokens = [];
+    const connections = [];
     const settings = {
       getSnapshot: () => ({
         active: durableActive, pending: null, generation: '00000000-0000-4000-8000-000000000001',
@@ -290,12 +294,22 @@ for (const [name, clearResult] of [['success', true], ['failure', false]]) {
     let activeToken = durableActive.credential;
     const lifecycle = new CredentialLifecycleController({
       settings,
-      isVisible: () => true,
+      isVisible: () => visible,
       currentToken: () => activeToken,
-      transportReady: () => false,
-      applyToken: (token) => { activeToken = token; },
-      clearToken: () => { activeToken = null; },
-      connect() {},
+      transportReady: () => transportReady,
+      applyToken: (token) => {
+        activeToken = token;
+        transportReady = true;
+        appliedTokens.push(token);
+      },
+      clearToken: () => {
+        activeToken = null;
+        transportReady = false;
+      },
+      connect: () => {
+        connections.push(activeToken);
+        transportReady = true;
+      },
       reportError() {},
     });
     const sockets = [];
@@ -334,15 +348,29 @@ for (const [name, clearResult] of [['success', true], ['failure', false]]) {
     claimant.open();
 
     h.elements.forget.dispatchEvent(event('click'));
+    visible = false;
+    transportReady = false;
+    h.lifecycleTarget.dispatchEvent(event('pagehide'));
+    controller.cancel();
     claimant.message(JSON.stringify({
       type: 'pair.claimed.phone', v: 1,
       claimId: '018f63f5-6f3d-7d21-88bc-9ef561f030e2',
       confirmationCode: '123 456', expiresAtUnixMs: Date.now() + 60_000,
     }));
+    visible = true;
+    lifecycle.visible();
+    h.lifecycleTarget.dispatchEvent(event('pageshow'));
+    claimant.message(JSON.stringify({
+      type: 'pair.failed', v: 1,
+      claimId: '018f63f5-6f3d-7d21-88bc-9ef561f030e2', reason: 'denied',
+    }));
     assert.equal(h.elements.remote.hidden, false);
     assert.equal(h.elements.panel.hidden, true);
     assert.equal(h.elements.forget.disabled, true);
     assert.match(h.elements.pairedState.textContent, /forgetting/i);
+    assert.equal(transportReady, false);
+    assert.deepEqual(appliedTokens, []);
+    assert.deepEqual(connections, []);
 
     cleared.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -350,13 +378,22 @@ for (const [name, clearResult] of [['success', true], ['failure', false]]) {
     if (clearResult) {
       assert.equal(h.elements.remote.hidden, true);
       assert.equal(h.elements.panel.hidden, false);
+      assert.equal(h.elements.paste.hidden, false);
+      assert.equal(h.elements.forget.disabled, false);
       assert.equal(activeToken, null);
+      assert.equal(transportReady, false);
+      assert.deepEqual(appliedTokens, []);
+      assert.deepEqual(connections, []);
     } else {
       assert.equal(h.elements.remote.hidden, false);
       assert.equal(h.elements.panel.hidden, true);
+      assert.equal(h.elements.pairAgain.disabled, false);
       assert.equal(h.elements.forget.disabled, false);
       assert.match(h.elements.pairedState.textContent, /could not forget/i);
       assert.equal(activeToken, 'a'.repeat(64));
+      assert.equal(transportReady, true);
+      assert.deepEqual(appliedTokens, ['a'.repeat(64)]);
+      assert.deepEqual(connections, []);
     }
     ui.destroy();
   });
