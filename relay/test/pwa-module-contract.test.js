@@ -12,11 +12,15 @@ async function optionalImport(path) {
 }
 
 test('PWA responsibility owners have dedicated modules', async () => {
-  const [clock, settings, lifecycle, pairingLink, relay, runtime, benchmark, controller] = await Promise.all([
+  const [
+    clock, settings, lifecycle, pairingLink, pairingController,
+    relay, runtime, benchmark, controller,
+  ] = await Promise.all([
     optionalImport('../public/clock-health-controller.js'),
     optionalImport('../public/phone-settings-store.js'),
     optionalImport('../public/credential-lifecycle-controller.js'),
     optionalImport('../public/pairing-link.js'),
+    optionalImport('../public/pairing-controller.js'),
     optionalImport('../public/relay-transport.js'),
     optionalImport('../public/runtime-scheduler.js'),
     optionalImport('../public/benchmark-session.js'),
@@ -28,6 +32,7 @@ test('PWA responsibility owners have dedicated modules', async () => {
   assert.equal(typeof settings?.MemorySettingsStore, 'function');
   assert.equal(typeof lifecycle?.CredentialLifecycleController, 'function');
   assert.equal(typeof pairingLink?.parseAndClearPairingFragment, 'function');
+  assert.equal(typeof pairingController?.PairingController, 'function');
   assert.equal(typeof relay?.deriveRelayWebSocketUrl, 'function');
   assert.equal(typeof runtime?.createRuntimeScheduler, 'function');
   assert.equal(typeof benchmark?.BenchmarkSession, 'function');
