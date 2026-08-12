@@ -183,6 +183,30 @@ test('expired action is rejected before forwarding and creates no route', () => 
   assert.equal(h.state.pendingActions.size, 0);
 });
 
+test('future-issued action is accepted at clock skew tolerance and rejected one millisecond beyond it', () => {
+  const now = 1_800_000_000_000;
+  const h = harness({ start: now });
+  const phone = h.connection('phone');
+  const mac = h.connection('mac');
+  h.state.replaceRole('phone', phone);
+  h.state.replaceRole('mac', mac);
+
+  const boundary = action(now + CLOCK_SKEW_TOLERANCE_MS);
+  h.state.handlePhoneMessage(phone, boundary);
+  assert.equal(h.messages(mac, 'action.request').length, 1);
+  assert.equal(h.state.pendingActions.size, 1);
+  h.state.handleMacMessage(mac, posted(boundary.actionId, now));
+
+  const future = action(now + CLOCK_SKEW_TOLERANCE_MS + 1);
+  h.state.handlePhoneMessage(phone, future);
+  assert.equal(h.messages(mac, 'action.request').length, 1);
+  assert.deepEqual(
+    h.messages(phone, 'relay.ack').map(({ actionId, status, reason }) => ({ actionId, status, reason })).at(-1),
+    { actionId: future.actionId, status: 'rejected', reason: 'invalid_request' },
+  );
+  assert.equal(h.state.pendingActions.size, 0);
+});
+
 test('duplicate in-flight action is rejected and never forwarded twice', () => {
   const h = harness();
   const phone = h.connection('phone');

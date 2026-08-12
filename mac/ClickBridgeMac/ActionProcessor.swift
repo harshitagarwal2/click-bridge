@@ -54,6 +54,9 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
         }
 
         let currentMilliseconds = nowMilliseconds()
+        guard request.issuedAtUnixMs <= currentMilliseconds + skewToleranceMilliseconds else {
+            return rejected(request.actionId, .invalidRequest, ingress, started)
+        }
         guard currentMilliseconds <= request.expiresAtUnixMs + skewToleranceMilliseconds else {
             return rejected(request.actionId, .expired, ingress, started)
         }

@@ -145,7 +145,13 @@ export class RelayState {
 
   #handleActionRequest(connection, message) {
     const startedUs = this.monotonicNowUs();
-    if (this.now() > message.expiresAtUnixMs + this.skewToleranceMs) {
+    const now = this.now();
+    if (message.issuedAtUnixMs > now + this.skewToleranceMs) {
+      this.log('action_future_issued', { actionId: message.actionId });
+      this.#ack(connection, message.actionId, 'rejected', 'invalid_request', startedUs);
+      return 'ok';
+    }
+    if (now > message.expiresAtUnixMs + this.skewToleranceMs) {
       this.log('action_expired', { actionId: message.actionId });
       this.#ack(connection, message.actionId, 'rejected', 'expired', startedUs);
       return 'ok';
