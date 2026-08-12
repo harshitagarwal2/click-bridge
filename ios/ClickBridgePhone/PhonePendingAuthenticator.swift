@@ -53,7 +53,7 @@ final class PhonePendingAuthenticator {
         switch state {
         case .authenticated:
             finish(.authenticated, reason: "pending_authentication_complete")
-        case .authenticationRejected:
+        case .credentialReplaced, .authenticationRejected:
             finish(.rejected, reason: "pending_authentication_rejected")
         case .backoff, .takenOver, .disconnected:
             finish(.unavailable, reason: "pending_authentication_unavailable")

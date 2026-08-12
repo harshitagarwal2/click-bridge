@@ -1,0 +1,6 @@
+{
+  "_comment": "Canonical deployment identity contract for Universal Link pairing. These values remain represented in the iOS app, entitlement, and relay response; tests bind every representation to this reviewed contract so drift fails CI. Changing deployment host still requires updating the production deployment variable and Apple Developer configuration.",
+  "pairingHost": "clickbridge-sjc.duckdns.org",
+  "bundleId": "com.clickbridge.phone",
+  "associatedDomainPrefix": "applinks:"
+}

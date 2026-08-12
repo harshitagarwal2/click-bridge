@@ -5,6 +5,7 @@ export const PHASE = Object.freeze({
   MISSING_TOKEN: 'missing_token',
   HIDDEN: 'hidden',
   TAKEN_OVER: 'taken_over',
+  CREDENTIAL_REPLACED: 'credential_replaced',
   CONNECTING: 'connecting',
   MAC_OFFLINE: 'mac_offline',
   PERMISSION_REQUIRED: 'permission_required',
@@ -29,6 +30,7 @@ export function initialState() {
     visible: true,
     connected: false,
     takenOver: false,
+    credentialReplaced: false,
     mac: { online: false, remoteEnabled: false, permission: 'unknown' },
     clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null },
     /** in-flight logical action: { id, phase: 'sending'|'forwarded' } */
@@ -52,10 +54,10 @@ const clearVolatile = (s) => ({
 export function reduce(state, event) {
   switch (event.type) {
     case 'token.set':
-      return { ...state, token: event.token, takenOver: false };
+      return { ...state, token: event.token, takenOver: false, credentialReplaced: false };
 
     case 'token.cleared':
-      return { ...clearVolatile(state), token: null, takenOver: false, action: null, last: null };
+      return { ...clearVolatile(state), token: null, takenOver: false, credentialReplaced: false, action: null, last: null };
 
     case 'visibility':
       if (event.visible === state.visible) return state;
@@ -69,12 +71,21 @@ export function reduce(state, event) {
       return { ...clearVolatile(state), visible: true };
 
     case 'transport.open':
-      return { ...state, connected: true, takenOver: false };
+      return { ...state, connected: true, takenOver: false, credentialReplaced: false };
 
     case 'transport.taken_over': {
       const s = clearVolatile({ ...state, takenOver: true });
       return state.action
         ? { ...s, action: null, last: { outcome: 'unknown', reason: 'taken_over', ms: null } }
+        : s;
+    }
+
+    // Distinct from taken_over: this credential is dead, so reconnecting cannot
+    // help and the UI must send the user to pairing instead.
+    case 'transport.credential_replaced': {
+      const s = clearVolatile({ ...state, credentialReplaced: true });
+      return state.action
+        ? { ...s, action: null, last: { outcome: 'unknown', reason: 'credential_replaced', ms: null } }
         : s;
     }
 
@@ -186,6 +197,7 @@ export function reduce(state, event) {
 export function phaseOf(state) {
   if (!state.token) return PHASE.MISSING_TOKEN;
   if (!state.visible) return PHASE.HIDDEN;
+  if (state.credentialReplaced) return PHASE.CREDENTIAL_REPLACED;
   if (state.takenOver) return PHASE.TAKEN_OVER;
   if (state.action) {
     return state.action.phase === 'forwarded' ? PHASE.FORWARDED : PHASE.SENDING;
@@ -226,7 +238,8 @@ export function view(state) {
   switch (phase) {
     case PHASE.MISSING_TOKEN: status = 'Pair this browser'; break;
     case PHASE.HIDDEN: status = 'Paused'; break;
-    case PHASE.TAKEN_OVER: status = 'This browser was replaced. Pair again to reconnect.'; break;
+    case PHASE.TAKEN_OVER: status = 'Another device took over. Reload this page to take control back.'; break;
+    case PHASE.CREDENTIAL_REPLACED: status = 'This browser was un-paired. Pair again to reconnect.'; break;
     case PHASE.CONNECTING: status = 'Connecting…'; break;
     case PHASE.MAC_OFFLINE: status = 'Open Click Bridge on the Mac'; break;
     case PHASE.PERMISSION_REQUIRED: status = 'Grant input permission on the Mac'; break;

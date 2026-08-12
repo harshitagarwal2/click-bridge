@@ -8,12 +8,49 @@ final class ProductionWiringTests: XCTestCase {
         XCTAssertTrue(entitlements.contains("<string>\(PhoneDeployment.associatedDomain)</string>"))
     }
 
+    /// The pairing host and bundle id must also agree with the relay, which
+    /// serves them in its apple-app-site-association response — Apple requires
+    /// all three to match or Universal Link pairing silently stops working.
+    /// This checks the compiled iOS app against the shared contract; the relay
+    /// endpoint is checked behaviorally in relay.pairing.socket.test.js.
+    func testDeploymentIdentityMatchesSharedContract() throws {
+        let url = try XCTUnwrap(
+            Bundle(for: Self.self).url(forResource: "deployment", withExtension: "json"))
+        let contract = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any])
+
+        let host = try XCTUnwrap(contract["pairingHost"] as? String)
+        let prefix = try XCTUnwrap(contract["associatedDomainPrefix"] as? String)
+        let bundleId = try XCTUnwrap(contract["bundleId"] as? String)
+
+        XCTAssertEqual(PhoneDeployment.pairingHost, host)
+        XCTAssertEqual(PhoneDeployment.associatedDomain, prefix + host)
+
+        let entitlements = try source("ClickBridgePhone/ClickBridgePhone.entitlements")
+        XCTAssertTrue(entitlements.contains("<string>\(prefix)\(host)</string>"))
+
+        XCTAssertEqual(Bundle.main.bundleIdentifier, bundleId)
+    }
+
     func testCompositionInstallsRealPairingClientAndPendingAuthenticator() throws {
         let app = try source("ClickBridgePhone/ClickBridgePhoneApp.swift")
 
         XCTAssertTrue(app.contains("PhonePendingAuthenticator(transport: pendingTransport)"))
         XCTAssertTrue(app.contains("authenticatePending: pendingAuthenticator.authenticate"))
         XCTAssertTrue(app.contains("model.installPairingClient(pairing)"))
+    }
+
+    func testAppIntentMetadataAvoidsAppleRestrictedMacTerm() {
+        let title = String(localized: TriggerClickIntent.title)
+        let description = String(localized: TriggerClickIntent.description.descriptionText)
+
+        XCTAssertEqual(
+            description,
+            "Open Click Bridge and send three ordinary clicks to the connected computer."
+        )
+        for value in [title, description] {
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("mac"))
+        }
     }
 
     func testUniversalLinkAndSceneLifecycleAreWiredInProductionOrder() throws {

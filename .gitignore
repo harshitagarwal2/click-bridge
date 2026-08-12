@@ -19,6 +19,8 @@ AuthKey_*.p8
 *.certSigningRequest
 *.dmg
 .DS_Store
+**/xcuserdata/
+*.xcuserstate
 benchmarks/*.csv
 !benchmarks/measurements.csv
 !benchmarks/run-evidence.csv

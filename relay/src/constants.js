@@ -1,5 +1,14 @@
-// Canonical timing and size constants. Single source of truth for the relay,
-// the phone PWA, and (mirrored by hand) the Swift client.
+// Relay server-only constants, plus verbatim re-exports of the two shared
+// browser modules so server code has a single import site.
+//
+// This file is NOT the source of truth for anything the phone also needs.
+// Protocol values live in public/wire-protocol.js and timing values in
+// public/runtime-constants.js; the PWA imports those directly, so a second
+// copy here would drift from the PWA with nothing to catch it. Re-export
+// them — never redefine them.
+//
+// The Swift client mirrors both by hand. contracts/config/runtime-constants.json
+// is what keeps that mirror honest; see relay/test/runtime-constants-parity.test.js.
 
 import {
   PROTOCOL_VERSION,
@@ -24,6 +33,32 @@ import {
   PAIRING_ENROLLMENT_STATES,
   PAIRING_FAILURE_REASONS,
 } from '../public/wire-protocol.js';
+
+import {
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  CLOCK_SKEW_TOLERANCE_MS,
+  CLOCK_HEALTH_SAMPLES,
+  CLOCK_HEALTH_EXCHANGE_TIMEOUT_MS,
+  CLOCK_HEALTH_REFRESH_MS,
+  PHONE_RESULT_TIMEOUT_MS,
+  PHONE_RECONNECT_BASE_MS,
+  PHONE_RECONNECT_CAP_MS,
+  KEEPWARM_INTERVAL_MS,
+} from '../public/runtime-constants.js';
+
+export {
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_TIMEOUT_MS,
+  CLOCK_SKEW_TOLERANCE_MS,
+  CLOCK_HEALTH_SAMPLES,
+  CLOCK_HEALTH_EXCHANGE_TIMEOUT_MS,
+  CLOCK_HEALTH_REFRESH_MS,
+  PHONE_RESULT_TIMEOUT_MS,
+  PHONE_RECONNECT_BASE_MS,
+  PHONE_RECONNECT_CAP_MS,
+  KEEPWARM_INTERVAL_MS,
+};
 
 export {
   PROTOCOL_VERSION,
@@ -54,21 +89,11 @@ export const MAX_TOTAL_WEBSOCKET_CONNECTIONS = 64;
 export const MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS = 16;
 export const TERMINAL_CLOSE_DEADLINE_MS = 250;
 
-export const HEARTBEAT_INTERVAL_MS = 20000;
-export const HEARTBEAT_TIMEOUT_MS = 10000;
+// Server-only. Nothing below is shared with the phone clients.
 export const SERVER_PING_INTERVAL_MS = 30000;
 export const SERVER_PONG_TIMEOUT_MS = 10000;
 
-export const CLOCK_SKEW_TOLERANCE_MS = 1000;
-export const CLOCK_HEALTH_SAMPLES = 5;
-export const CLOCK_HEALTH_EXCHANGE_TIMEOUT_MS = 3500;
-export const CLOCK_HEALTH_REFRESH_MS = 300000;
-
 export const RELAY_PENDING_TTL_MS = 3000;
-export const PHONE_RESULT_TIMEOUT_MS = 4000;
-
-export const PHONE_RECONNECT_BASE_MS = 250;
-export const PHONE_RECONNECT_CAP_MS = 8000;
 export const MAC_RECONNECT_CAP_MS = 5000;
 
 export const COMPLETED_ACTION_TTL_MS = 300000;
@@ -76,7 +101,6 @@ export const COMPLETED_ACTION_CAP = 4096;
 
 export const DIRECT_LISTENER_PORT = 8787;
 export const CLICK_GAP_MS = 0;
-export const KEEPWARM_INTERVAL_MS = 5000;
 
 // Invariants that must hold for the timing model to be coherent.
 // Asserted by test/protocol.test.js so a bad edit fails loudly.

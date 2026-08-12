@@ -64,6 +64,37 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertTrue(harness.model.state.foregroundSessionActive)
     }
 
+    func testRecoveredPendingCredentialClearsCredentialReplacementBeforeStartingSession() async throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator(
+            recoveryResult: .recovered,
+            beforeRecoveryResult: {
+                let pending = try XCTUnwrap(try harness.settings.pendingPairingRecoveryDescriptor())
+                try harness.settings.promotePairingCredential(pending)
+                harness.settings.relayURLString = pending.relayWebSocketURL.absoluteString
+            }
+        )
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        let firstStartCount = harness.source.startCount
+
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .credentialReplaced))
+        let replacementAuthorization = try XCTUnwrap(harness.settings.replacementAuthorization())
+        _ = try harness.settings.stagePairingCredential(
+            .init(token: String(repeating: "b", count: 64), version: 1),
+            relayWebSocketURL: XCTUnwrap(URL(string: "wss://relay.example/ws")),
+            replacementAuthorization: replacementAuthorization
+        )
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        for _ in 0..<10 where harness.source.startCount == firstStartCount { await Task.yield() }
+
+        XCTAssertEqual(harness.model.state.connection, .disconnected)
+        XCTAssertEqual(harness.source.startCount, firstStartCount + 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
     func testStartOverDiscardsOnlyCurrentlyDisplayedSavedPairing() throws {
         let harness = try Harness(token: nil, relayURL: "")
         _ = try harness.settings.stagePairingCredential(
@@ -211,6 +242,51 @@ final class PhoneLifecycleTests: XCTestCase {
 
         XCTAssertEqual(harness.source.startCount, 2)
         XCTAssertEqual(harness.transport.configurations.count, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testSuccessfulRepairClearsCredentialReplacementAndRestartsForegroundSession() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator()
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        let firstStartCount = harness.source.startCount
+
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .credentialReplaced))
+        XCTAssertEqual(harness.model.state.connection, .credentialReplaced)
+
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        pairing.emit(.init(phase: .active))
+
+        XCTAssertEqual(harness.model.state.connection, .disconnected,
+                       "the newly paired credential supersedes the terminal old-credential state")
+        XCTAssertEqual(harness.source.startCount, firstStartCount + 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+    }
+
+    func testBackgroundedPairingActivationClearsTakeoverBeforeNextForeground() throws {
+        let harness = try Harness()
+        let pairing = FakePairingCoordinator(emitsCancellationState: false)
+        harness.model.installPairingClient(pairing)
+        harness.model.scenePhaseChanged(.active)
+        let firstStartCount = harness.source.startCount
+
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .takenOver))
+        harness.model.handlePairingInvitation(try replacementInvitation())
+        harness.model.confirmPairAgain()
+        harness.model.scenePhaseChanged(.background)
+        pairing.emit(.init(phase: .active))
+
+        XCTAssertEqual(harness.model.state.connection, .disconnected,
+                       "the promoted credential supersedes the terminal old-credential state")
+        XCTAssertFalse(harness.model.state.foregroundSessionActive)
+
+        harness.model.scenePhaseChanged(.active)
+
+        XCTAssertEqual(harness.source.startCount, firstStartCount + 1)
         XCTAssertTrue(harness.model.state.foregroundSessionActive)
     }
 

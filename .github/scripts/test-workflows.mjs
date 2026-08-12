@@ -1031,6 +1031,8 @@ assert.notEqual(
 assertIncludes(xcodeCloudScript, "set -eu");
 assertIncludes(xcodeCloudScript, "xcodegen_version='2.46.0'");
 assertIncludes(xcodeCloudScript, 'mkdir -p "$install_root"');
+assertIncludes(xcodeCloudScript, "read-apple-version.sh\" marketing");
+assertIncludes(xcodeCloudScript, "read-apple-version.sh\" build");
 assert.ok(
   !xcodeCloudScript.includes("CDPATH= cd"),
   "Xcode Cloud post-clone script must not trigger ShellCheck SC1007",
@@ -1064,10 +1066,46 @@ assertIncludes(iosProjectSpec, 'CFBundleShortVersionString: "$(MARKETING_VERSION
 assertIncludes(iosProjectSpec, 'CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"');
 assertIncludes(iosProjectSpec, "fileGroups:");
 assertIncludes(iosProjectSpec, "  - TestFlight");
+assert.ok(
+  !iosProjectSpec.includes("    MARKETING_VERSION:")
+    && !iosProjectSpec.includes("    CURRENT_PROJECT_VERSION:"),
+  "iOS project.yml must not duplicate the shared version contract",
+);
 
 const iosBaseConfiguration = readRequired("ios/Config/Base.xcconfig");
 assertIncludes(iosBaseConfiguration, "CODE_SIGN_STYLE = Automatic");
 assertIncludes(iosBaseConfiguration, "DEVELOPMENT_TEAM = EC3R6XQ226");
+assert.ok(
+  iosBaseConfiguration.indexOf('#include? "Local.xcconfig"')
+    < iosBaseConfiguration.indexOf('#include "../../Config/Version.xcconfig"'),
+  "iOS local signing overrides must not shadow shared app versions",
+);
+
+const macProjectSpec = readRequired("mac/project.yml");
+assert.ok(
+  !macProjectSpec.includes("    MARKETING_VERSION:")
+    && !macProjectSpec.includes("    CURRENT_PROJECT_VERSION:"),
+  "Mac project.yml must not duplicate the shared version contract",
+);
+const macBaseConfiguration = readRequired("mac/Config/Base.xcconfig");
+assert.ok(
+  macBaseConfiguration.indexOf('#include? "Local.xcconfig"')
+    < macBaseConfiguration.indexOf('#include "../../Config/Version.xcconfig"'),
+  "Mac local signing overrides must not shadow shared app versions",
+);
+
+const sharedVersion = readRequired("Config/Version.xcconfig");
+const marketingVersion = sharedVersion.match(/^MARKETING_VERSION\s*=\s*(\S+)$/m)?.[1];
+const baselineBuild = sharedVersion.match(/^CURRENT_PROJECT_VERSION\s*=\s*(\S+)$/m)?.[1];
+assert.match(marketingVersion ?? "", /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$/);
+assert.match(baselineBuild ?? "", /^[1-9][0-9]*(\.[0-9]+){0,2}$/);
+const versionReaderPath = path.join(repositoryRoot, ".github/scripts/read-apple-version.sh");
+assert.notEqual(statSync(versionReaderPath).mode & 0o111, 0, "version reader must be executable");
+for (const [selector, expected] of [["marketing", marketingVersion], ["build", baselineBuild]]) {
+  const result = spawnSync(versionReaderPath, [selector], { cwd: repositoryRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), expected);
+}
 
 const iosInfoPlist = readRequired("ios/ClickBridgePhone/Info.plist");
 assertIncludes(iosInfoPlist, "<string>$(MARKETING_VERSION)</string>");
@@ -1110,14 +1148,48 @@ readRequired(".github/scripts/verify-workflows.mjs");
 
 const testflight = readRequired(".github/workflows/testflight.yml");
 for (const contract of [
+  "https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer",
+  "dcf21878c77f4198e4b4614f03d696d89c66c66008d4244e1b99161aac91601f",
+  'security verify-cert -q -l -p basic',
+  'security import "$wwdr_g3" -k "$keychain" -t cert',
+  'remove_file "$RUNNER_TEMP/AppleWWDRCAG3.cer"',
   'security find-identity -v -p basic "$keychain"',
   "3rd Party Mac Developer Installer|Mac Installer Distribution",
   "MAC_INSTALLER_CERTIFICATE_NAME",
 ]) {
   assertIncludes(testflight, contract, `TestFlight signing must include ${contract}`);
 }
+assertIncludes(testflight, "read-apple-version.sh marketing");
+assertIncludes(testflight, 'test "$release_version" = "$repository_version"');
+assertIncludes(testflight, '^[1-9][0-9]*(\\.[0-9]+){0,2}$');
+
+const appStoreSubmit = readRequired(".github/workflows/app-store-submit.yml");
+assertIncludes(appStoreSubmit, "read-apple-version.sh marketing");
+assertIncludes(appStoreSubmit, "fastlane ios submit_app_store");
+assertIncludes(appStoreSubmit, "fastlane mac submit_app_store");
+assertIncludes(appStoreSubmit, '^[1-9][0-9]*(\\.[0-9]+){0,2}$');
+
+const notarizedMac = readRequired(".github/workflows/macos-notarized-release.yml");
+for (const contract of [
+  "read-apple-version.sh marketing",
+  "read-apple-version.sh build",
+  'MARKETING_VERSION="$RELEASE_VERSION"',
+  'CURRENT_PROJECT_VERSION="$BUILD_NUMBER"',
+  "plutil -extract CFBundleShortVersionString",
+  "plutil -extract CFBundleVersion",
+]) {
+  assertIncludes(notarizedMac, contract);
+}
 
 const fastfile = readRequired("fastlane/Fastfile");
+assert.ok(!fastfile.includes("increment_version_number"));
+assert.ok(!fastfile.includes("increment_build_number"));
+assert.equal(fastfile.match(/lane :submit_app_store do/g)?.length, 2);
+assert.ok((fastfile.match(/verify_archive_version\(/g)?.length ?? 0) >= 2);
+assertIncludes(fastfile, '"MARKETING_VERSION=#{Shellwords.escape(release_version)}"');
+assertIncludes(fastfile, '"CURRENT_PROJECT_VERSION=#{Shellwords.escape(build_number)}"');
+assertIncludes(fastfile, 'platform: "ios"');
+assertIncludes(fastfile, 'platform: "osx"');
 assertIncludes(
   fastfile,
   'mac_installer_certificate_name = ENV.fetch("MAC_INSTALLER_CERTIFICATE_NAME")',

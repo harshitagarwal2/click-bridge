@@ -28,10 +28,56 @@ PINS = {
 XCODEGEN_VERSION = "2.46.0"
 XCODEGEN_SHA256 = "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
 XCODEGEN_URL = "https://github.com/yonaskolb/XcodeGen/releases/download/#{XCODEGEN_VERSION}/xcodegen.zip"
+VERSION_FILE = File.join(ROOT, "Config", "Version.xcconfig")
+VERSION_READER = File.join(ROOT, ".github", "scripts", "read-apple-version.sh")
 
 def fail_contract(message)
   warn("release workflow contract failed: #{message}")
   exit(1)
+end
+
+def read_version_setting(name)
+  matches = File.readlines(VERSION_FILE).filter_map do |line|
+    next if line.lstrip.start_with?("//")
+
+    match = line.sub(%r{//.*$}, "").match(/^\s*#{Regexp.escape(name)}\s*=\s*(\S.*?)\s*$/)
+    match && match[1]
+  end
+  fail_contract("#{name} must appear exactly once in Config/Version.xcconfig") unless matches.length == 1
+  matches.first
+rescue Errno::ENOENT => error
+  fail_contract("shared Apple version contract is unavailable: #{error.message}")
+end
+
+def validate_shared_version_contract
+  marketing_version = read_version_setting("MARKETING_VERSION")
+  build_number = read_version_setting("CURRENT_PROJECT_VERSION")
+  marketing_pattern = /\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?\z/
+  build_pattern = /\A[1-9][0-9]*(?:\.[0-9]+){0,2}\z/
+  fail_contract("shared MARKETING_VERSION must be X.Y or X.Y.Z") unless marketing_pattern.match?(marketing_version)
+  fail_contract("shared CURRENT_PROJECT_VERSION must be an Apple build string") unless build_pattern.match?(build_number)
+  fail_contract("Apple version reader must be executable") unless File.executable?(VERSION_READER)
+
+  { "marketing" => marketing_version, "build" => build_number }.each do |selector, expected|
+    output, error, status = Open3.capture3(VERSION_READER, selector)
+    fail_contract("Apple version reader failed for #{selector}: #{error}") unless status.success?
+    fail_contract("Apple version reader disagrees for #{selector}") unless output.strip == expected
+  end
+
+  %w[ios mac].each do |platform|
+    base_path = File.join(ROOT, platform, "Config", "Base.xcconfig")
+    base = File.read(base_path)
+    include_line = '#include "../../Config/Version.xcconfig"'
+    fail_contract("#{platform} Base.xcconfig must include the shared version contract exactly once") unless base.scan(include_line).one?
+    local_index = base.index('#include? "Local.xcconfig"')
+    version_index = base.index(include_line)
+    fail_contract("#{platform} local signing config must not override app versions") unless local_index && version_index && local_index < version_index
+
+    project = YAML.safe_load(File.read(File.join(ROOT, platform, "project.yml")), aliases: true)
+    settings = project.dig("settings", "base") || {}
+    fail_contract("#{platform}/project.yml must not duplicate MARKETING_VERSION") if settings.key?("MARKETING_VERSION")
+    fail_contract("#{platform}/project.yml must not duplicate CURRENT_PROJECT_VERSION") if settings.key?("CURRENT_PROJECT_VERSION")
+  end
 end
 
 def validate_mac_app_store_category(project_path, plist_path)
@@ -426,7 +472,7 @@ WORKFLOWS.each do |filename, expected|
   fail_contract("#{filename} checkout must disable persisted credentials") unless checkout.dig("with", "persist-credentials") == false
   fail_contract("#{filename} checkout must fetch tags for the v* guard") unless checkout.dig("with", "fetch-depth") == 0
   fail_contract("#{filename} must require dispatch from its release tag") unless text.include?('test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"')
-  fail_contract("#{filename} must verify a vX.Y.Z tag resolves to EVENT_SHA") unless text.include?("refs/tags/${RELEASE_TAG}^{commit}") && text.include?("EVENT_SHA")
+  fail_contract("#{filename} must verify its version tag resolves to EVENT_SHA") unless text.include?("refs/tags/${RELEASE_TAG}^{commit}") && text.include?("EVENT_SHA")
 
   job.fetch("steps").filter_map { |step| step["uses"] }.each do |uses|
     action, sha = uses.split("@", 2)
@@ -434,6 +480,8 @@ WORKFLOWS.each do |filename, expected|
     fail_contract("#{filename} has the wrong pin for #{action}") unless sha == PINS.fetch(action)
   end
 end
+
+validate_shared_version_contract
 
 testflight = File.read(File.join(WORKFLOW_DIR, "testflight.yml"))
 testflight_steps = YAML.safe_load(testflight, aliases: true).fetch("jobs").fetch("upload").fetch("steps")
@@ -465,6 +513,32 @@ require_script_order(signing_script, "umask 077", first_secret_write, "TestFligh
     "TestFlight signing setup must publish #{variable} before materializing secrets"
   )
 end
+require_script_order(
+  signing_script,
+  "https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer",
+  %(security import "$wwdr_g3" -k "$keychain" -t cert),
+  "TestFlight signing setup must download WWDR G3 from Apple before importing it"
+)
+fail_contract("TestFlight signing setup must pin WWDR G3") unless signing_script.include?("dcf21878c77f4198e4b4614f03d696d89c66c66008d4244e1b99161aac91601f")
+require_script_order(
+  signing_script,
+  %q(printf '%s  %s\n' "$wwdr_g3_sha256" "$wwdr_g3" | shasum -a 256 -c -),
+  %(security verify-cert -q -l -p basic),
+  "TestFlight signing setup must verify the pinned WWDR G3 before checking its Apple trust chain"
+)
+require_script_order(
+  signing_script,
+  %(security verify-cert -q -l -p basic),
+  %(security import "$wwdr_g3" -k "$keychain" -t cert),
+  "TestFlight signing setup must verify WWDR G3 against Apple roots before importing it"
+)
+require_script_order(
+  signing_script,
+  %(security import "$wwdr_g3" -k "$keychain" -t cert),
+  %(security list-keychains -d user -s "$keychain"),
+  "TestFlight signing setup must import WWDR G3 before isolating the keychain search list"
+)
+fail_contract("TestFlight cleanup must remove the downloaded WWDR G3 certificate") unless cleanup_script.include?(%(remove_file "$RUNNER_TEMP/AppleWWDRCAG3.cer"))
 require_script_order(
   signing_script,
   %(security import "$mac_installer_certificate"),
@@ -510,6 +584,16 @@ end
   fail_contract("TestFlight workflow is missing #{contract}") unless testflight.include?(contract)
 end
 fail_contract("TestFlight workflow must invoke the Mac upload lane") unless testflight.include?("fastlane mac upload_testflight")
+fail_contract("TestFlight must read the shared marketing version") unless testflight.include?("read-apple-version.sh marketing")
+fail_contract("TestFlight must reject a tag/version mismatch") unless testflight.include?('test "$release_version" = "$repository_version"')
+fail_contract("TestFlight must accept Apple dotted build strings") unless testflight.include?('^[1-9][0-9]*(\.[0-9]+){0,2}$')
+
+app_store = File.read(File.join(WORKFLOW_DIR, "app-store-submit.yml"))
+fail_contract("App Store submission must read the shared marketing version") unless app_store.include?("read-apple-version.sh marketing")
+fail_contract("App Store submission must reject a tag/version mismatch") unless app_store.include?('test "$release_version" = "$repository_version"')
+fail_contract("App Store submission must accept Apple dotted build strings") unless app_store.include?('^[1-9][0-9]*(\.[0-9]+){0,2}$')
+fail_contract("App Store workflow must submit the iOS build") unless app_store.include?("fastlane ios submit_app_store")
+fail_contract("App Store workflow must submit the macOS build") unless app_store.include?("fastlane mac submit_app_store")
 
 mac_entitlements_path = File.join(ROOT, "mac", "ClickBridgeMac", "ClickBridgeMac-AppStore.entitlements")
 fail_contract("Mac TestFlight entitlements file is missing") unless File.file?(mac_entitlements_path)
@@ -631,8 +715,20 @@ fail_contract("Mac TestFlight upload must use the package path returned by build
 }.each do |platform, (lane, archive_name)|
   expected_path = %(archive_path = File.join(output_directory, "#{archive_name}"))
   fail_contract("#{platform} TestFlight archive must live under RUNNER_TEMP") unless lane.include?(expected_path)
-  fail_contract("#{platform} TestFlight build must use its explicit archive path") unless lane.scan("archive_path: archive_path").one?
+  fail_contract("#{platform} TestFlight build and verification must use the explicit archive path") unless lane.scan("archive_path: archive_path").length == 2
+  fail_contract("#{platform} TestFlight build must receive the selected marketing version") unless lane.include?('"MARKETING_VERSION=#{Shellwords.escape(release_version)}"')
+  fail_contract("#{platform} TestFlight build must receive the selected build number") unless lane.include?('"CURRENT_PROJECT_VERSION=#{Shellwords.escape(build_number)}"')
+  fail_contract("#{platform} TestFlight lane must verify archive metadata before upload") unless lane.include?("verify_archive_version(")
 end
+fail_contract("Fastfile must not mutate generated project version fields") if fastfile.include?("increment_version_number") || fastfile.include?("increment_build_number")
+verify_lane = fastfile[/private_lane :verify_archive_version do.*?(?=platform :ios do)/m]
+fail_contract("Fastfile is missing archive version verification") unless verify_lane
+%w[ApplicationProperties CFBundleShortVersionString CFBundleVersion UI.user_error!].each do |contract|
+  fail_contract("Fastfile archive version verification is missing #{contract}") unless verify_lane.include?(contract)
+end
+fail_contract("Fastfile must define one submission lane per Apple platform") unless fastfile.scan("lane :submit_app_store do").length == 2
+fail_contract("iOS App Store submission must select the iOS platform") unless ios_lane.include?('platform: "ios"')
+fail_contract("Mac App Store submission must select the macOS platform") unless mac_lane.include?('platform: "osx"')
 %w[skip_binary_upload submit_for_review automatic_release].each do |setting|
   fail_contract("Fastfile is missing #{setting}") unless fastfile.include?(setting)
 end
@@ -658,6 +754,12 @@ fail_contract("macOS notarization audit artifact has incomplete paths") unless a
 fail_contract("macOS notarization audit artifact must retain seven days") unless audit_options["retention-days"] == 7
 fail_contract("macOS checksum must contain only the archive basename") unless macos.include?('shasum -a 256 "$archive_name" > "$archive_name.sha256"')
 fail_contract("macOS checksum must not contain the runner's absolute archive path") if macos.include?('shasum -a 256 "$archive"')
+fail_contract("macOS notarized release must read the shared marketing version") unless macos.include?("read-apple-version.sh marketing")
+fail_contract("macOS notarized release must use the shared baseline build") unless macos.include?("read-apple-version.sh build")
+fail_contract("macOS notarized archive must receive MARKETING_VERSION") unless macos.include?('MARKETING_VERSION="$RELEASE_VERSION"')
+fail_contract("macOS notarized archive must receive CURRENT_PROJECT_VERSION") unless macos.include?('CURRENT_PROJECT_VERSION="$BUILD_NUMBER"')
+fail_contract("macOS notarized release must verify the archived marketing version") unless macos.include?("plutil -extract CFBundleShortVersionString")
+fail_contract("macOS notarized release must verify the archived build number") unless macos.include?("plutil -extract CFBundleVersion")
 
 ghcr = File.read(File.join(WORKFLOW_DIR, "ghcr-relay.yml"))
 fail_contract("GHCR workflow must use the job token") unless ghcr.include?("password: ${{ github.token }}")

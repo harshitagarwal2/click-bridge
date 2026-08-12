@@ -11,7 +11,11 @@ export const AUTHENTICATION_REJECTED_CLOSE_CODE = 4005;
 export const PAIRING_VERSION = 1;
 export const PAIRING_TTL_MS = 300_000;
 export const LEGACY_PHONE_CREDENTIAL_VERSION = 0;
-export const CREDENTIAL_REPLACED_CLOSE_CODE = 4004;
+// Distinct from PHONE_TAKEN_OVER_CLOSE_CODE on purpose: a displaced phone can
+// reclaim the slot by reconnecting, but a phone whose credential was replaced
+// by a new pairing cannot — it would fail authentication. Sharing one code made
+// clients offer a reclaim button that could never succeed.
+export const CREDENTIAL_REPLACED_CLOSE_CODE = 4006;
 export const CREDENTIAL_REPLACED_CLOSE_REASON = 'credential_replaced';
 
 export const ROLES = Object.freeze(['phone', 'mac']);

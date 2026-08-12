@@ -1,5 +1,7 @@
 import {
   AUTHENTICATION_REJECTED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_REASON,
   encodeMessage,
   parseServerMessage,
   PHONE_TAKEN_OVER_CLOSE_CODE,
@@ -47,6 +49,7 @@ export class TransportController {
     this.socket = null;
     this.authenticated = false;
     this.suspended = false;
+    this.terminalState = null;
     this.terminalReason = null;
     this.keepWarm = false;
     this.attempt = 0;
@@ -62,8 +65,8 @@ export class TransportController {
 
   connect() {
     this.#clearReconnect();
-    if (this.terminalReason) {
-      this.#publish('taken_over', this.terminalReason);
+    if (this.terminalState) {
+      this.#publish(this.terminalState, this.terminalReason);
       return;
     }
     this.suspended = false;
@@ -71,6 +74,7 @@ export class TransportController {
   }
 
   resume() {
+    this.terminalState = null;
     this.terminalReason = null;
     this.connect();
   }
@@ -189,6 +193,10 @@ export class TransportController {
         this.#stopForTakeover();
         return;
       }
+      if (event.code === CREDENTIAL_REPLACED_CLOSE_CODE) {
+        this.#stopForCredentialReplaced();
+        return;
+      }
       down();
     };
   }
@@ -205,15 +213,34 @@ export class TransportController {
   }
 
   #stopForTakeover() {
-    this.terminalReason = 'another_phone_took_over';
+    this.#stopTerminal({
+      state: 'taken_over',
+      reason: 'another_phone_took_over',
+      closeReason: 'taken_over',
+    });
+  }
+
+  // Terminal like takeover, but unreclaimable: this credential is no longer the
+  // active one, so reconnecting would only fail authentication.
+  #stopForCredentialReplaced() {
+    this.#stopTerminal({
+      state: 'credential_replaced',
+      reason: CREDENTIAL_REPLACED_CLOSE_REASON,
+      closeReason: CREDENTIAL_REPLACED_CLOSE_REASON,
+    });
+  }
+
+  #stopTerminal({ state, reason, closeReason }) {
+    this.terminalState = state;
+    this.terminalReason = reason;
     this.suspended = true;
     this.authenticated = false;
     this.attempt = 0;
     this.#clearReconnect();
     this.#stopHeartbeat();
     this._generation += 1;
-    this.#teardownSocket(1000, 'taken_over');
-    this.#publish('taken_over', this.terminalReason);
+    this.#teardownSocket(1000, closeReason);
+    this.#publish(state, reason);
   }
 
   #failGeneration(reason) {

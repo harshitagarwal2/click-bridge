@@ -151,14 +151,20 @@ function handleTransportStatus(status) {
     dispatch({ type: 'transport.open' });
     return;
   }
-  if (!['backoff', 'suspended', 'taken_over'].includes(status.state)) return;
+  if (!['backoff', 'suspended', 'taken_over', 'credential_replaced'].includes(status.state)) return;
   benchmarkController?.transportLost(status.reason);
   benchmarkTransportGeneration = null;
   lastMacReadyGeneration = null;
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
-  dispatch({ type: status.state === 'taken_over' ? 'transport.taken_over' : 'transport.closed' });
-  if (status.state === 'taken_over') pairingUI?.handleState({ phase: 'replaced' });
+  const terminalEvent = {
+    taken_over: 'transport.taken_over',
+    credential_replaced: 'transport.credential_replaced',
+  }[status.state] ?? 'transport.closed';
+  dispatch({ type: terminalEvent });
+  // Only a replaced credential actually requires re-pairing; a takeover is
+  // reclaimable, so it must not push the user into the pairing flow.
+  if (status.state === 'credential_replaced') pairingUI?.handleState({ phase: 'replaced' });
 }
 
 const oci = createRelayTransport({
@@ -267,6 +273,7 @@ const connectionText = {
   [PHASE.MISSING_TOKEN]: 'Not paired',
   [PHASE.HIDDEN]: 'Paused',
   [PHASE.TAKEN_OVER]: 'Taken over',
+  [PHASE.CREDENTIAL_REPLACED]: 'Un-paired',
   [PHASE.CONNECTING]: 'Connecting…',
   [PHASE.MAC_OFFLINE]: 'Mac offline',
   [PHASE.PERMISSION_REQUIRED]: 'Permission needed',

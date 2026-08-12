@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 
+import { CREDENTIAL_REPLACED_CLOSE_CODE } from '../public/wire-protocol.js';
 import { PairingController } from '../public/pairing-controller.js';
 import { MemorySettingsStore, PhoneSettingsStore } from '../public/phone-settings-store.js';
 import { FakeScheduler, FakeSocket } from './pwa-test-helpers.js';
@@ -444,7 +445,7 @@ test('transient pending authentication failure preserves pending and old active'
 test('credential replacement is terminal until an explicit new pairing start', () => {
   const h = harness();
   h.controller.start(REFERENCE);
-  h.sockets[0].serverClose(4004, 'credential_replaced');
+  h.sockets[0].serverClose(CREDENTIAL_REPLACED_CLOSE_CODE, 'credential_replaced');
 
   assert.equal(h.states.at(-1).phase, 'replaced');
   assert.equal(h.sockets.length, 1);
@@ -846,7 +847,7 @@ test('credential replacement aborts delayed transport startup before its externa
   }));
 
   const signal = await activationStarted.promise;
-  h.sockets[0].serverClose(4004, 'credential_replaced');
+  h.sockets[0].serverClose(CREDENTIAL_REPLACED_CLOSE_CODE, 'credential_replaced');
   activationReleased.resolve();
   await settleAsyncWork();
 

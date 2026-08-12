@@ -477,3 +477,93 @@ rm -f /private/tmp/click-bridge-secrets.env
 OCI may reclaim idle Always Free compute. Do not manufacture load to evade the
 policy; recover from the immutable source, shared environment, DNS, and this
 Compose runbook.
+
+## 12. Two failure modes the smoke tests cannot see
+
+Both are fail-closed by design. Neither is visible to `/healthz`, which only
+proves the HTTP listener answers — so both look like a healthy relay.
+
+### Pairing wedged by a poisoned auth store
+
+**Symptom.** Every pairing attempt fails while clicking still works. The relay
+logs `phone_auth_store_failure`; `/readyz` reports `persistence_failed`.
+`curl https://$CLICK_BRIDGE_DOMAIN/healthz` still returns `ok`, and the
+container healthcheck stays green.
+
+**Confirm it in one command:**
+
+```bash
+curl -fsS "https://$CLICK_BRIDGE_DOMAIN/readyz"
+```
+
+A healthy relay returns `200` with `{"live":true,"pairing":{"ready":true,...}}`.
+A poisoned store returns `503` with
+`{"live":true,"pairing":{"ready":false,"detail":"persistence_failed: restart the relay container"}}`.
+
+`/readyz` is deliberately **not** wired to the container healthcheck. Caddy
+starts with `depends_on: relay: condition: service_healthy`, so failing
+liveness on a pairing-only fault would stop Caddy on the next restart and take
+down clicking too — escalating a partial failure into a total one. `/healthz`
+stays pure liveness; `/readyz` is for diagnosis.
+
+**Cause.** `relay/src/auth-store.js` guards the phone credential record with an
+atomic rename. If a write fails *after* that rename succeeded and the rollback
+write also fails, the store sets a permanent in-process `poisoned` flag rather
+than risk serving a half-written credential. Every later `initialize`,
+`snapshot`, and `activate` then throws `PERSISTENCE_FAILED`. This is deliberate
+— the alternative is silently accepting a corrupt credential — but the flag
+lives in memory and is never cleared while the process runs.
+
+**Recovery.** Restart the process so it re-reads the credential record that is
+actually durable on disk:
+
+```bash
+ssh "$OCI_SSH_TARGET" 'docker restart oci-relay-1'
+```
+
+Then confirm `/readyz` is healthy and verify the expected phone can connect.
+The failed operation may have completed its atomic rename before rollback also
+failed, so the newly paired credential can be authoritative after restart. If
+the formerly active phone is rejected, finish or repeat pairing with the new
+phone; otherwise restore a verified credential-record backup and restart. If
+the store poisons again immediately, inspect disk space and the bind-mounted
+`auth/` directory, then rerun the deployment preflight's ownership, mode, and
+non-symlink checks. Do not assume restart means the on-disk record was unchanged.
+
+### Loss of the shared secrets and auth record
+
+`/opt/click-bridge/shared/secrets.env` and
+`/opt/click-bridge/shared/auth/phone-auth.json` exist **only** on this VM's
+disk. They are deliberately outside every immutable release directory, so
+re-deploying does not restore them. Losing the disk means regenerating both
+role tokens and re-pairing every client.
+
+Copy both somewhere durable and off-box after any token rotation or pairing
+change. Set `CLICK_BRIDGE_BACKUP_DIR` to an existing absolute path on an
+encrypted backup volume, outside this repository. The restrictive umask is in
+effect before shell redirection creates the archive, and the partial file is
+removed if the transfer fails:
+
+```bash
+set -eu
+backup_dir="${CLICK_BRIDGE_BACKUP_DIR:?Set an absolute off-repository backup directory}"
+case "$backup_dir" in /*) ;; *) echo 'Backup directory must be absolute' >&2; exit 1 ;; esac
+test -d "$backup_dir"
+backup_path="$backup_dir/click-bridge-secrets-$(date -u +%Y%m%dT%H%M%SZ).tgz"
+partial_path="$backup_path.partial"
+test ! -e "$backup_path" && test ! -e "$partial_path"
+trap 'rm -f -- "$partial_path"' EXIT
+umask 077
+ssh "$OCI_SSH_TARGET" 'sudo tar -czf - -C /opt/click-bridge/shared secrets.env auth' \
+  > "$partial_path"
+chmod 600 "$partial_path"
+mv "$partial_path" "$backup_path"
+trap - EXIT
+test "$(stat -f '%Lp' "$backup_path" 2>/dev/null || stat -c '%a' "$backup_path")" = 600
+printf 'Encrypted backup written to %s\n' "$backup_path"
+```
+
+**Accepted risk, recorded deliberately:** with no backup, recovery from disk
+loss is a full token rotation plus re-pairing of the Mac and every phone. That
+is tolerable at this scale only because it is written down here — an
+unexamined version of the same risk is not.

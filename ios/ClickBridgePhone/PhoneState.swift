@@ -29,7 +29,7 @@ enum PhoneAppIssue: LocalizedError, Equatable, Sendable {
 }
 
 enum PhonePrimaryStatus: Equatable, Sendable {
-    case notConnected, anotherPhoneTookOver, macOffline, macNotReady, checkingClock, clockUnavailable, clockMismatch, sending
+    case notConnected, anotherPhoneTookOver, credentialReplaced, macOffline, macNotReady, checkingClock, clockUnavailable, clockMismatch, sending
     case atVolumeBoundary(VolumeBoundary)
     case ready
 
@@ -37,6 +37,7 @@ enum PhonePrimaryStatus: Equatable, Sendable {
         switch self {
         case .notConnected: "Not connected"
         case .anotherPhoneTookOver: "Another phone took over"
+        case .credentialReplaced: "This phone was un-paired"
         case .macOffline: "Mac offline"
         case .macNotReady: "Mac not ready"
         case .checkingClock: "Checking clock"
@@ -56,6 +57,7 @@ enum PhonePrimaryStatus: Equatable, Sendable {
             "Volume Up cannot create another change, so it cannot be detected. Volume Down can still trigger."
         case .notConnected: "Open settings and connect to the relay."
         case .anotherPhoneTookOver: "Reconnect this phone when you are ready to take control again."
+        case .credentialReplaced: "A newer phone was paired. Pair this phone again to use it."
         case .macOffline: "Start Click Bridge on the Mac."
         case .macNotReady: "Enable remote control and macOS Accessibility permission."
         case .checkingClock: "Validating phone and Mac clocks."
@@ -78,7 +80,10 @@ struct PhoneState: Equatable, Sendable {
     var issue: PhoneAppIssue?
 
     var phoneTakenOver: Bool { connection == .takenOver }
+    var credentialReplaced: Bool { connection == .credentialReplaced }
+    var blocksAutomaticReconnect: Bool { phoneTakenOver || credentialReplaced }
     var primaryStatus: PhonePrimaryStatus {
+        if credentialReplaced { return .credentialReplaced }
         if phoneTakenOver { return .anotherPhoneTookOver }
         guard foregroundSessionActive, connection == .authenticated else { return .notConnected }
         guard mac.online else { return .macOffline }
@@ -110,7 +115,7 @@ struct PhoneState: Equatable, Sendable {
             return "Connection lost. Retrying automatically."
         case .authenticationRejected:
             return "Credential rejected. Pair this phone again."
-        case .disconnected, .authenticated, .takenOver:
+        case .disconnected, .authenticated, .takenOver, .credentialReplaced:
             return primaryStatus.detail
         }
     }

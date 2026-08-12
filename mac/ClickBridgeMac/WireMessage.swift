@@ -15,8 +15,6 @@ enum Constants {
     static let pairingVersion = 1
     static let pairingTTL: TimeInterval = 300
     static let legacyPhoneCredentialVersion = 0
-    static let credentialReplacedCloseCode = 4_004
-    static let credentialReplacedCloseReason = "credential_replaced"
 }
 
 enum PermissionState: String, Codable, Sendable { case ready, required, unknown }

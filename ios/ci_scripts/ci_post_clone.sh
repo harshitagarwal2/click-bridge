@@ -30,4 +30,6 @@ else
 fi
 
 cd "$ios_directory"
+"$ios_directory/../.github/scripts/read-apple-version.sh" marketing >/dev/null
+"$ios_directory/../.github/scripts/read-apple-version.sh" build >/dev/null
 "$xcodegen_binary" generate

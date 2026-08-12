@@ -29,6 +29,25 @@ function invitationVerifier(reference) {
   return bytes.length === 32 && bytes.toString('base64url') === reference ? sha256(bytes) : null;
 }
 
+/**
+ * The shape `deauthorizeOlderPhones` hands back. server.js constructs these
+ * detached snapshots and pairing.js validates and consumes them. This local
+ * typedef documents the consumer boundary; runtime validation below remains
+ * authoritative because this repository does not enable JS type checking. A
+ * producer rename makes phoneSnapshot() return null and reconciliation fail
+ * closed, which is safe and covered by tests.
+ *
+ * @typedef {object} DeauthorizedPhone
+ * @property {object} connection      the frozen connection identity (server.js)
+ * @property {number} generation      socket generation at deauthorization
+ * @property {number} credentialVersion  the now-superseded credential version
+ */
+
+/**
+ * Defensively read a {@link DeauthorizedPhone} from an untrusted object.
+ * @param {unknown} phone
+ * @returns {Readonly<DeauthorizedPhone>|null} null if the shape does not hold
+ */
 function phoneSnapshot(phone) {
   if (phone === null || (typeof phone !== 'object' && typeof phone !== 'function')) return null;
   let connection;
