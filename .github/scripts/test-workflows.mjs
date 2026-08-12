@@ -45,6 +45,52 @@ assertIncludes(ci, "docker build");
 assertIncludes(ci, "ClickBridgeMac");
 assertIncludes(ci, "hashFiles('ios/project.yml')");
 assertIncludes(ci, "ClickBridgePhone");
+assert.ok(!ci.includes("brew install xcodegen"), "CI must not install mutable Homebrew XcodeGen");
+
+const xcodegenVersion = "2.46.0";
+const xcodegenSha256 = "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806";
+const xcodegenUrl = `https://github.com/yonaskolb/XcodeGen/releases/download/${xcodegenVersion}/xcodegen.zip`;
+const xcodegenWorkflows = [
+  ["CI", ci, [
+    "mac/ClickBridgeMac.xcodeproj/project.pbxproj",
+    "mac/ClickBridgeMac/Info.plist",
+    "ios/ClickBridgePhone.xcodeproj/project.pbxproj",
+    "ios/ClickBridgePhone/Info.plist",
+  ]],
+  ["TestFlight", readRequired(".github/workflows/testflight.yml"), [
+    "mac/ClickBridgeMac.xcodeproj/project.pbxproj",
+    "mac/ClickBridgeMac/Info.plist",
+    "ios/ClickBridgePhone.xcodeproj/project.pbxproj",
+    "ios/ClickBridgePhone/Info.plist",
+  ]],
+  ["macOS notarized release", readRequired(".github/workflows/macos-notarized-release.yml"), [
+    "mac/ClickBridgeMac.xcodeproj/project.pbxproj",
+    "mac/ClickBridgeMac/Info.plist",
+  ]],
+];
+
+for (const [name, workflow, generatedPaths] of xcodegenWorkflows) {
+  assertIncludes(workflow, xcodegenUrl, `${name} must download pinned XcodeGen`);
+  assertIncludes(workflow, xcodegenSha256, `${name} must verify pinned XcodeGen`);
+  assertIncludes(workflow, 'mkdir -p "$install_root"', `${name} must create the install prefix`);
+  assertIncludes(
+    workflow,
+    'test -f "$install_root/share/xcodegen/SettingPresets/base.yml"',
+    `${name} must verify XcodeGen setting presets`,
+  );
+  assertIncludes(workflow, `Version: ${xcodegenVersion}`, `${name} must verify XcodeGen version`);
+  assertIncludes(workflow, "set -Eeuo pipefail", `${name} generation must enable pipefail`);
+  assertIncludes(workflow, "2>&1 | tee", `${name} must inspect XcodeGen output`);
+  assertIncludes(
+    workflow,
+    "No \"[^\"]+\" settings found",
+    `${name} must reject missing XcodeGen settings warnings`,
+  );
+  assertIncludes(workflow, "git diff --exit-code --", `${name} must reject generated project drift`);
+  for (const generatedPath of generatedPaths) {
+    assertIncludes(workflow, generatedPath, `${name} must check generated drift for ${generatedPath}`);
+  }
+}
 
 const actionReferences = [...ci.matchAll(/^\s*uses:\s*([^\s#]+).*$/gm)].map(
   (match) => match[1],
@@ -95,10 +141,15 @@ const plistFixtureDirectory = mkdtempSync(
   path.join(tmpdir(), "click-bridge-plist-contract-"),
 );
 const macCategoryValidator = ".github/scripts/validate-release-workflows.rb";
-const runMacCategoryValidation = (fixturePath) =>
+const runMacCategoryValidation = (projectFixturePath, plistFixturePath) =>
   spawnSync(
     rubyExecutable,
-    [macCategoryValidator, "--validate-mac-app-store-category", fixturePath],
+    [
+      macCategoryValidator,
+      "--validate-mac-app-store-category",
+      projectFixturePath,
+      plistFixturePath,
+    ],
     {
       cwd: repositoryRoot,
       encoding: "utf8",
@@ -111,24 +162,34 @@ const plistFixture = (category) => `<?xml version="1.0" encoding="UTF-8"?>
 ${category === null ? "" : `  <key>LSApplicationCategoryType</key>\n  <string>${category}</string>\n`}</dict>
 </plist>
 `;
+const projectFixture = (category) => `targets:
+  ClickBridgeMac:
+    info:
+      path: ClickBridgeMac/Info.plist
+      properties:
+${category === null ? "" : `        LSApplicationCategoryType: ${category}\n`}`;
 
 try {
   const fixtureCases = [
-    ["utilities", "public.app-category.utilities", true],
-    ["missing", null, false],
-    ["wrong", "public.app-category.productivity", false],
+    ["utilities", "public.app-category.utilities", "public.app-category.utilities", null],
+    ["project-missing", null, "public.app-category.utilities", "Mac project category must be utilities"],
+    ["project-wrong", "public.app-category.productivity", "public.app-category.utilities", "Mac project category must be utilities"],
+    ["plist-missing", "public.app-category.utilities", null, "Mac Info.plist category must match"],
+    ["plist-wrong", "public.app-category.utilities", "public.app-category.productivity", "Mac Info.plist category must match"],
   ];
-  for (const [name, category, expectedSuccess] of fixtureCases) {
-    const fixturePath = path.join(plistFixtureDirectory, `${name}.plist`);
-    writeFileSync(fixturePath, plistFixture(category));
-    const result = runMacCategoryValidation(fixturePath);
+  for (const [name, projectCategory, plistCategory, expectedError] of fixtureCases) {
+    const projectFixturePath = path.join(plistFixtureDirectory, `${name}.yml`);
+    const plistFixturePath = path.join(plistFixtureDirectory, `${name}.plist`);
+    writeFileSync(projectFixturePath, projectFixture(projectCategory));
+    writeFileSync(plistFixturePath, plistFixture(plistCategory));
+    const result = runMacCategoryValidation(projectFixturePath, plistFixturePath);
     const output = `${result.stdout}${result.stderr}`;
-    if (expectedSuccess) {
+    if (expectedError === null) {
       assert.equal(result.status, 0, `Mac category fixture ${name} was mishandled:\n${output}`);
       assertIncludes(result.stdout, "Validated Mac App Store category contract.");
     } else {
       assert.notEqual(result.status, 0, `Mac category fixture ${name} unexpectedly passed`);
-      assertIncludes(result.stderr, "Mac App Store category must be utilities");
+      assertIncludes(result.stderr, expectedError);
     }
   }
 } finally {
