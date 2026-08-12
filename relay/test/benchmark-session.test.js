@@ -123,9 +123,9 @@ test('counter requester owns snapshots and rejects non-exact post evidence', asy
   const requester = new CounterSnapshotRequester({ request: async () => snapshots.shift() });
   const start = await requester.capture();
   const end = await requester.capture();
-  assert.deepEqual(requester.validateExactRun({ start, end, expectedPostCount: 2,
+  assert.deepEqual(requester.validateExactRun({ start, end, expectedPhysicalClickCount: 2,
     octoCounterStart: 5, octoCounterEnd: 7 }), { mouseDownPostCount: 2, mouseUpPostCount: 2 });
-  assert.throws(() => requester.validateExactRun({ start, end, expectedPostCount: 1,
+  assert.throws(() => requester.validateExactRun({ start, end, expectedPhysicalClickCount: 1,
     octoCounterStart: 5, octoCounterEnd: 7 }), /exact post evidence/);
 });
 
@@ -185,7 +185,7 @@ test('impossible alignment is rejected and benchmark never retries an action', a
 test('CSV exports exact public columns and counter evidence without secrets', async () => {
   const snapshots = [
     { mouseDownPostCount: 10, mouseUpPostCount: 10 },
-    { mouseDownPostCount: 12, mouseUpPostCount: 12 },
+    { mouseDownPostCount: 16, mouseUpPostCount: 16 },
   ];
   const subject = new BenchmarkSession({
     exchangeTimeSync: async () => sync(2),
@@ -203,12 +203,12 @@ test('CSV exports exact public columns and counter evidence without secrets', as
   assert.equal(original.lateResultCount, 0);
   assert.equal(subject.rows[0].lateResultCount, 1);
   assert.equal(Object.isFrozen(subject.rows[0]), true);
-  await subject.finish({ octoCounterStart: 5, octoCounterEnd: 7, logicalActionCount: 2 });
+  await subject.finish({ octoCounterStart: 5, octoCounterEnd: 11, logicalActionCount: 2 });
   const exported = subject.exportCsv();
   assert.equal(exported.measurements.split('\n')[0], MEASUREMENT_COLUMNS.join(','));
   assert.equal(exported.evidence.split('\n')[0], RUN_EVIDENCE_COLUMNS.join(','));
   assert.doesNotMatch(exported.measurements + exported.evidence, /token|password|146\./i);
-  assert.match(exported.evidence, /r,10,10,12,12,5,7,2/);
+  assert.match(exported.evidence, /r,10,10,16,16,5,11,2/);
   assert.equal(rowsToCsv([], MEASUREMENT_COLUMNS), `${MEASUREMENT_COLUMNS.join(',')}\n`);
   assert.equal(Object.isFrozen(subject.rows[0]), true);
 });
@@ -247,7 +247,7 @@ test('finish refuses an incomplete recorded block even when its current counters
 test('excluded warm-up posts remain part of exact counter and Octo evidence', async () => {
   const snapshots = [
     { mouseDownPostCount: 10, mouseUpPostCount: 10 },
-    { mouseDownPostCount: 13, mouseUpPostCount: 13 },
+    { mouseDownPostCount: 19, mouseUpPostCount: 19 },
   ];
   const subject = new BenchmarkSession({ exchangeTimeSync: async () => sync(2),
     counterSnapshots: new CounterSnapshotRequester({ request: async () => snapshots.shift() }),
@@ -256,7 +256,7 @@ test('excluded warm-up posts remain part of exact counter and Octo evidence', as
   subject.recordExcludedTerminal({ status: 'posted' });
   subject.recordTerminal({ actionId: 'a', status: 'Posted' });
   subject.recordTerminal({ actionId: 'b', status: 'Posted' });
-  await subject.finish({ octoCounterStart: 5, octoCounterEnd: 8, logicalActionCount: 3 });
+  await subject.finish({ octoCounterStart: 5, octoCounterEnd: 14, logicalActionCount: 3 });
   assert.equal(subject.evidence[0].logicalActionCount, 3);
 });
 
@@ -264,12 +264,12 @@ test('counter requester independently rejects down, up, and Octo mismatches', ()
   const requester = new CounterSnapshotRequester({ request: async () => null });
   const start = { mouseDownPostCount: 10, mouseUpPostCount: 10 };
   assert.throws(() => requester.validateExactRun({ start,
-    end: { mouseDownPostCount: 11, mouseUpPostCount: 12 }, expectedPostCount: 1,
-    octoCounterStart: 5, octoCounterEnd: 6 }), /exact post evidence/);
+    end: { mouseDownPostCount: 12, mouseUpPostCount: 13 }, expectedPhysicalClickCount: 3,
+    octoCounterStart: 5, octoCounterEnd: 8 }), /exact post evidence/);
   assert.throws(() => requester.validateExactRun({ start,
-    end: { mouseDownPostCount: 12, mouseUpPostCount: 11 }, expectedPostCount: 1,
-    octoCounterStart: 5, octoCounterEnd: 6 }), /exact post evidence/);
+    end: { mouseDownPostCount: 13, mouseUpPostCount: 12 }, expectedPhysicalClickCount: 3,
+    octoCounterStart: 5, octoCounterEnd: 8 }), /exact post evidence/);
   assert.throws(() => requester.validateExactRun({ start,
-    end: { mouseDownPostCount: 11, mouseUpPostCount: 11 }, expectedPostCount: 1,
-    octoCounterStart: 5, octoCounterEnd: 5 }), /exact post evidence/);
+    end: { mouseDownPostCount: 13, mouseUpPostCount: 13 }, expectedPhysicalClickCount: 3,
+    octoCounterStart: 5, octoCounterEnd: 7 }), /exact post evidence/);
 });
