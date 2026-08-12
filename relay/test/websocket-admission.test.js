@@ -644,11 +644,17 @@ test('upgrade callback followed by throw revokes accepted websocket before cap r
   const acceptedSockets = [];
   const pending = [];
   const logs = [];
+  const predecessor = Object.freeze({ id: 'predecessor', role: 'phone' });
+  const predecessorCloseCodes = [];
   const state = {
-    phone: null,
+    phone: predecessor,
     replacements: 0,
     routedMessages: 0,
-    replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+    replaceRole(role, connection) {
+      if (this[role]) predecessorCloseCodes.push(4004);
+      this[role] = connection;
+      this.replacements += 1;
+    },
     detachIfCurrent() {}, publishState() {},
     handlePhoneMessage() { this.routedMessages += 1; },
     handleMacMessage() { this.routedMessages += 1; },
@@ -673,6 +679,9 @@ test('upgrade callback followed by throw revokes accepted websocket before cap r
       server.wss.clients.add(accepted);
       accepted.once('close', () => server.wss.clients.delete(accepted));
       done(accepted);
+      accepted.emit(
+        'message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false,
+      );
       throw new Error('after callback');
     },
   }));
@@ -686,9 +695,10 @@ test('upgrade callback followed by throw revokes accepted websocket before cap r
       acceptedSockets.at(-1).emit(
         'message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false,
       );
-      assert.equal(state.phone, null, 'accepted-then-thrown websocket cannot authenticate late');
+      assert.equal(state.phone, predecessor, 'accepted-then-thrown websocket cannot replace phone');
       assert.equal(state.replacements, 0);
       assert.equal(state.routedMessages, 0);
+      assert.deepEqual(predecessorCloseCodes, []);
       assert.equal(acceptedSockets.at(-1).sent.some((message) => message.type === 'hello.ok'), false);
       assert.equal(logs.some((entry) => entry.event === 'authenticated'), false);
 
@@ -709,6 +719,223 @@ test('upgrade callback followed by throw revokes accepted websocket before cap r
     for (const accepted of acceptedSockets) accepted.terminate();
     await server.close();
   }
+});
+
+test('asynchronous callback after successful upgrade return activates exactly once', async () => {
+  const callbacks = [];
+  const state = {
+    phone: null,
+    replacements: 0,
+    replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+    detachIfCurrent() {}, publishState() {}, handlePhoneMessage() {}, handleMacMessage() {},
+  };
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    stateFactory: () => state,
+    performWebSocketUpgrade(_req, _socket, _head, done) { callbacks.push(done); },
+  });
+  const original = fakeUpgradeSocket();
+  const accepted = fakeWebSocket();
+  const duplicate = fakeWebSocket();
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    assert.equal(callbacks.length, 1);
+    callbacks[0](accepted);
+    accepted.emit('message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false);
+    assert.equal(state.replacements, 1);
+    assert.equal(accepted.sent.some((message) => message.type === 'hello.ok'), true);
+
+    callbacks[0](duplicate);
+    assert.equal(duplicate.readyState, WebSocket.CLOSED, 'duplicate callback socket is destroyed');
+    assert.equal(state.replacements, 1);
+  } finally {
+    accepted.terminate();
+    duplicate.terminate();
+    original.destroy();
+    await server.close();
+  }
+});
+
+test('synchronous callback stays unroutable until the upgrade adapter returns', async () => {
+  const accepted = fakeWebSocket();
+  const duplicate = fakeWebSocket();
+  const state = {
+    phone: null,
+    replacements: 0,
+    replaceRole(role, connection) { this[role] = connection; this.replacements += 1; },
+    detachIfCurrent() {}, publishState() {}, handlePhoneMessage() {}, handleMacMessage() {},
+  };
+  let replacementsDuringUpgrade = -1;
+  let helloOkDuringUpgrade = true;
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    stateFactory: () => state,
+    performWebSocketUpgrade(_req, _socket, _head, done) {
+      done(accepted);
+      done(accepted);
+      done(duplicate);
+      accepted.emit('message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false);
+      replacementsDuringUpgrade = state.replacements;
+      helloOkDuringUpgrade = accepted.sent.some((message) => message.type === 'hello.ok');
+    },
+  });
+  const original = fakeUpgradeSocket();
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    assert.equal(replacementsDuringUpgrade, 0, 'precommit hello cannot enter relay state');
+    assert.equal(helloOkDuringUpgrade, false, 'precommit hello receives no response');
+    assert.equal(duplicate.readyState, WebSocket.CLOSED, 'duplicate synchronous candidate is destroyed');
+
+    accepted.emit('message', Buffer.from(JSON.stringify(hello('phone', PHONE_TOKEN))), false);
+    assert.equal(state.replacements, 1, 'postcommit hello authenticates once');
+    assert.equal(accepted.sent.some((message) => message.type === 'hello.ok'), true);
+  } finally {
+    accepted.terminate();
+    duplicate.terminate();
+    original.destroy();
+    await server.close();
+  }
+});
+
+test('raw upgrade abort after callback capture prevents candidate activation', async () => {
+  const accepted = fakeWebSocket();
+  let routed = 0;
+  let upgradeCalls = 0;
+  const callbacks = [];
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    performWebSocketUpgrade(_req, socket, _head, done) {
+      upgradeCalls += 1;
+      if (upgradeCalls === 1) {
+        done(accepted);
+        socket.destroy();
+        return;
+      }
+      callbacks.push(done);
+    },
+  });
+  server.wss.on('connection', () => { routed += 1; });
+  const original = fakeUpgradeSocket();
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    assert.equal(routed, 0);
+    assert.equal(accepted.readyState, WebSocket.CLOSED, 'captured candidate is destroyed on raw abort');
+
+    const recovered = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+    assert.equal(callbacks.length, 1, 'raw abort releases exactly one reservation');
+    recovered.destroy();
+  } finally {
+    accepted.terminate();
+    await server.close();
+  }
+});
+
+test('candidate terminal event before adapter return aborts the pending attempt', async (t) => {
+  for (const terminalEvent of ['close', 'error']) {
+    await t.test(terminalEvent, async () => {
+      const accepted = fakeWebSocket();
+      let routed = 0;
+      let upgradeCalls = 0;
+      const callbacks = [];
+      const { server } = await boot({
+        maxTotalWebSocketConnections: 1,
+        maxUnauthenticatedWebSocketConnections: 1,
+        performWebSocketUpgrade(_req, _socket, _head, done) {
+          upgradeCalls += 1;
+          if (upgradeCalls === 1) {
+            done(accepted);
+            if (terminalEvent === 'close') accepted.terminate();
+            else accepted.emit('error', Object.assign(new Error('precommit'), { code: 'EIO' }));
+            return;
+          }
+          callbacks.push(done);
+        },
+      });
+      server.wss.on('connection', () => { routed += 1; });
+      const original = fakeUpgradeSocket();
+      try {
+        server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+        assert.equal(routed, 0, 'terminal precommit candidate never enters relay');
+        assert.equal(original.destroyed, true, 'candidate terminal event aborts raw upgrade');
+
+        const recovered = fakeUpgradeSocket();
+        server.httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+        assert.equal(callbacks.length, 1, 'candidate abort releases exactly one reservation');
+        recovered.destroy();
+      } finally {
+        accepted.terminate();
+        await server.close();
+      }
+    });
+  }
+});
+
+test('committed websocket owns admission after the raw upgrade socket closes', async () => {
+  const callbacks = [];
+  const accepted = fakeWebSocket();
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    performWebSocketUpgrade(_req, _socket, _head, done) {
+      if (callbacks.length === 0) done(accepted);
+      callbacks.push(done);
+    },
+  });
+  const original = fakeUpgradeSocket();
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    original.destroy();
+
+    const blocked = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, blocked, Buffer.alloc(0));
+    assert.match(blocked.response, /503 Service Unavailable/, 'raw close cannot release committed slot');
+
+    accepted.terminate();
+    const recovered = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+    assert.equal(callbacks.length, 2, 'WebSocket close releases the committed slot');
+    recovered.destroy();
+  } finally {
+    accepted.terminate();
+    await server.close();
+  }
+});
+
+test('shutdown revokes a captured pending candidate and every late callback', async () => {
+  const callbacks = [];
+  let routed = 0;
+  let shutdown;
+  let server;
+  const captured = fakeWebSocket();
+  ({ server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    performWebSocketUpgrade(_req, _socket, _head, done) {
+      callbacks.push(done);
+      done(captured);
+      shutdown = server.close();
+    },
+  }));
+  server.wss.on('connection', () => { routed += 1; });
+  const original = fakeUpgradeSocket();
+  server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+  assert.equal(callbacks.length, 1);
+
+  await Promise.race([
+    shutdown,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('server close hung')), 250)),
+  ]);
+  assert.equal(original.destroyed, true, 'shutdown destroys the pending raw socket');
+  assert.equal(captured.readyState, WebSocket.CLOSED, 'shutdown destroys the captured candidate');
+
+  const late = fakeWebSocket();
+  callbacks[0](late);
+  assert.equal(late.readyState, WebSocket.CLOSED, 'late callback after shutdown is destroyed');
+  assert.equal(routed, 0);
 });
 
 test('auth-close and timeout-close races cannot underflow admission counts', async () => {
