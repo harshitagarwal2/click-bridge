@@ -32,7 +32,7 @@ the negative harness as evidence for this table.
 | Mac app closed | Button disabled; no queued click |
 | Remote control off | No input; phone reports remote disabled |
 | Permission absent or revoked | No input; `permission_required` |
-| Initial clock health | Before the fifth valid response, action stays disabled and no request is sent; Ready only after five valid sync responses |
+| Initial clock health | Before the fifth valid response, action stays disabled and no request is sent; Ready only after five valid sync responses; an unusable response does not count toward readiness |
 | Clock sync response missing | One missing response changes status to `Clock check unavailable` at 3.5 seconds, exposes Retry, and sends no action |
 | Retry clock check | Selecting Retry starts a fresh five-sample batch; no action or replay can send until all five valid responses complete |
 | Ready, Octo frontmost | One action/result; Mac `+3/+3`; Octo `+3` |
@@ -60,15 +60,20 @@ before/after counter pair for every row.
 | Scenario | Required result |
 | --- | --- |
 | Duplicate action ID | One total three-click burst; identical cached result |
-| Same ID, changed payload | `id_conflict`; no second increment |
+| Same ID, changed payload | One accepted setup burst (`+3`), then `id_conflict`; no second increment |
 | Expired buffered request | `expired`; no input |
 | Result path drops after forwarding | One three-click execution across the disconnect window; no late result or replay after the harness reconnects |
 
 Run the checked-in `relay/scripts/run-negative-matrix.mjs` harness from the
 repository root using Node 24. Supply the phone token through the inherited
-environment, never as a command argument. Enter the four observed Octo
-before/after pairs as one JSON object when prompted; do not reuse expected
-values as observations.
+environment, never as a command argument. For each row, the harness prompts for
+the Octo before count, runs the scenario, and only then prompts for the matching
+after count. Read the live counter at each prompt; do not preload or reuse
+expected values as observations.
+
+The changed-payload scenario creates its first accepted action after its
+`before` prompt, then sends the conflicting payload with the same ID. Its bound
+Octo delta is therefore `+3` total: one setup burst and no second increment.
 
 ```bash
 cd relay
@@ -77,11 +82,10 @@ chmod 600 "$report_path"
 read -r -p 'Relay WSS URL: ' CLICK_BRIDGE_URL
 read -r -s -p 'PHONE_TOKEN: ' PHONE_TOKEN
 printf '\n'
-read -r -p 'Octo observations JSON: ' NEGATIVE_MATRIX_OCTO_OBSERVATIONS
-export CLICK_BRIDGE_URL PHONE_TOKEN NEGATIVE_MATRIX_OCTO_OBSERVATIONS
+export CLICK_BRIDGE_URL PHONE_TOKEN
 node scripts/run-negative-matrix.mjs | tee "$report_path"
 matrix_status="${PIPESTATUS[0]}"
-unset CLICK_BRIDGE_URL PHONE_TOKEN NEGATIVE_MATRIX_OCTO_OBSERVATIONS
+unset CLICK_BRIDGE_URL PHONE_TOKEN
 printf 'Redacted JSON report: %s\n' "$report_path"
 test "$matrix_status" -eq 0
 ```

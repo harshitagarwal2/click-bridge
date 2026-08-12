@@ -29,6 +29,7 @@ test('physical clock acceptance requires a fresh five-response gate and explicit
   const byName = new Map(physical.map((row) => [row.scenario, row.result]));
 
   assert.match(byName.get('Initial clock health') ?? '', /Ready only after five valid sync responses/i);
+  assert.match(byName.get('Initial clock health') ?? '', /unusable response does not count/i);
   assert.match(byName.get('Clock sync response missing') ?? '', /3\.5 seconds/);
   assert.match(byName.get('Clock sync response missing') ?? '', /Clock check unavailable/);
   assert.match(byName.get('Clock sync response missing') ?? '', /Retry/);
@@ -41,7 +42,8 @@ test('controlled matrix is isolated from the regular phone and records runner ev
   const markdown = await guide();
   const controlledSection = section(markdown, 'Controlled negative-harness matrix',
     'Automated-only acceptance');
-  const controlled = scenarios(controlledSection).map((row) => row.scenario);
+  const controlledRows = scenarios(controlledSection);
+  const controlled = controlledRows.map((row) => row.scenario);
 
   assert.deepEqual(controlled, [
     'Duplicate action ID',
@@ -53,7 +55,11 @@ test('controlled matrix is isolated from the regular phone and records runner ev
   assert.match(controlledSection, /relay\/scripts\/run-negative-matrix\.mjs/);
   assert.match(controlledSection, /CLICK_BRIDGE_URL/);
   assert.match(controlledSection, /PHONE_TOKEN/);
-  assert.match(controlledSection, /NEGATIVE_MATRIX_OCTO_OBSERVATIONS/);
+  assert.match(controlledSection,
+    /prompts for[\s\S]*before count[\s\S]*runs the scenario[\s\S]*then prompts[\s\S]*after count/i);
+  assert.doesNotMatch(controlledSection, /NEGATIVE_MATRIX_OCTO_OBSERVATIONS/);
+  assert.match(controlledRows.find((row) => row.scenario === 'Same ID, changed payload')?.result ?? '',
+    /setup burst.*\+3.*no second increment/i);
   assert.match(controlledSection, /JSON report/i);
 });
 

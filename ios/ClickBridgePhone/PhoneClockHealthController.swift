@@ -163,7 +163,8 @@ final class PhoneClockHealthController {
     }
 
     private func finishBatch() {
-        guard let selected = ClockSample.best(samples) else {
+        guard samples.count == PhoneProtocolV1.clockSampleCount,
+              let selected = ClockSample.best(samples) else {
             failBatch()
             return
         }

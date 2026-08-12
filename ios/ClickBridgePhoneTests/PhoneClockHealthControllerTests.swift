@@ -197,6 +197,39 @@ final class PhoneClockHealthControllerTests: XCTestCase {
         XCTAssertEqual(health.last?.status, .unavailable)
     }
 
+    func testOneUsableAndFourUnusableResponsesCannotPublishHealthy() {
+        let clock = FakePhoneClock(unixMilliseconds: 1_000)
+        let scheduler = FakePhoneScheduler()
+        var requests: [PhoneClientMessage] = []
+        var health: [ClockHealth] = []
+        let subject = PhoneClockHealthController(
+            clock: clock,
+            scheduler: scheduler,
+            isActionPending: { false },
+            onHealth: { health.append($0) }
+        )
+        subject.start(foregroundGeneration: 1, socketGeneration: 1) { requests.append($0); return true }
+
+        for index in 0..<5 {
+            guard case .timeSyncRequest(let request) = requests[index] else { return XCTFail() }
+            let usable = index == 0
+            clock.set(unixMilliseconds: request.phoneSendUnixMilliseconds + (usable ? 10 : 1))
+            XCTAssertTrue(subject.handle(
+                TimeSyncResponse(
+                    syncID: request.syncID,
+                    phoneSendUnixMilliseconds: request.phoneSendUnixMilliseconds,
+                    macReceiveUnixMilliseconds: request.phoneSendUnixMilliseconds + (usable ? 5 : 10),
+                    macSendUnixMilliseconds: request.phoneSendUnixMilliseconds + (usable ? 6 : 20)
+                ),
+                socketGeneration: 1
+            ))
+        }
+
+        XCTAssertEqual(requests.count, 5)
+        XCTAssertEqual(health.map(\.status), [.checking, .unavailable])
+        XCTAssertFalse(health.contains { $0.status == .healthy })
+    }
+
     func testRefreshDefersWhileActionPendingAndStartsWhenActionSettles() {
         let scheduler = FakePhoneScheduler()
         let clock = FakePhoneClock(unixMilliseconds: 1_000)
