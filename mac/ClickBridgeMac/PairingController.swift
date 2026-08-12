@@ -298,7 +298,7 @@ final class PairingController: ObservableObject {
             where state == .checkingStatus && status.requestId == currentRequestID:
             enrollment = status
             retryAction = .none
-            transition(to: .ready)
+            reset(to: .ready)
         case .pairCreated(let created)
             where state == .creating && created.requestId == currentRequestID:
             guard let link = try? PairingLink.make(relayURL: relayURL, reference: created.reference) else {
@@ -322,18 +322,11 @@ final class PairingController: ObservableObject {
         case .pairCompleted(let completed)
             where state == .approving
                 && completed.requestId == currentRequestID && completed.claimId == currentClaimID:
-            currentClaimID = nil
             retryAction = .none
-            transition(to: .completed(activePhoneCredentialVersion: completed.activePhoneCredentialVersion))
+            reset(to: .completed(activePhoneCredentialVersion: completed.activePhoneCredentialVersion))
         case .pairFailed(let failed)
-            where failed.requestId == currentRequestID
-                && (failed.claimId == nil || failed.claimId == currentClaimID):
-            switch state {
-            case .checkingStatus: retryAction = .status
-            case .creating, .invitation: retryAction = .create
-            default: retryAction = .none
-            }
-            reset(to: failed.reason == .expired ? .expired : .failed)
+            where failed.requestId == currentRequestID:
+            receivePairingFailure(failed)
         default:
             break
         }
@@ -352,17 +345,69 @@ final class PairingController: ObservableObject {
             return
         }
         guard owns(ownership) else { return }
-        currentClaimID = nil
         retryAction = .none
-        transition(to: terminalState)
+        reset(to: terminalState)
     }
 
     private var canAcceptClaim: Bool {
+        if case .invitation = state { return true }
+        return false
+    }
+
+    private func receivePairingFailure(_ failed: PairFailed) {
         switch state {
-        case .invitation, .cancelling:
-            return true
+        case .checkingStatus where failed.claimId == nil:
+            retryAction = .status
+            reset(to: .failed)
+        case .creating where failed.claimId == nil,
+             .invitation where failed.claimId == nil:
+            retryAction = failed.reason == .expired ? .create : .none
+            switch failed.reason {
+            case .expired:
+                reset(to: .expired)
+            case .cancelled:
+                retryAction = .none
+                reset(to: .ready)
+            default:
+                reset(to: .failed)
+            }
+        case .approval where failed.claimId == currentClaimID,
+             .approving where failed.claimId == currentClaimID:
+            retryAction = .none
+            switch failed.reason {
+            case .denied:
+                reset(to: .denied)
+            case .cancelled:
+                reset(to: .ready)
+            case .expired:
+                reset(to: .expired)
+            default:
+                reset(to: .failed)
+            }
+        case .denying where failed.claimId == currentClaimID:
+            retryAction = .none
+            switch failed.reason {
+            case .denied:
+                reset(to: .denied)
+            case .cancelled:
+                reset(to: .ready)
+            case .expired:
+                reset(to: .expired)
+            default:
+                reset(to: .failed)
+            }
+        case .cancelling
+            where failed.claimId == nil || failed.claimId == currentClaimID:
+            if failed.reason == .cancelled {
+                retryAction = .none
+                reset(to: .ready)
+            } else {
+                enrollment = nil
+                retryAction = .status
+                reset(to: .cancelFailed)
+            }
         default:
-            return false
+            break
         }
     }
 

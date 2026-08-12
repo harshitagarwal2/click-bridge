@@ -282,7 +282,7 @@ final class PairingControllerTests: XCTestCase {
         await newerStatus.value
     }
 
-    func testSuspendedCancelCannotEraseAClaimThatArrivedWhileSending() async throws {
+    func testSuspendedCancelAbsorbsMatchingClaimAndApproveCannotEscapeCancellation() async throws {
         let transport = PairingTransportRecorder(suspendSends: true)
         let controller = subject(transport: transport)
         try await moveToInvitation(controller, transport: transport)
@@ -296,12 +296,236 @@ final class PairingControllerTests: XCTestCase {
             expiresAtUnixMs: 1_300_000,
             clientKind: .ios
         )))
+        let approve = Task { await controller.approve() }
+        await Task.yield()
+        await Task.yield()
+
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 3)
+        XCTAssertEqual(controller.state, .cancelling)
+        if messages.count > 3 {
+            await transport.completeSend(at: 3, with: .success(()))
+        }
+        await approve.value
         await transport.completeSend(at: 2, with: .success(()))
         await cancel.value
 
-        guard case .approval = controller.state else {
-            return XCTFail("Expected the newer claim to retain ownership")
+        XCTAssertEqual(controller.state, .ready)
+    }
+
+    func testCancellationAcknowledgementEndsCancellationAndClearsCorrelation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
+        XCTAssertEqual(controller.state, .ready)
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .denied
+        )))
+        XCTAssertEqual(controller.state, .ready)
+
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .ready)
+    }
+
+    func testUnexpectedCancellationFailureRequiresStatusReconciliation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .invalidRequest
+        )))
+        XCTAssertEqual(controller.state, .cancelFailed)
+
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .cancelFailed)
+
+        let reconcile = Task { await controller.regenerate() }
+        try await transport.waitUntilSendCount(4)
+        guard case .pairStatusRequest = await transport.messages().last else {
+            return XCTFail("Expected status reconciliation after an uncertain cancellation")
         }
+        await transport.completeSend(at: 3, with: .success(()))
+        await reconcile.value
+    }
+
+    func testDenialAcknowledgementEndsDenialAndClearsCorrelation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let deny = Task { await controller.deny() }
+        try await transport.waitUntilSendCount(3)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .denied
+        )))
+        XCTAssertEqual(controller.state, .denied)
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .expired
+        )))
+        XCTAssertEqual(controller.state, .denied)
+
+        await transport.completeSend(at: 2, with: .failure(TestTransportError.failed))
+        await deny.value
+        XCTAssertEqual(controller.state, .denied)
+    }
+
+    func testRequestOnlyFailureCannotReplaceApprovalOrCompletedState() async {
+        let transport = PairingTransportRecorder()
+        let controller = subject(transport: transport)
+        await moveToApproval(controller)
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .expired
+        )))
+        guard case .approval = controller.state else {
+            return XCTFail("A request-only failure must not terminate an active claim")
+        }
+
+        await controller.approve()
+        await controller.receive(.pairCompleted(PairCompleted(
+            requestId: requestID,
+            claimId: claimID,
+            activePhoneCredentialVersion: 1
+        )))
+        XCTAssertEqual(controller.state, .completed(activePhoneCredentialVersion: 1))
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .activationFailed
+        )))
+        XCTAssertEqual(controller.state, .completed(activePhoneCredentialVersion: 1))
+    }
+
+    func testStaleRequestAndClaimFailuresCannotReplaceReadyState() async {
+        let transport = PairingTransportRecorder()
+        let controller = subject(transport: transport)
+        await controller.refreshStatus(capabilityAvailable: true)
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: requestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .expired
+        )))
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .denied
+        )))
+
+        XCTAssertEqual(controller.state, .ready)
+    }
+
+    func testSuspendedApproveCompletionCannotOverwriteCapabilityRevocation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let approve = Task { await controller.approve() }
+        try await transport.waitUntilSendCount(3)
+        await controller.refreshStatus(capabilityAvailable: false)
+        await transport.completeSend(at: 2, with: .failure(TestTransportError.failed))
+        await approve.value
+
+        XCTAssertEqual(controller.state, .unavailable)
+    }
+
+    func testSuspendedApproveSuccessCannotOverwriteCapabilityRevocation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let approve = Task { await controller.approve() }
+        try await transport.waitUntilSendCount(3)
+        await controller.refreshStatus(capabilityAvailable: false)
+        await transport.completeSend(at: 2, with: .success(()))
+        await approve.value
+
+        XCTAssertEqual(controller.state, .unavailable)
+    }
+
+    func testSuspendedDenyCompletionCannotOverwriteNewerStatusRequest() async throws {
+        let identifiers = RequestIDSequence([
+            requestID,
+            requestID,
+            "44444444-4444-4444-8444-444444444444"
+        ])
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { identifiers.next() },
+            now: { Date(timeIntervalSince1970: 1_000) }
+        )
+        try await moveToApproval(controller, transport: transport)
+
+        let deny = Task { await controller.deny() }
+        try await transport.waitUntilSendCount(3)
+        let refresh = Task { await controller.refreshStatus(capabilityAvailable: true) }
+        try await transport.waitUntilSendCount(4)
+        await transport.completeSend(at: 2, with: .failure(TestTransportError.failed))
+        await deny.value
+
+        XCTAssertEqual(controller.state, .checkingStatus)
+        await transport.completeSend(at: 3, with: .success(()))
+        await refresh.value
+    }
+
+    func testSuspendedDenySuccessCannotOverwriteNewerStatusRequest() async throws {
+        let identifiers = RequestIDSequence([
+            requestID,
+            requestID,
+            "44444444-4444-4444-8444-444444444444"
+        ])
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { identifiers.next() },
+            now: { Date(timeIntervalSince1970: 1_000) }
+        )
+        try await moveToApproval(controller, transport: transport)
+
+        let deny = Task { await controller.deny() }
+        try await transport.waitUntilSendCount(3)
+        let refresh = Task { await controller.refreshStatus(capabilityAvailable: true) }
+        try await transport.waitUntilSendCount(4)
+        await transport.completeSend(at: 2, with: .success(()))
+        await deny.value
+
+        XCTAssertEqual(controller.state, .checkingStatus)
+        await transport.completeSend(at: 3, with: .success(()))
+        await refresh.value
     }
 
     func testSuspendedDenyBlocksContradictoryApprove() async throws {
