@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -517,6 +519,97 @@ function assertIncludes(source, expected, message) {
   assert.ok(source.includes(expected), message ?? `missing ${expected}`);
 }
 
+const workflowRunnerTemp = path.join(tmpdir(), "click-bridge-workflow-runner");
+const recordingStub = [
+  "#!/bin/bash",
+  "set -u",
+  'command_name="${0##*/}"',
+  "{",
+  "  printf '%s' \"$command_name\"",
+  "  if (( $# > 0 )); then",
+  "    printf '\\t%s' \"$@\"",
+  "  fi",
+  "  printf '\\n'",
+  '} >> "$WORKFLOW_COMMAND_LOG"',
+  'if [[ "${WORKFLOW_FAIL_COMMAND:-}" == "$command_name" ]] &&',
+  '  { [[ -z "${WORKFLOW_FAIL_FIRST_ARGUMENT:-}" ]] || [[ "${1:-}" == "$WORKFLOW_FAIL_FIRST_ARGUMENT" ]]; }; then',
+  '  exit "${WORKFLOW_FAIL_STATUS:-97}"',
+  "fi",
+  "exit 0",
+  "",
+].join("\n");
+
+function runRecordedWorkflowScript(
+  script,
+  { failCommand = "", failFirstArgument = "" } = {},
+) {
+  const fixtureDirectory = mkdtempSync(
+    path.join(tmpdir(), "click-bridge-workflow-command-"),
+  );
+  const binDirectory = path.join(fixtureDirectory, "bin");
+  const commandLog = path.join(fixtureDirectory, "commands.tsv");
+  mkdirSync(binDirectory);
+  writeFileSync(commandLog, "");
+  for (const command of ["bash", "node", "ruby", "xcodebuild"]) {
+    const stubPath = path.join(binDirectory, command);
+    writeFileSync(stubPath, recordingStub);
+    chmodSync(stubPath, 0o755);
+  }
+
+  try {
+    const result = spawnSync(
+      "/bin/bash",
+      ["-e", "-o", "pipefail", "-c", script],
+      {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${binDirectory}:${process.env.PATH ?? ""}`,
+          RUNNER_TEMP: workflowRunnerTemp,
+          WORKFLOW_COMMAND_LOG: commandLog,
+          WORKFLOW_FAIL_COMMAND: failCommand,
+          WORKFLOW_FAIL_FIRST_ARGUMENT: failFirstArgument,
+          WORKFLOW_FAIL_STATUS: "97",
+        },
+      },
+    );
+    const loggedCommands = readFileSync(commandLog, "utf8").trimEnd();
+    return {
+      result,
+      invocations: loggedCommands.length === 0
+        ? []
+        : loggedCommands.split("\n").map((line) => line.split("\t")),
+    };
+  } finally {
+    rmSync(fixtureDirectory, { recursive: true, force: true });
+  }
+}
+
+function assertExecutesExactCommand(script, expectedInvocation, message) {
+  const success = runRecordedWorkflowScript(script);
+  assert.equal(
+    success.result.status,
+    0,
+    `${message}; script failed:\n${success.result.stdout}${success.result.stderr}`,
+  );
+  const matchingInvocations = success.invocations.filter(
+    ([command, firstArgument]) => command === expectedInvocation[0]
+      && firstArgument === expectedInvocation[1],
+  );
+  assert.deepEqual(matchingInvocations, [expectedInvocation], message);
+
+  const failure = runRecordedWorkflowScript(script, {
+    failCommand: expectedInvocation[0],
+    failFirstArgument: expectedInvocation[1],
+  });
+  assert.equal(
+    failure.result.status,
+    97,
+    `${message}; command failure must propagate from the workflow step`,
+  );
+}
+
 function readYamlDocument(relativePath) {
   const result = spawnSync(
     "ruby",
@@ -564,12 +657,47 @@ const workflowContractStep = relaySteps.find(
   (step) => step.name === "Verify workflow contracts",
 );
 assert.ok(workflowContractStep, "CI must contain the workflow contract step");
-assertIncludes(
+const validatorInvocation = [
+  "ruby",
+  ".github/scripts/validate-release-workflows.rb",
+];
+const validatorCommand = validatorInvocation.join(" ");
+assertExecutesExactCommand(
   workflowContractStep.run,
-  "ruby .github/scripts/validate-release-workflows.rb",
+  validatorInvocation,
   "CI must directly run the release workflow validator",
 );
-
+const acceptedValidatorMutations = [
+  [
+    "commented validator",
+    workflowContractStep.run.replace(validatorCommand, `# ${validatorCommand}`),
+  ],
+  [
+    "validator in an uncalled function",
+    workflowContractStep.run.replace(
+      validatorCommand,
+      `unused_validator() {\n  ${validatorCommand}\n}`,
+    ),
+  ],
+  [
+    "validator in a heredoc",
+    workflowContractStep.run.replace(
+      validatorCommand,
+      `cat <<'VALIDATOR_COMMAND'\n${validatorCommand}\nVALIDATOR_COMMAND`,
+    ),
+  ],
+].filter(([, mutatedRun]) => {
+  try {
+    assertExecutesExactCommand(
+      mutatedRun,
+      validatorInvocation,
+      "CI must directly run the release workflow validator",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}).map(([name]) => name);
 const appleSteps = ciDocument.jobs["apple-clients"].steps;
 const appleStepNames = appleSteps.map((step) => step.name);
 for (const preservedStep of [
@@ -594,22 +722,73 @@ assert.equal(
   "${{ hashFiles('ios/project.yml') != '' }}",
   "generic-device build must use the same optional iOS project guard",
 );
-for (const requiredArgument of [
-  "-project ios/ClickBridgePhone.xcodeproj",
-  "-scheme ClickBridgePhone",
-  "-configuration Release",
-  "-destination 'generic/platform=iOS'",
-  '-derivedDataPath "$RUNNER_TEMP/click-bridge-ios-device-build"',
+const genericDeviceInvocation = [
+  "xcodebuild",
+  "-project",
+  "ios/ClickBridgePhone.xcodeproj",
+  "-scheme",
+  "ClickBridgePhone",
+  "-configuration",
+  "Release",
+  "-destination",
+  "generic/platform=iOS",
+  "-derivedDataPath",
+  path.join(workflowRunnerTemp, "click-bridge-ios-device-build"),
   "CODE_SIGNING_ALLOWED=NO",
   "CODE_SIGNING_REQUIRED=NO",
   "build",
-]) {
-  assertIncludes(
-    genericDeviceStep.run,
-    requiredArgument,
-    `generic-device build is missing ${requiredArgument}`,
+];
+function assertGenericDeviceCommand(script) {
+  assertExecutesExactCommand(
+    script,
+    genericDeviceInvocation,
+    "CI must execute the exact unsigned generic-device Release command",
   );
 }
+
+assertGenericDeviceCommand(genericDeviceStep.run);
+const acceptedGenericDeviceMutations = [
+  [
+    "missing terminal build",
+    genericDeviceStep.run.replace(/\n\s+build\s*$/, ""),
+  ],
+  [
+    "interrupted continuation",
+    genericDeviceStep.run.replace(
+      "-scheme ClickBridgePhone \\",
+      "# interrupted continuation\n  -scheme ClickBridgePhone \\",
+    ),
+  ],
+  [
+    "contradictory code-signing argument",
+    genericDeviceStep.run.replace(
+      "CODE_SIGNING_ALLOWED=NO \\",
+      "CODE_SIGNING_ALLOWED=NO \\\n  CODE_SIGNING_ALLOWED=YES \\",
+    ),
+  ],
+  [
+    "backslash with trailing spaces",
+    genericDeviceStep.run.replace("xcodebuild \\", "xcodebuild \\  "),
+  ],
+].filter(([, mutatedRun]) => {
+  try {
+    assertGenericDeviceCommand(mutatedRun);
+    return true;
+  } catch {
+    return false;
+  }
+}).map(([name]) => name);
+assert.deepEqual(
+  {
+    validator: acceptedValidatorMutations,
+    genericDevice: acceptedGenericDeviceMutations,
+  },
+  { validator: [], genericDevice: [] },
+  `workflow command contracts accepted inert mutations: ${JSON.stringify({
+    validator: acceptedValidatorMutations,
+    genericDevice: acceptedGenericDeviceMutations,
+  })}`,
+);
 assert.ok(
   appleStepNames.indexOf("Verify generated project parity")
     < appleStepNames.indexOf("Build unsigned iOS generic-device Release"),
