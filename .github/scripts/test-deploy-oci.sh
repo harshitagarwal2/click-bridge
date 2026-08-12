@@ -104,8 +104,8 @@ test ! -e "$root/previous-release" || fail 'first deployment created previous-re
 assert_log_contains "release=$SHA_A docker compose"
 assert_log_contains 'docker run --detach --name click-bridge-relay-candidate'
 assert_log_contains 'scripts/smoke-relay.mjs'
-assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e'
-assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN --env PHONE_TOKEN --env MAC_TOKEN --volume'
+assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e'
+assert_log_contains 'docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env CLICK_BRIDGE_DOMAIN=clickbridge.example.test --env PHONE_TOKEN --env MAC_TOKEN --volume'
 assert_log_contains 'node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 sh -euc'
 assert_log_not_contains "docker run --rm --network host --add-host clickbridge.example.test:127.0.0.1 --env-file $root/shared/secrets.env"
 assert_log_not_contains 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'

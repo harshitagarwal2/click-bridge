@@ -122,10 +122,9 @@ verify_public_release() {
 
   for attempt in $(seq 1 "$PUBLIC_HEALTH_ATTEMPTS"); do
     : "$attempt"
-    if CLICK_BRIDGE_RELEASE="$release" CLICK_BRIDGE_DOMAIN="$CLICK_BRIDGE_DOMAIN" \
-      docker run --rm --network host \
+    if CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \
       --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
-      --env CLICK_BRIDGE_DOMAIN \
+      --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \
       node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e \
       'fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'; then
       ready=1
@@ -137,12 +136,11 @@ verify_public_release() {
   [[ "$ready" = 1 ]] || return 1
 
   CLICK_BRIDGE_RELEASE="$release" \
-    CLICK_BRIDGE_DOMAIN="$CLICK_BRIDGE_DOMAIN" \
     PHONE_TOKEN="$PHONE_TOKEN" \
     MAC_TOKEN="$MAC_TOKEN" \
     docker run --rm --network host \
-    --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
-    --env CLICK_BRIDGE_DOMAIN \
+      --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
+    --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \
     --env PHONE_TOKEN \
     --env MAC_TOKEN \
     --volume "$directory/relay:/workspace:ro" \
