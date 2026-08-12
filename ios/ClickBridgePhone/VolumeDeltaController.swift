@@ -33,7 +33,7 @@ final class VolumeDeltaController {
     init(source: any VolumeChangeSource) { self.source = source }
 
     func start(foregroundGeneration: Int,
-               onEvent: @escaping @MainActor (VolumeDeltaEvent) -> Void) throws {
+               onEvent: @escaping @MainActor @Sendable (VolumeDeltaEvent) -> Void) throws {
         stop()
         observationGeneration += 1
         let capturedObservationGeneration = observationGeneration

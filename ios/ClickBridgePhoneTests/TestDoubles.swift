@@ -66,14 +66,14 @@ final class FakeVolumeChangeSource: VolumeChangeSource {
     var currentVolume: Float
     private(set) var startCount = 0
     private(set) var stopCount = 0
-    private(set) var handlers: [(@MainActor (Float) -> Void)] = []
+    private(set) var handlers: [(@MainActor @Sendable (Float) -> Void)] = []
     var startError: Error?
 
     init(volume: Float = 0.5) {
         currentVolume = volume
     }
 
-    func start(observing handler: @escaping @MainActor (Float) -> Void) throws {
+    func start(observing handler: @escaping @MainActor @Sendable (Float) -> Void) throws {
         if let startError { throw startError }
         startCount += 1
         handlers.append(handler)

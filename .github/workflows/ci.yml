@@ -189,6 +189,21 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             test
 
+      - name: Build iOS with strict Swift concurrency
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        run: |
+          xcodebuild \
+            -project ios/ClickBridgePhone.xcodeproj \
+            -scheme ClickBridgePhone \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IOS_DEVICE_ID" \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-ios-strict-concurrency" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            SWIFT_STRICT_CONCURRENCY=complete \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=YES \
+            build
+
       - name: Build iOS simulator Release
         if: ${{ hashFiles('ios/project.yml') != '' }}
         run: |

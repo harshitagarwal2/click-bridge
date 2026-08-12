@@ -19,7 +19,7 @@ protocol PhoneScheduler: AnyObject {
 @MainActor
 protocol VolumeChangeSource: AnyObject {
     var currentVolume: Float { get }
-    func start(observing handler: @escaping @MainActor (Float) -> Void) throws
+    func start(observing handler: @escaping @MainActor @Sendable (Float) -> Void) throws
     func stop()
 }
 
