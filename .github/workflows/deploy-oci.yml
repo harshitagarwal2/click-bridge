@@ -78,9 +78,13 @@ jobs:
             -o BatchMode=yes
           )
 
+          # The command substitution is intentionally preserved for the remote shell.
+          # shellcheck disable=SC2016
           printf -v remote_prepare \
             'set -eu; test -f /opt/click-bridge/shared/secrets.env; test "$(stat -c %%a /opt/click-bridge/shared/secrets.env)" = 600; install -d -m 0755 %q' \
             "$release_dir"
+          # Inputs are validated above and escaped with printf %q for remote execution.
+          # shellcheck disable=SC2029
           ssh "${ssh_options[@]}" "$target" "$remote_prepare"
 
           printf -v rsync_ssh 'ssh -i %q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes -o BatchMode=yes' \
@@ -99,6 +103,7 @@ jobs:
 
           printf -v remote_deploy 'CLICK_BRIDGE_RELEASE=%q %q' \
             "$RELEASE_SHA" "$release_dir/.github/scripts/deploy-oci.sh"
+          # shellcheck disable=SC2029
           ssh "${ssh_options[@]}" "$target" "$remote_deploy"
 
           curl --fail --silent --show-error \
