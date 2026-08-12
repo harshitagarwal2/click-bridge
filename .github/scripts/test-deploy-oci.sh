@@ -17,10 +17,36 @@ cat > "$FAKE_BIN/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 set -eu
 printf 'release=%s docker %s\n' "${CLICK_BRIDGE_RELEASE:-unset}" "$*" >> "$FAKE_DOCKER_LOG"
+
+require_env() {
+  local name="$1"
+  local expected="$2"
+  test "${!name:-}" = "$expected" || {
+    printf 'fake docker received unexpected %s\n' "$name" >&2
+    exit 1
+  }
+}
+
+require_env_absent() {
+  local name="$1"
+  test -z "${!name:-}" || {
+    printf 'fake docker unexpectedly inherited %s\n' "$name" >&2
+    exit 1
+  }
+}
+
 case "$*" in
   *"run --detach"*) printf '%s\n' fake-candidate-id ;;
   *"exec click-bridge-relay-candidate"*) test "${FAKE_CANDIDATE_FAIL:-0}" != 1 ;;
-  *"scripts/smoke-relay.mjs"*) test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}" ;;
+  *"node -e"*)
+    require_env_absent PHONE_TOKEN
+    require_env_absent MAC_TOKEN
+    ;;
+  *"scripts/smoke-relay.mjs"*)
+    require_env PHONE_TOKEN aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    require_env MAC_TOKEN bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}"
+    ;;
   *) exit 0 ;;
 esac
 FAKE_DOCKER
@@ -98,7 +124,7 @@ SHA_B='2222222222222222222222222222222222222222'
 root="$(new_case_root first-success)"
 add_release "$root" "$SHA_A"
 : > "$FAKE_DOCKER_LOG"
-run_deploy "$root" "$SHA_A"
+run_deploy "$root" "$SHA_A" PHONE_TOKEN=inherited-phone MAC_TOKEN=inherited-mac
 assert_file_equals "$root/current-release" "$SHA_A"
 test ! -e "$root/previous-release" || fail 'first deployment created previous-release'
 assert_log_contains "release=$SHA_A docker compose"

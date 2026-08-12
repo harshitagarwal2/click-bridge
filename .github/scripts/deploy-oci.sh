@@ -167,6 +167,7 @@ done
 CLICK_BRIDGE_DOMAIN="$(sed -n 's/^CLICK_BRIDGE_DOMAIN=//p' "$SHARED_ENV")"
 PHONE_TOKEN="$(sed -n 's/^PHONE_TOKEN=//p' "$SHARED_ENV")"
 MAC_TOKEN="$(sed -n 's/^MAC_TOKEN=//p' "$SHARED_ENV")"
+export -n PHONE_TOKEN MAC_TOKEN
 [[ "$CLICK_BRIDGE_DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] ||
   die 'CLICK_BRIDGE_DOMAIN is not a valid hostname'
 release_directory "$CLICK_BRIDGE_RELEASE" >/dev/null
