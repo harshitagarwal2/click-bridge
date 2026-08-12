@@ -34,17 +34,23 @@ def fail_contract(message)
   exit(1)
 end
 
-def validate_mac_app_store_category(path)
-  document = REXML::Document.new(File.read(path))
+def validate_mac_app_store_category(project_path, plist_path)
+  project = YAML.safe_load(File.read(project_path), aliases: true)
+  project_category = project.dig("targets", "ClickBridgeMac", "info", "properties", "LSApplicationCategoryType")
+  fail_contract("Mac project category must be utilities") unless project_category == "public.app-category.utilities"
+
+  document = REXML::Document.new(File.read(plist_path))
   dictionary = document.elements["plist/dict"]
   elements = dictionary&.elements&.to_a || []
   category_key_index = elements.index do |element|
     element.name == "key" && element.text == "LSApplicationCategoryType"
   end
   category = elements[category_key_index + 1]&.text if category_key_index
-  fail_contract("Mac App Store category must be utilities") unless category == "public.app-category.utilities"
+  fail_contract("Mac Info.plist category must match the Mac project category") unless category == project_category
 rescue Errno::ENOENT => error
-  fail_contract("Mac App Store Info.plist is unavailable: #{error.message}")
+  fail_contract("Mac App Store category source is unavailable: #{error.message}")
+rescue Psych::SyntaxError => error
+  fail_contract("Mac project.yml is invalid YAML: #{error.message}")
 rescue REXML::ParseException => error
   fail_contract("Mac App Store Info.plist is invalid XML: #{error.message}")
 end
@@ -99,6 +105,37 @@ def require_script_order(script, earlier, later, message)
   earlier_index = script.index(earlier)
   later_index = script.index(later)
   fail_contract(message) unless earlier_index && later_index && earlier_index < later_index
+end
+
+def verify_xcodegen_generation_guard(filename, step_name, script)
+  Dir.mktmpdir("xcodegen-generation-guard") do |directory|
+    fake_bin = File.join(directory, "bin")
+    FileUtils.mkdir_p(fake_bin)
+    fake_xcodegen = File.join(fake_bin, "xcodegen")
+    File.write(fake_xcodegen, <<~SH)
+      #!/bin/sh
+      set -eu
+      printf '%s\n' "${XCODEGEN_FIXTURE_OUTPUT:-Created project}"
+      exit "${XCODEGEN_FIXTURE_STATUS:-0}"
+    SH
+    File.chmod(0o755, fake_xcodegen)
+    environment = {
+      "PATH" => "#{fake_bin}:#{ENV.fetch("PATH")}",
+      "RUNNER_TEMP" => directory
+    }
+    cases = {
+      "valid output" => [{}, true],
+      "missing settings warning" => [{ "XCODEGEN_FIXTURE_OUTPUT" => 'No "base" settings found' }, false],
+      "generation command failure" => [{ "XCODEGEN_FIXTURE_STATUS" => "42" }, false]
+    }
+
+    cases.each do |case_name, (extra_environment, expected_success)|
+      stdout, stderr, status = Open3.capture3(environment.merge(extra_environment), "bash", "-c", script, chdir: directory)
+      next if status.success? == expected_success
+
+      fail_contract("#{filename} #{step_name} mishandled #{case_name}: #{stdout}#{stderr}")
+    end
+  end
 end
 
 def verify_testflight_cleanup(cleanup_script)
@@ -199,8 +236,8 @@ def verify_testflight_cleanup(cleanup_script)
 end
 
 if ARGV.first == "--validate-mac-app-store-category"
-  fail_contract("Mac App Store category validation requires one plist path") unless ARGV.length == 2
-  validate_mac_app_store_category(ARGV.fetch(1))
+  fail_contract("Mac App Store category validation requires project and plist paths") unless ARGV.length == 3
+  validate_mac_app_store_category(ARGV.fetch(1), ARGV.fetch(2))
   puts("Validated Mac App Store category contract.")
   exit(0)
 end
@@ -337,15 +374,90 @@ mac_entitlements = File.read(mac_entitlements_path)
   fail_contract("Mac TestFlight entitlements are missing #{entitlement}") unless mac_entitlements.include?(entitlement)
 end
 
+mac_project_path = File.join(ROOT, "mac", "project.yml")
 mac_info_plist_path = File.join(ROOT, "mac", "ClickBridgeMac", "Info.plist")
-validate_mac_app_store_category(mac_info_plist_path)
+validate_mac_app_store_category(mac_project_path, mac_info_plist_path)
 
-%w[testflight.yml macos-notarized-release.yml].each do |filename|
-  workflow = File.read(File.join(WORKFLOW_DIR, filename))
+xcodegen_workflows = {
+  "ci.yml" => {
+    job: "apple-clients",
+    generated_paths: %w[
+      mac/ClickBridgeMac.xcodeproj/project.pbxproj
+      mac/ClickBridgeMac/Info.plist
+      ios/ClickBridgePhone.xcodeproj/project.pbxproj
+      ios/ClickBridgePhone/Info.plist
+    ]
+  },
+  "testflight.yml" => {
+    job: "upload",
+    generated_paths: %w[
+      mac/ClickBridgeMac.xcodeproj/project.pbxproj
+      mac/ClickBridgeMac/Info.plist
+      ios/ClickBridgePhone.xcodeproj/project.pbxproj
+      ios/ClickBridgePhone/Info.plist
+    ]
+  },
+  "macos-notarized-release.yml" => {
+    job: "release",
+    generated_paths: %w[
+      mac/ClickBridgeMac.xcodeproj/project.pbxproj
+      mac/ClickBridgeMac/Info.plist
+    ]
+  }
+}.freeze
+
+xcodegen_workflows.each do |filename, contract|
+  workflow_path = File.join(WORKFLOW_DIR, filename)
+  workflow = File.read(workflow_path)
+  document = YAML.safe_load(workflow, aliases: true)
+  steps = document.fetch("jobs").fetch(contract.fetch(:job)).fetch("steps")
+  install_index = steps.index { |step| step["name"] == "Install XcodeGen" }
+  install_step = install_index && steps.fetch(install_index)
+  fail_contract("#{filename} is missing the pinned XcodeGen installer") unless install_step
+  install_script = install_step.fetch("run")
   fail_contract("#{filename} must not install XcodeGen with Homebrew") if workflow.include?("brew install xcodegen")
-  fail_contract("#{filename} must download the pinned XcodeGen release") unless workflow.include?(XCODEGEN_URL)
-  fail_contract("#{filename} must verify the pinned XcodeGen checksum") unless workflow.include?(XCODEGEN_SHA256) && workflow.include?("shasum -a 256 -c")
-  fail_contract("#{filename} must verify the installed XcodeGen version") unless workflow.include?("Version: #{XCODEGEN_VERSION}")
+  fail_contract("#{filename} must download the pinned XcodeGen release") unless install_script.include?(XCODEGEN_URL)
+  fail_contract("#{filename} must verify the pinned XcodeGen checksum") unless install_script.include?(XCODEGEN_SHA256) && install_script.include?("shasum -a 256 -c")
+  fail_contract("#{filename} must verify the installed XcodeGen version") unless install_script.include?("Version: #{XCODEGEN_VERSION}")
+  require_script_order(
+    install_script,
+    %(install_root="$RUNNER_TEMP/xcodegen-${version}"),
+    %(mkdir -p "$install_root"),
+    "#{filename} must create its XcodeGen install prefix after selecting it"
+  )
+  require_script_order(
+    install_script,
+    %(mkdir -p "$install_root"),
+    %(PREFIX="$install_root" "$extracted/xcodegen/install.sh"),
+    "#{filename} must create its XcodeGen install prefix before installing"
+  )
+  require_script_order(
+    install_script,
+    %(PREFIX="$install_root" "$extracted/xcodegen/install.sh"),
+    %(test -f "$install_root/share/xcodegen/SettingPresets/base.yml"),
+    "#{filename} must verify XcodeGen setting presets after installing"
+  )
+
+  generation_indices = steps.each_index.select { |index| steps.fetch(index)["name"]&.start_with?("Generate ") }
+  fail_contract("#{filename} is missing XcodeGen generation steps") if generation_indices.empty?
+  generation_indices.each do |index|
+    step = steps.fetch(index)
+    script = step.fetch("run")
+    fail_contract("#{filename} #{step.fetch("name")} must enable strict pipe failures") unless script.include?("set -Eeuo pipefail")
+    fail_contract("#{filename} #{step.fetch("name")} must capture XcodeGen output") unless script.include?("xcodegen generate 2>&1 | tee")
+    fail_contract("#{filename} #{step.fetch("name")} must reject missing setting presets") unless script.include?(%q{grep -Eq 'No "[^"]+" settings found'})
+    verify_xcodegen_generation_guard(filename, step.fetch("name"), script)
+  end
+
+  parity_index = steps.index { |step| step["name"] == "Verify generated project parity" }
+  parity_step = parity_index && steps.fetch(parity_index)
+  fail_contract("#{filename} is missing generated project parity verification") unless parity_step
+  fail_contract("#{filename} must verify project parity after generation") unless parity_index > generation_indices.max
+  parity_script = parity_step.fetch("run")
+  fail_contract("#{filename} must fail on generated project drift") unless parity_script.include?("git diff --exit-code --")
+  contract.fetch(:generated_paths).each do |generated_path|
+    fail_contract("#{filename} must verify generated drift for #{generated_path}") unless parity_script.include?(generated_path)
+  end
 end
 
 fastfile = File.read(File.join(ROOT, "fastlane", "Fastfile"))
