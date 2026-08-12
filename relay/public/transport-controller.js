@@ -1,4 +1,5 @@
 import {
+  AUTHENTICATION_REJECTED_CLOSE_CODE,
   encodeMessage,
   parseServerMessage,
   PHONE_TAKEN_OVER_CLOSE_CODE,
@@ -180,12 +181,27 @@ export class TransportController {
     socket.onerror = () => {};
     socket.onclose = (event) => {
       if (stale()) return;
+      if (!this.authenticated && event.code === AUTHENTICATION_REJECTED_CLOSE_CODE) {
+        this.#stopForAuthenticationRejection();
+        return;
+      }
       if (event.code === PHONE_TAKEN_OVER_CLOSE_CODE) {
         this.#stopForTakeover();
         return;
       }
       down();
     };
+  }
+
+  #stopForAuthenticationRejection() {
+    this.suspended = true;
+    this.authenticated = false;
+    this.attempt = 0;
+    this.#clearReconnect();
+    this.#stopHeartbeat();
+    this._generation += 1;
+    this.#teardownSocket(1000, 'authentication_rejected');
+    this.#publish('auth_rejected', 'server_rejected_credentials');
   }
 
   #stopForTakeover() {

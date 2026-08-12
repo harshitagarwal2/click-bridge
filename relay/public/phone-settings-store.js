@@ -137,12 +137,19 @@ export class PhoneSettingsStore {
     const canonical = canonicalSlot(pending);
     if (!canonical) return false;
     if (!validGeneration(expectedGeneration)) return false;
-    return this.#mutate((current) => current.generation === expectedGeneration
-      && !current.pending
-      && current.provenance === 'authoritative'
-      && canonical.version === nextVersion(current)
-      ? { ...current, pending: canonical }
-      : false);
+    return this.#mutate((current) => {
+      if (current.generation !== expectedGeneration) return false;
+      if (current.provenance === 'authoritative'
+        && !current.pending
+        && canonical.version === nextVersion(current)) {
+        return { ...current, pending: canonical };
+      }
+      if (current.active === null && canonical.version === 1
+        && ['unknown', 'provisional'].includes(current.provenance)) {
+        return { active: null, pending: canonical, provenance: 'provisional' };
+      }
+      return false;
+    });
   }
 
   async promotePending(expected, expectedGeneration) {
@@ -151,7 +158,7 @@ export class PhoneSettingsStore {
     if (!validGeneration(expectedGeneration)) return false;
     return this.#mutate((current) => current.pending
       && current.generation === expectedGeneration
-      && current.provenance === 'authoritative'
+      && ['authoritative', 'provisional'].includes(current.provenance)
       && current.pending.credential === canonical.credential
       && current.pending.version === canonical.version
       ? { active: current.pending, pending: null, provenance: 'authoritative' }
@@ -165,7 +172,9 @@ export class PhoneSettingsStore {
       && current.pending
       && current.pending.credential === canonical.credential
       && current.pending.version === canonical.version
-      ? { ...current, pending: null }
+      ? current.provenance === 'provisional'
+        ? emptyCredentials()
+        : { ...current, pending: null }
       : false);
   }
 
@@ -215,11 +224,14 @@ export class PhoneSettingsStore {
       const resolvedActive = !provenance && activeSlot
         ? { credential: activeSlot.credential, version: 0 }
         : activeSlot;
-      if (!['authoritative', 'unknown'].includes(resolvedProvenance)) return null;
+      if (!['authoritative', 'provisional', 'unknown'].includes(resolvedProvenance)) return null;
       if ((resolvedProvenance === 'authoritative' && (!resolvedActive || resolvedActive.version === 0))
-        || (resolvedProvenance === 'unknown' && resolvedActive && resolvedActive.version !== 0)) return null;
-      if (pendingSlot && (resolvedProvenance !== 'authoritative' || !resolvedActive
-        || pendingSlot.version !== resolvedActive.version + 1)) return null;
+        || (resolvedProvenance === 'unknown' && resolvedActive && resolvedActive.version !== 0)
+        || (resolvedProvenance === 'provisional' && (resolvedActive !== null
+          || pendingSlot?.version !== 1))) return null;
+      if (pendingSlot && resolvedProvenance === 'authoritative'
+        && (!resolvedActive || pendingSlot.version !== resolvedActive.version + 1)) return null;
+      if (pendingSlot && !['authoritative', 'provisional'].includes(resolvedProvenance)) return null;
       return {
         active: resolvedActive,
         pending: pendingSlot,

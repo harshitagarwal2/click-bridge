@@ -199,19 +199,22 @@ test('hello timeout closes an unauthenticated socket', async () => {
   }
 });
 
-test('wrong token, wrong-role token, and non-hello authentication are closed', async () => {
+test('wrong tokens use the dedicated rejection close while non-hello remains protocol failure', async () => {
   const { server, url } = await boot();
   try {
     for (const first of [
       hello('phone', '9'.repeat(64)),
       hello('phone', MAC_TOKEN),
-      { type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 1 },
     ]) {
       const peer = client(url);
       await peer.open();
       peer.send(first);
-      assert.equal(await peer.closed(), 4003);
+      assert.equal(await peer.closed(), 4005);
     }
+    const malformed = client(url);
+    await malformed.open();
+    malformed.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 1 });
+    assert.equal(await malformed.closed(), 4003);
   } finally {
     await server.close();
   }

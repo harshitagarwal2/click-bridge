@@ -19,7 +19,7 @@ export function authenticateCredentialProbe(slot, signal, {
       token: slot.credential,
       onStatus: ({ state }) => {
         if (state === 'ready') finish(true);
-        else if (state === 'taken_over') finish(false);
+        else if (state === 'auth_rejected') finish(false);
         else if (state === 'backoff') finish(null, new Error('pairing_probe_unavailable'));
       },
     });

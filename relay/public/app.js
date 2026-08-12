@@ -1,4 +1,5 @@
 import { ClockHealthController } from './clock-health-controller.js';
+import { composeCredentialAccess, composePairingStartup } from './app-composition.js';
 import {
   authenticateCredentialProbe, CredentialLifecycleController, PairingRecoveryGate,
 } from './credential-lifecycle-controller.js';
@@ -34,6 +35,8 @@ const element = {
   openSettings: byId('settings-open'),
   tokenInput: byId('token-input'),
   tokenState: byId('token-state'),
+  manualTokenGuidance: byId('manual-token-guidance'),
+  manualTokenSettings: byId('manual-token-settings'),
   saveToken: byId('token-save'),
   clearToken: byId('token-clear'),
   keepWarm: byId('keepwarm'),
@@ -199,10 +202,13 @@ pairingUI = createPairingUI({
   },
 });
 
-if (initialPairingInvitation) {
-  pairingUI.start(initialPairingInvitation);
-  initialPairingInvitation = null;
-}
+const pairingStartup = composePairingStartup({
+  pairingEnabled,
+  hasPending: Boolean(credentialSnapshot?.pending),
+  invitation: initialPairingInvitation,
+  startInvitation: (invitation) => pairingUI.start(invitation),
+});
+initialPairingInvitation = null;
 
 benchmarkRequests = new BenchmarkRequestRouter({
   send: (message) => oci.send(message),
@@ -272,6 +278,16 @@ const connectionText = {
 
 function render() {
   const model = view(state);
+  composeCredentialAccess({
+    pairingEnabled,
+    phase: model.phase,
+    elements: {
+      pairingPanel: element.pairing.panel,
+      pairingGuidance: element.pairing.panel,
+      manualSettings: element.manualTokenSettings,
+      manualGuidance: element.manualTokenGuidance,
+    },
+  });
   const benchmarkBlocked = benchmarkController.active && !benchmarkController.canActivate;
   element.button.disabled = !model.enabled || benchmarkBlocked;
   element.retryClock.hidden = !model.retryClockVisible;
@@ -515,7 +531,7 @@ const credentialLifecycle = new CredentialLifecycleController({
   reportError: (message) => { element.tokenState.textContent = message; },
 });
 pairingRecovery = new PairingRecoveryGate({
-  needed: pairingEnabled && Boolean(credentialSnapshot?.pending),
+  needed: pairingStartup.recoveryNeeded,
   isVisible: () => document.visibilityState === 'visible',
   startRecovery: () => pairingUI.startRecovery(),
   recover: () => pairingController.recover(),

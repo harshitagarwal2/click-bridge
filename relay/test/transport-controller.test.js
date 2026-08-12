@@ -111,6 +111,42 @@ test('the close frame owns takeover semantics even when an error event arrives f
   assert.equal(sockets.length, 1);
 });
 
+test('the dedicated unauthenticated close is an exact terminal authentication rejection', () => {
+  const { controller, scheduler, sockets, statuses } = harness();
+  controller.connect();
+  sockets[0].open();
+
+  sockets[0].serverClose(4005, 'bad token');
+
+  assert.equal(controller.state, 'auth_rejected');
+  assert.equal(statuses.at(-1).reason, 'server_rejected_credentials');
+  scheduler.advance(60_000);
+  assert.equal(sockets.length, 1);
+});
+
+test('unauthenticated generic 4003 remains a transient protocol failure', () => {
+  const { controller, scheduler, sockets } = harness();
+  controller.connect();
+  sockets[0].open();
+
+  sockets[0].serverClose(4003, 'bad initial message');
+
+  assert.equal(controller.state, 'backoff');
+  scheduler.advance(250);
+  assert.equal(sockets.length, 2);
+});
+
+test('authenticated server 4003 remains a transient protocol failure', () => {
+  const { controller, scheduler, sockets, authenticate } = harness();
+  authenticate();
+
+  sockets[0].serverClose(4003, 'bad message');
+
+  assert.equal(controller.state, 'backoff');
+  scheduler.advance(250);
+  assert.equal(sockets.length, 2);
+});
+
 for (const [name, frame] of [
   ['binary', new Uint8Array([1, 2])],
   ['oversized', 'x'.repeat(4097)],

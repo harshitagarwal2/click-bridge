@@ -866,6 +866,77 @@ test('credential probe clears its deadline after transport authentication settle
   assert.equal(scheduler.tasks.size, 0);
 });
 
+test('credential probe returns false only for an exact server authentication rejection', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  const { FakeSocket } = await import('./pwa-test-helpers.js');
+  const { createRelayTransport } = await import('../public/relay-transport.js');
+  const sockets = [];
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, new AbortController().signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: (options) => createRelayTransport({
+        ...options,
+        createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      }),
+    },
+  );
+
+  sockets[0].open();
+  sockets[0].serverClose(4005, 'bad token');
+
+  assert.equal(await result, false);
+  assert.equal(sockets[0].closed.length, 1, 'settlement closes the probe exactly once');
+  scheduler.advance(60_000);
+  assert.equal(sockets.length, 1, 'an explicit rejection is terminal for the probe');
+});
+
+test('transient credential probe failure rejects instead of rejecting the credential', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  const { FakeSocket } = await import('./pwa-test-helpers.js');
+  const { createRelayTransport } = await import('../public/relay-transport.js');
+  const sockets = [];
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, new AbortController().signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: (options) => createRelayTransport({
+        ...options,
+        createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      }),
+    },
+  );
+
+  sockets[0].open();
+  sockets[0].serverClose(1006, 'network lost');
+
+  await assert.rejects(result, /pairing_probe_unavailable/);
+});
+
+test('generic unauthenticated 4003 is unavailable rather than credential rejection', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  const { FakeSocket } = await import('./pwa-test-helpers.js');
+  const { createRelayTransport } = await import('../public/relay-transport.js');
+  const sockets = [];
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, new AbortController().signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: (options) => createRelayTransport({
+        ...options,
+        createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+      }),
+    },
+  );
+  sockets[0].open();
+  sockets[0].serverClose(4003, 'bad initial message');
+
+  await assert.rejects(result, /pairing_probe_unavailable/);
+});
+
 test('page hide abort closes the real credential probe transport', async () => {
   const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
   assert.equal(typeof authenticate, 'function');
@@ -977,7 +1048,7 @@ test('failed pending promotion leaves both credential slots unchanged', async ()
   assert.deepEqual(store.getPending(), pending);
 });
 
-test('staging rejects a same-version replacement without disturbing the pending credential', async () => {
+test('authoritative pending cannot be overwritten by another next-version credential', async () => {
   const store = new MemorySettingsStore();
   const expected = { credential: 'b'.repeat(64), version: 2 };
   const replacement = { credential: 'c'.repeat(64), version: 2 };
@@ -988,6 +1059,27 @@ test('staging rejects a same-version replacement without disturbing the pending 
   assert.equal(await store.stage(replacement, generation(store)), false);
   assert.deepEqual(store.getActive(), { credential: 'a'.repeat(64), version: 1 });
   assert.deepEqual(store.getPending(), expected);
+});
+
+test('only an orphan provisional version one may be replaced by a fresh claimant', async () => {
+  const store = new MemorySettingsStore();
+  const orphan = { credential: 'b'.repeat(64), version: 1 };
+  const replacement = { credential: 'c'.repeat(64), version: 1 };
+  assert.equal(await store.stage(orphan, generation(store)), true);
+  assert.equal(await store.stage(replacement, generation(store)), true);
+  assert.equal(store.getActive(), null);
+  assert.deepEqual(store.getPending(), replacement);
+});
+
+test('stale generation cannot replace an orphan provisional version one', async () => {
+  const store = new MemorySettingsStore();
+  const orphan = { credential: 'b'.repeat(64), version: 1 };
+  const replacement = { credential: 'c'.repeat(64), version: 1 };
+  const staleGeneration = generation(store);
+  assert.equal(await store.stage(orphan, staleGeneration), true);
+
+  assert.equal(await store.stage(replacement, staleGeneration), false);
+  assert.deepEqual(store.getPending(), orphan);
 });
 
 test('promotion requires the exact credential and version in the pending slot', async () => {

@@ -89,7 +89,6 @@ export class PairingController {
     this.claimId = null;
     this.acknowledgedSlot = null;
     this.acknowledgedGeneration = null;
-    this.acknowledgedStorage = null;
     this.generation = 0;
     this.phase = 'idle';
     this.deadlineTimer = null;
@@ -113,7 +112,6 @@ export class PairingController {
     this.claimId = this.idGenerator();
     this.acknowledgedSlot = null;
     this.acknowledgedGeneration = null;
-    this.acknowledgedStorage = null;
     const sessionNonce = toHex(this.randomBytes());
     const socket = this.createSocket(deriveRelayWebSocketUrl(this.location));
     this.socket = socket;
@@ -337,21 +335,15 @@ export class PairingController {
         return;
       }
       let staged = false;
-      const storageMode = beforeStage.active && beforeStage.provenance === 'authoritative'
-        ? 'pending' : 'active';
       try {
-        staged = storageMode === 'pending'
-          ? await this.settings.stage(pending, beforeStage.generation)
-          : await this.settings.setActive(pending, beforeStage.generation);
+        staged = await this.settings.stage(pending, beforeStage.generation);
       } catch {
         staged = false;
       }
       if (!this.#current(socket, generation) || this.phase !== 'awaiting_approval') return;
       const stagedSnapshot = this.#snapshot();
-      const durableSlot = storageMode === 'pending'
-        ? stagedSnapshot?.pending : stagedSnapshot?.active;
+      const durableSlot = stagedSnapshot?.pending;
       if (!staged || !stagedSnapshot || !sameSlot(durableSlot, pending)
-        || (storageMode === 'active' && stagedSnapshot.pending !== null)
         || stagedSnapshot.generation === beforeStage.generation) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
@@ -369,8 +361,7 @@ export class PairingController {
       }
       if (!this.#current(socket, generation) || this.phase !== 'awaiting_approval') return;
       const proofSnapshot = this.#snapshot();
-      const proofSlot = storageMode === 'pending'
-        ? proofSnapshot?.pending : proofSnapshot?.active;
+      const proofSlot = proofSnapshot?.pending;
       if (!proofSnapshot || proofSnapshot.generation !== stagedSnapshot.generation
         || !sameSlot(proofSlot, pending)) {
         this.#terminate('failed', 'storage_failed', socket);
@@ -378,7 +369,6 @@ export class PairingController {
       }
       this.acknowledgedSlot = pending;
       this.acknowledgedGeneration = stagedSnapshot.generation;
-      this.acknowledgedStorage = storageMode;
       try {
         this.#send(socket, {
           type: 'pair.credential.ack',
@@ -402,34 +392,27 @@ export class PairingController {
     if (message.type === 'pair.active') {
       const acknowledged = this.acknowledgedSlot;
       const acknowledgedGeneration = this.acknowledgedGeneration;
-      const acknowledgedStorage = this.acknowledgedStorage;
       if (!acknowledged || acknowledged.version !== message.activePhoneCredentialVersion
         || acknowledgedGeneration === null) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
       }
-      let promoted = acknowledgedStorage === 'active';
-      if (acknowledgedStorage === 'pending') {
-        try {
-          promoted = await this.settings.promotePending(acknowledged, acknowledgedGeneration);
-        } catch {
-          promoted = false;
-        }
+      let promoted = false;
+      try {
+        promoted = await this.settings.promotePending(acknowledged, acknowledgedGeneration);
+      } catch {
+        promoted = false;
       }
       if (!this.#current(socket, generation) || this.phase !== 'activating') return;
       const promotedSnapshot = this.#snapshot();
       if (!promoted || !promotedSnapshot || !sameSlot(promotedSnapshot.active, acknowledged)
         || promotedSnapshot.pending !== null
-        || (acknowledgedStorage === 'pending'
-          && promotedSnapshot.generation === acknowledgedGeneration)
-        || (acknowledgedStorage === 'active'
-          && promotedSnapshot.generation !== acknowledgedGeneration)) {
+        || promotedSnapshot.generation === acknowledgedGeneration) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       this.acknowledgedSlot = null;
       this.acknowledgedGeneration = null;
-      this.acknowledgedStorage = null;
       this.reference = null;
       if (await this.#activateTransport(acknowledged, { socket, generation })) {
         this.#retireSocket(socket, 1000, 'pairing_complete');
@@ -545,7 +528,6 @@ export class PairingController {
     this.claimId = null;
     this.acknowledgedSlot = null;
     this.acknowledgedGeneration = null;
-    this.acknowledgedStorage = null;
     this.pairingExpiresAtUnixMs = null;
   }
 
