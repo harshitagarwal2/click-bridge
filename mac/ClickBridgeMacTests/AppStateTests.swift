@@ -58,17 +58,27 @@ private actor AppStateTransport: WebSocketTransport {
     private var inbound: [String] = []
     private var inboundContinuation: CheckedContinuation<String, Error>?
     private var closeContinuation: CheckedContinuation<Void, Never>?
+    private var pairingSendContinuations: [CheckedContinuation<Void, Error>] = []
     private var helloWaiters: [(String, CheckedContinuation<Void, Never>)] = []
     private let gateClose: Bool
+    private let gatePairingStatus: Bool
     private(set) var closeCount = 0
     private(set) var closeStarted = false
     private(set) var sent: [String] = []
 
-    init(gateClose: Bool) { self.gateClose = gateClose }
+    init(gateClose: Bool, gatePairingStatus: Bool = false) {
+        self.gateClose = gateClose
+        self.gatePairingStatus = gatePairingStatus
+    }
 
     func connect(to url: URL) async throws {}
     func sendText(_ text: String) async throws {
         sent.append(text)
+        if gatePairingStatus,
+           case .pairStatusRequest = try? StrictWireDecoder().decodeText(text) {
+            try await withCheckedThrowingContinuation { pairingSendContinuations.append($0) }
+            return
+        }
         guard let token = (try? JSONDecoder().decode(Hello.self, from: Data(text.utf8)))?.token else { return }
         let ready = helloWaiters.filter { $0.0 == token }
         helloWaiters.removeAll { $0.0 == token }
@@ -101,6 +111,8 @@ private actor AppStateTransport: WebSocketTransport {
     }
     func closes() -> Int { closeCount }
     func didStartClose() -> Bool { closeStarted }
+    func pairingSendCount() -> Int { pairingSendContinuations.count }
+    func completePairingSend(at index: Int) { pairingSendContinuations[index].resume() }
     func sentMessages() -> [String] { sent }
     func containsHello(token: String) -> Bool {
         sent.contains { (try? JSONDecoder().decode(Hello.self, from: Data($0.utf8)))?.token == token }
@@ -109,6 +121,12 @@ private actor AppStateTransport: WebSocketTransport {
         if containsHello(token: token) { return }
         await withCheckedContinuation { helloWaiters.append((token, $0)) }
     }
+}
+
+private actor AppStateCompletionFlag {
+    private var completed = false
+    func markCompleted() { completed = true }
+    func value() -> Bool { completed }
 }
 
 private final class AppStateCountingPoster: InputPosting, @unchecked Sendable {
@@ -247,6 +265,61 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(pairingReady)
         XCTAssertEqual(state.pairingAction.title, "Replace Phone")
         XCTAssertTrue(state.pairingAction.requiresReplacementConfirmation)
+        await client.stop()
+    }
+
+    func testRapidReconnectKeepsLatestPairingStatusRefreshAndIgnoresStaleCompletion() async throws {
+        let suite = "AppStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let permission = PostEventPermissionService(preflight: { false }, request: { false })
+        let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
+        let transport = AppStateTransport(gateClose: false, gatePairingStatus: true)
+        let client = RelayClient(
+            actionSink: processor,
+            diagnostics: processor,
+            makeTransport: { transport },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }
+        )
+        let state = AppState(settings: settings, client: client, processor: processor,
+                             permissionService: permission, activationNotifications: NotificationCenter())
+
+        await transport.waitForHello(token: "stored-token")
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let firstRefreshStarted = await eventually { await transport.pairingSendCount() == 1 }
+        XCTAssertTrue(firstRefreshStarted)
+        await transport.completePairingSend(at: 0)
+
+        let staleCompletion = AppStateCompletionFlag()
+        let staleRefresh = Task {
+            await state.handleStatusEvent(.init(status: .connected, credentialRevision: 1, sequence: 100))
+            await staleCompletion.markCompleted()
+        }
+        let staleRefreshStarted = await eventually { await transport.pairingSendCount() == 2 }
+        let staleRefreshCompletedEarly = await staleCompletion.value()
+        XCTAssertTrue(staleRefreshStarted)
+        XCTAssertFalse(staleRefreshCompletedEarly)
+
+        await state.handleStatusEvent(.init(status: .disconnected, credentialRevision: 1, sequence: 101))
+        let latestRefresh = Task {
+            await state.handleStatusEvent(.init(status: .connected, credentialRevision: 1, sequence: 102))
+        }
+        let latestRefreshStarted = await eventually { await transport.pairingSendCount() == 3 }
+        XCTAssertTrue(latestRefreshStarted)
+
+        await transport.completePairingSend(at: 1)
+        await staleRefresh.value
+        await transport.completePairingSend(at: 2)
+        await latestRefresh.value
+        let latestStatusWon = await eventually {
+            state.connection == .connected && state.pairing?.state == .checkingStatus
+        }
+        let refreshCount = await transport.pairingSendCount()
+        XCTAssertTrue(latestStatusWon)
+        XCTAssertEqual(refreshCount, 3)
         await client.stop()
     }
 

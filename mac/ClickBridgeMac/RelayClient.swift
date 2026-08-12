@@ -129,7 +129,15 @@ actor RelayClient {
               authenticatedGeneration == generation, let socket = transport else {
             throw WebSocketTransportError.notConnected
         }
-        try await send(message, socket: socket, generation: generation, requireAuthentication: true)
+        let expected = generation
+        do {
+            try await send(message, socket: socket, generation: expected, requireAuthentication: true)
+        } catch {
+            if isCurrent(expected) {
+                await generationFailed(expected, socket: socket)
+            }
+            throw error
+        }
     }
 
     @discardableResult

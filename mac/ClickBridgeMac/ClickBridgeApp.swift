@@ -163,18 +163,23 @@ private struct PairingSettingsView: View {
             case .cancelling:
                 ProgressView("Cancelling invitation…")
             case .cancelFailed:
-                PairingRetryView(message: "The invitation could not be cancelled safely.",
-                                 retry: { Task { await controller.regenerate() } })
+                PairingRecoveryView(message: "The invitation could not be cancelled safely.",
+                                    action: controller.recoveryAction,
+                                    recover: { Task { await controller.regenerate() } })
             case .completed:
                 Text("Phone paired.")
             case .denied:
-                Text("Phone pairing denied.")
+                PairingRecoveryView(message: "Phone pairing denied.",
+                                    action: controller.recoveryAction,
+                                    recover: { Task { await controller.regenerate() } })
             case .expired:
-                PairingRetryView(message: "The pairing invitation expired.",
-                                 retry: { Task { await controller.regenerate() } })
+                PairingRecoveryView(message: "The pairing invitation expired.",
+                                    action: controller.recoveryAction,
+                                    recover: { Task { await controller.regenerate() } })
             case .failed:
-                PairingRetryView(message: "Pairing failed.",
-                                 retry: { Task { await controller.regenerate() } })
+                PairingRecoveryView(message: "Pairing failed.",
+                                    action: controller.recoveryAction,
+                                    recover: { Task { await controller.regenerate() } })
             }
         }
         .onAppear { Task { await controller.refreshExpiry() } }
@@ -265,14 +270,17 @@ private struct PairingApprovalView: View {
     }
 }
 
-private struct PairingRetryView: View {
+private struct PairingRecoveryView: View {
     let message: String
-    let retry: () -> Void
+    let action: PairingController.RecoveryAction?
+    let recover: () -> Void
 
     var body: some View {
         VStack(alignment: .leading) {
             Text(message)
-            Button("Retry", action: retry)
+            if let action {
+                Button(action == .startAgain ? "Start Again" : "Retry", action: recover)
+            }
         }
     }
 }

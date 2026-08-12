@@ -54,13 +54,7 @@ final class AppState: ObservableObject {
         credentialTask = Task { [weak self, client, processor, settings] in
             await client.setStatusHandler { [weak self] event in
                 Task { @MainActor in
-                    guard let self,
-                          event.credentialRevision == self.credentialRevision,
-                          event.sequence > self.lastStatusSequence else { return }
-                    self.lastStatusSequence = event.sequence
-                    self.connection = event.status
-                    guard let pairing = self.pairing else { return }
-                    Task { await pairing.refreshStatus(capabilityAvailable: event.status == .connected) }
+                    await self?.handleStatusEvent(event)
                 }
             }
             await client.setResultHandler { [weak self] result in
@@ -169,6 +163,17 @@ final class AppState: ObservableObject {
     private func beginCredentialOperation() -> UInt64 {
         credentialRevision &+= 1
         return credentialRevision
+    }
+
+    func handleStatusEvent(_ event: RelayClient.StatusEvent) async {
+        guard event.credentialRevision == credentialRevision,
+              event.sequence > lastStatusSequence else { return }
+        lastStatusSequence = event.sequence
+        connection = event.status
+        guard let pairing else { return }
+        await pairing.refreshStatus(capabilityAvailable: event.status == .connected)
+        guard event.credentialRevision == credentialRevision,
+              event.sequence == lastStatusSequence else { return }
     }
 
     private func receivePairing(_ message: WireMessage) async {
