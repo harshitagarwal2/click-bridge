@@ -8,8 +8,26 @@ const RECORD_FIELDS = Object.freeze([
   'schemaVersion',
 ]);
 
-function authError(message) {
-  return new Error(message);
+export const AUTH_STORE_ERROR_CODES = Object.freeze({
+  INVALID_INPUT: 'invalid_input',
+  VERSION_CONFLICT: 'version_conflict',
+  NEXT_VERSION_INVALID: 'next_version_invalid',
+  PERSISTENCE_FAILED: 'persistence_failed',
+  STORAGE_FAILED: 'storage_failed',
+  NOT_INITIALIZED: 'not_initialized',
+  RECORD_INVALID: 'record_invalid',
+});
+
+export class AuthStoreError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'AuthStoreError';
+    this.code = code;
+  }
+}
+
+function authError(code, message) {
+  return new AuthStoreError(code, message);
 }
 
 function immutableRecord(credentialVersion, verifier) {
@@ -22,14 +40,14 @@ function immutableRecord(credentialVersion, verifier) {
 
 function validateVerifier(value) {
   if (typeof value !== 'string' || !HEX_64.test(value)) {
-    throw authError('invalid phone verifier');
+    throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone verifier');
   }
   return value;
 }
 
 function validateVersion(value) {
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw authError('invalid phone credential version');
+    throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone credential version');
   }
   return value;
 }
@@ -39,22 +57,24 @@ function parseRecord(text) {
   try {
     value = JSON.parse(text);
   } catch {
-    throw authError('invalid auth record');
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw authError('invalid auth record');
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
   if (Object.keys(value).sort().join('\0') !== RECORD_FIELDS.join('\0')) {
-    throw authError('invalid auth record');
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
-  if (value.schemaVersion !== SCHEMA_VERSION) throw authError('invalid auth record');
+  if (value.schemaVersion !== SCHEMA_VERSION) {
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
+  }
   try {
     return immutableRecord(
       validateVersion(value.activePhoneCredentialVersion),
       validateVerifier(value.activePhoneVerifier),
     );
   } catch {
-    throw authError('invalid auth record');
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
 }
 
@@ -64,22 +84,26 @@ function encodeRecord(record) {
 
 function verifierForCredential(credential, crypto) {
   if (typeof credential !== 'string' || !HEX_64.test(credential)) {
-    throw authError('invalid phone credential');
+    throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone credential');
   }
   return crypto.createHash('sha256').update(Buffer.from(credential, 'hex')).digest('hex');
 }
 
 async function verifyRecordMetadata(recordPath, fs) {
   const metadata = await fs.stat(recordPath);
-  if ((metadata.mode & 0o777) !== 0o600) throw authError('invalid auth record permissions');
+  if ((metadata.mode & 0o777) !== 0o600) {
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record permissions');
+  }
   if (typeof process.getuid === 'function' && typeof metadata.uid === 'number'
       && metadata.uid !== process.getuid()) {
-    throw authError('invalid auth record owner');
+    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record owner');
   }
 }
 
 export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto, log = () => {} }) {
-  if (typeof recordPath !== 'string' || recordPath.length === 0) throw authError('invalid auth record path');
+  if (typeof recordPath !== 'string' || recordPath.length === 0) {
+    throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid auth record path');
+  }
   let current = null;
   let initializePromise = null;
   let activationQueue = Promise.resolve();
@@ -137,7 +161,7 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
         }
       }
       log('phone auth record persistence failed');
-      throw authError('persist auth record failed');
+      throw authError(AUTH_STORE_ERROR_CODES.PERSISTENCE_FAILED, 'persist auth record failed');
     }
   }
 
@@ -148,7 +172,13 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
       current = parseRecord(await fs.readFile(recordPath, 'utf8'));
       return current;
     } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
+      if (error?.code === 'ENOENT') {
+        // The record is initialized below.
+      } else if (error instanceof AuthStoreError) {
+        throw error;
+      } else {
+        throw authError(AUTH_STORE_ERROR_CODES.STORAGE_FAILED, 'read auth record failed');
+      }
     }
 
     const record = immutableRecord(0, verifierForCredential(initialPhoneToken, crypto));
@@ -163,7 +193,9 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
   }
 
   function snapshot() {
-    if (!current) throw authError('phone auth store not initialized');
+    if (!current) {
+      throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
+    }
     return current;
   }
 
@@ -181,14 +213,21 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     );
   }
 
-  async function activate({ expectedVersion, credentialVersion, verifier }) {
+  async function activate(input) {
     const operation = activationQueue.then(async () => {
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+        throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone auth activation');
+      }
+      const { expectedVersion, credentialVersion, verifier } = input;
       const record = snapshot();
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+        throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid expected phone credential version');
+      }
       if (expectedVersion !== record.activePhoneCredentialVersion) {
-        throw authError('phone auth version conflict');
+        throw authError(AUTH_STORE_ERROR_CODES.VERSION_CONFLICT, 'phone auth version conflict');
       }
       if (!Number.isSafeInteger(credentialVersion) || credentialVersion !== expectedVersion + 1) {
-        throw authError('phone credential must use next version');
+        throw authError(AUTH_STORE_ERROR_CODES.NEXT_VERSION_INVALID, 'phone credential must use next version');
       }
       const next = immutableRecord(credentialVersion, validateVerifier(verifier));
       await persist(next, record);
