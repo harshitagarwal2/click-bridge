@@ -1,5 +1,8 @@
 import { ClockHealthController } from './clock-health-controller.js';
-import { BenchmarkRunSequence, BenchmarkSession, createIdleSchedule } from './benchmark-session.js';
+import {
+  BenchmarkRequestRouter, BenchmarkRunSequence, BenchmarkSession,
+  CounterSnapshotRequester, createIdleSchedule,
+} from './benchmark-session.js';
 import { PhoneSettingsStore } from './phone-settings-store.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
@@ -35,11 +38,13 @@ let benchmarkActive = false;
 let benchmarkRefreshing = false;
 let benchmarkRefreshRequired = false;
 const benchmarkDrafts = new Map();
-const pendingBenchmarkSync = new Map();
-const pendingBenchmarkCounters = new Map();
 let benchmarkSchedule = [];
 let benchmarkSequence;
+let benchmarkBlockIndex = 0;
 let benchmarkIdleStartedMonotonicMs = 0;
+let benchmarkEligibilityTimer = null;
+let benchmarkRequests;
+let benchmarkTransportGeneration = null;
 
 function dispatch(event) {
   state = reduce(state, event);
@@ -60,7 +65,7 @@ const coordinator = new TransportCoordinator({
   dispatch,
   transports: () => [transportPort()],
   selectTransports: (ports) => benchmarkRefreshing
-    || (benchmarkActive && benchmarkSequence.complete)
+    || (benchmarkActive && (benchmarkSequence.complete || !benchmarkSequence.current().eligible))
     ? [] : ports.filter((port) => port.name === 'oci').slice(0, 1),
   clock: { now: () => Date.now(), monotonicNow: () => performance.now(),
     epochMonotonicNow: () => performance.timeOrigin + performance.now() },
@@ -71,14 +76,15 @@ const coordinator = new TransportCoordinator({
     if (!benchmarkActive) return;
     if (metric.type === 'activation') {
       const sequence = benchmarkSequence.current();
-      benchmarkDrafts.set(metric.actionId, { ...metric, keepWarm: element.keepWarm.checked,
+      benchmarkDrafts.set(metric.actionId, Object.freeze({ ...metric, keepWarm: element.keepWarm.checked,
         normalHeartbeat: '20s', network: navigator.connection?.effectiveType ?? 'unknown',
         recorded: sequence.recorded,
         scheduledIdleSeconds: sequence.scheduledIdleSeconds ?? '',
         actualIdleMs: performance.now() - benchmarkIdleStartedMonotonicMs,
-        sampleIndex: sequence.sampleIndex ?? '', blockIndex: 1 });
+        sampleIndex: sequence.sampleIndex ?? '', blockIndex: sequence.blockIndex ?? '' }));
     } else if (metric.type === 'ack') {
-      Object.assign(benchmarkDrafts.get(metric.actionId) ?? {}, metric);
+      const draft = benchmarkDrafts.get(metric.actionId);
+      if (draft) benchmarkDrafts.set(metric.actionId, Object.freeze({ ...draft, ...metric }));
     } else if (metric.type === 'terminal') {
       const draft = benchmarkDrafts.get(metric.actionId) ?? {};
       benchmarkDrafts.delete(metric.actionId);
@@ -87,9 +93,11 @@ const coordinator = new TransportCoordinator({
         benchmarkSession.recordTerminal({ ...draft, ...metric,
           status: metric.status === 'posted' ? 'Posted'
             : metric.status === 'Unknown' ? 'Unknown' : 'Rejected' });
-      } else benchmarkSession.recordExcludedTerminal();
+      } else benchmarkSession.recordExcludedTerminal({ status: metric.status });
       benchmarkSequence.terminal();
       benchmarkIdleStartedMonotonicMs = performance.now();
+      scheduleEligibilityRender();
+      if (benchmarkSequence.suspended) return;
       benchmarkRefreshing = true;
       const forceRefresh = benchmarkRefreshRequired;
       benchmarkRefreshRequired = false;
@@ -104,24 +112,14 @@ const coordinator = new TransportCoordinator({
 
 function handleInbound(message, transport) {
   if (message.type === 'time.sync.response') {
-    const pending = pendingBenchmarkSync.get(message.syncId);
-    if (pending) {
-      pendingBenchmarkSync.delete(message.syncId);
-      pending.resolve({ t0: message.phoneSendUnixMs, t1: message.macReceiveUnixMs,
-        t2: message.macSendUnixMs, t3: performance.timeOrigin + performance.now() });
-      return;
-    }
+    if (benchmarkRequests.handle(message, transport.generation)) return;
     clockHealth.handleMessage(message);
     render();
     return;
   }
 
   if (message.type === 'diagnostics.counters') {
-    const pending = pendingBenchmarkCounters.get(message.requestId);
-    if (pending) {
-      pendingBenchmarkCounters.delete(message.requestId);
-      pending.resolve(message);
-    }
+    benchmarkRequests.handle(message, transport.generation);
     return;
   }
 
@@ -136,6 +134,7 @@ function handleInbound(message, transport) {
     if (ready && lastMacReadyGeneration !== transport.generation) {
       lastMacReadyGeneration = transport.generation;
       clockHealth.start();
+      if (benchmarkActive && benchmarkRefreshRequired) refreshBenchmarkLifecycle();
     } else if (!ready) {
       lastMacReadyGeneration = null;
       clockHealth.macNotReady();
@@ -151,10 +150,16 @@ function handleInbound(message, transport) {
 
 function handleTransportStatus(status) {
   if (status.state === 'ready') {
+    if (benchmarkTransportGeneration !== null && benchmarkTransportGeneration !== oci.generation) {
+      benchmarkRequests.cancelGeneration(benchmarkTransportGeneration, 'socket generation changed');
+    }
+    benchmarkTransportGeneration = oci.generation;
     dispatch({ type: 'transport.open' });
     return;
   }
   if (status.state !== 'backoff' && status.state !== 'suspended') return;
+  benchmarkRequests?.cancelAll(status.reason);
+  benchmarkTransportGeneration = null;
   lastMacReadyGeneration = null;
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
@@ -168,33 +173,21 @@ const oci = createRelayTransport({
   onStatus: handleTransportStatus,
 });
 
-function requestBenchmarkMessage(map, message, id) {
-  return new Promise((resolve, reject) => {
-    const timer = scheduler.setTimeout(() => {
-      map.delete(id);
-      reject(new Error('benchmark diagnostic response timed out'));
-    }, 3_500);
-    map.set(id, { resolve: (value) => { scheduler.clearTimeout(timer); resolve(value); } });
-    if (!oci.send(message)) {
-      scheduler.clearTimeout(timer);
-      map.delete(id);
-      reject(new Error('benchmark transport unavailable'));
-    }
-  });
-}
+benchmarkRequests = new BenchmarkRequestRouter({
+  send: (message) => oci.send(message),
+  getGeneration: () => oci.generation,
+  scheduler,
+  epochNow: () => performance.timeOrigin + performance.now(),
+});
+
+const counterSnapshots = new CounterSnapshotRequester({
+  request: () => benchmarkRequests.requestCounters(),
+});
 
 benchmarkSession = new BenchmarkSession({
-  exchangeTimeSync: () => {
-    const syncId = crypto.randomUUID();
-    const phoneSendUnixMs = performance.timeOrigin + performance.now();
-    return requestBenchmarkMessage(pendingBenchmarkSync,
-      { type: 'time.sync.request', v: 1, syncId, phoneSendUnixMs }, syncId);
-  },
-  requestCounters: () => {
-    const requestId = crypto.randomUUID();
-    return requestBenchmarkMessage(pendingBenchmarkCounters,
-      { type: 'diagnostics.request', v: 1, requestId }, requestId);
-  },
+  exchangeTimeSync: () => benchmarkRequests.exchangeTimeSync(),
+  counterSnapshots,
+  isActionPending: () => coordinator.busy,
 });
 
 clockHealth = new ClockHealthController({
@@ -232,7 +225,9 @@ const connectionText = {
 
 function render() {
   const model = view(state);
-  element.button.disabled = !model.enabled;
+  const benchmarkBlocked = benchmarkActive
+    && (benchmarkRefreshing || benchmarkSequence.complete || !benchmarkSequence.current().eligible);
+  element.button.disabled = !model.enabled || benchmarkBlocked;
   element.retryClock.hidden = !model.retryClockVisible;
   element.status.textContent = model.status;
   element.status.className = `result ${
@@ -254,9 +249,48 @@ function render() {
     element.diagnostics.textContent += benchmarkSequence.complete
       ? ' · benchmark 100/100; finish and export'
       : next.recorded
-        ? ` · benchmark ${next.sampleIndex - 1}/100; next gap ${next.scheduledIdleSeconds}s`
+        ? ` · benchmark ${next.sampleIndex - 1}/100; ${next.eligible
+          ? 'tap now' : `wait ${(next.remainingMs / 1_000).toFixed(1)}s`} (${next.scheduledIdleSeconds}s gap)`
         : ` · warm-up ${benchmarkSequence.terminals}/10`;
   }
+}
+
+function scheduleEligibilityRender() {
+  if (benchmarkEligibilityTimer !== null) scheduler.clearTimeout(benchmarkEligibilityTimer);
+  benchmarkEligibilityTimer = null;
+  if (!benchmarkActive || benchmarkSequence.complete || benchmarkSequence.suspended) {
+    benchmarkFinish.disabled = !benchmarkActive || !benchmarkSequence.complete;
+    render();
+    return;
+  }
+  const current = benchmarkSequence.current();
+  if (current.remainingMs > 0) {
+    benchmarkEligibilityTimer = scheduler.setTimeout(() => {
+      benchmarkEligibilityTimer = null;
+      render();
+    }, current.remainingMs);
+  }
+  render();
+}
+
+function refreshBenchmarkLifecycle() {
+  if (!benchmarkActive || benchmarkRefreshing || coordinator.busy) {
+    benchmarkRefreshRequired = true;
+    return;
+  }
+  benchmarkRefreshing = true;
+  benchmarkRefreshRequired = false;
+  benchmarkSession.refreshIfDue({ force: true })
+    .then(() => {
+      benchmarkSequence.resume();
+      benchmarkIdleStartedMonotonicMs = performance.now();
+      scheduleEligibilityRender();
+    })
+    .catch((error) => {
+      benchmarkRefreshRequired = true;
+      element.diagnostics.textContent = error.message;
+    })
+    .finally(() => { benchmarkRefreshing = false; render(); });
 }
 
 function pointerDescriptor(event) {
@@ -311,6 +345,7 @@ element.saveToken.addEventListener('click', () => {
   }
   settings.setToken(token);
   element.tokenInput.value = '';
+  benchmarkRequests.cancelAll('token replaced');
   oci.close('token_replaced');
   dispatch({ type: 'token.set', token });
   oci.connect();
@@ -320,6 +355,7 @@ element.clearToken.addEventListener('click', () => {
   settings.clearToken();
   coordinator.abandon('token_cleared');
   clockHealth.macNotReady();
+  benchmarkRequests.cancelAll('token cleared');
   oci.close('token_cleared');
   dispatch({ type: 'token.cleared' });
 });
@@ -368,11 +404,14 @@ benchmarkStart.addEventListener('click', async () => {
   benchmarkStart.disabled = true;
   try {
     await benchmarkSession.start({ runId: crypto.randomUUID(), condition });
-    benchmarkSchedule = createIdleSchedule();
-    benchmarkSequence = new BenchmarkRunSequence({ schedule: benchmarkSchedule });
+    if (benchmarkSchedule.length === 0) benchmarkSchedule = createIdleSchedule();
+    benchmarkBlockIndex += 1;
+    benchmarkSequence = new BenchmarkRunSequence({ schedule: benchmarkSchedule,
+      monotonicNow: () => performance.now(), blockIndex: benchmarkBlockIndex });
     benchmarkIdleStartedMonotonicMs = performance.now();
     benchmarkActive = true;
-    benchmarkFinish.disabled = false;
+    benchmarkFinish.disabled = true;
+    scheduleEligibilityRender();
   } catch (error) {
     element.diagnostics.textContent = error.message;
     benchmarkStart.disabled = false;
@@ -380,18 +419,20 @@ benchmarkStart.addEventListener('click', async () => {
 });
 
 benchmarkFinish.addEventListener('click', async () => {
-  if (coordinator.busy || benchmarkRefreshing) return;
+  if (coordinator.busy || benchmarkRefreshing || !benchmarkSequence.complete) return;
   benchmarkRefreshing = true;
   const octoCounterStart = Number(window.prompt('Octo counter before run', '0'));
   const octoCounterEnd = Number(window.prompt('Octo counter after run', '0'));
   try {
     await benchmarkSession.finish({ octoCounterStart, octoCounterEnd,
-      logicalActionCount: Math.max(0, benchmarkSequence.terminals - 10) });
+      logicalActionCount: benchmarkSequence.terminals });
     benchmarkActive = false;
     benchmarkFinish.disabled = true;
     benchmarkExport.disabled = false;
     benchmarkStart.disabled = false;
-  } finally { benchmarkRefreshing = false; }
+  } catch (error) {
+    element.diagnostics.textContent = error.message;
+  } finally { benchmarkRefreshing = false; render(); }
 });
 
 benchmarkExport.addEventListener('click', () => {
@@ -421,7 +462,13 @@ const wakeLockController = new WakeLockController({
 });
 
 function goHidden() {
-  if (benchmarkActive) benchmarkRefreshRequired = true;
+  if (benchmarkActive) {
+    benchmarkRefreshRequired = true;
+    benchmarkSequence.suspend();
+    if (benchmarkEligibilityTimer !== null) scheduler.clearTimeout(benchmarkEligibilityTimer);
+    benchmarkEligibilityTimer = null;
+  }
+  benchmarkRequests.cancelAll('hidden');
   coordinator.abandon('hidden');
   clockHealth.macNotReady();
   dispatch({ type: 'visibility', visible: false });
@@ -444,16 +491,17 @@ window.addEventListener('pageshow', () => {
   if (document.visibilityState === 'visible') goVisible();
 });
 window.addEventListener('online', () => {
-  if (benchmarkActive) benchmarkRefreshRequired = true;
+  if (benchmarkActive) {
+    benchmarkRefreshRequired = true;
+    benchmarkRequests.cancelAll('network changed');
+  }
   if (document.visibilityState === 'visible' && state.token && !oci.ready) oci.connect();
 });
 navigator.connection?.addEventListener?.('change', () => {
   if (!benchmarkActive) return;
-  if (coordinator.busy || benchmarkRefreshing) { benchmarkRefreshRequired = true; return; }
-  benchmarkRefreshing = true;
-  benchmarkSession.refreshIfDue({ force: true })
-    .catch((error) => { element.diagnostics.textContent = error.message; })
-    .finally(() => { benchmarkRefreshing = false; });
+  benchmarkRequests.cancelAll('network changed');
+  benchmarkSequence.suspend();
+  refreshBenchmarkLifecycle();
 });
 
 const savedToken = settings.getToken();

@@ -31,7 +31,11 @@
 The PWA Diagnostics controls collect 20 sequential sync samples at run start,
 select the minimum non-negative RTT, refresh after every 25 terminal actions,
 take Mac counter snapshots outside the timed sequence, retain rows in memory,
-and export only after an explicit user action.
+and export only after an explicit user action. The locked randomized idle
+schedule is enforced by disabling activation until each gap elapses. Diagnostic
+requests belong to one socket generation and are canceled on disconnect or
+visibility loss. A run cannot finish unless the before/after Mac down/up deltas
+and operator-observed Octo delta exactly equal the run's Posted row count.
 
 ## Schedule
 

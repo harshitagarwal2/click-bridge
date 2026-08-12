@@ -68,16 +68,16 @@ export class TransportCoordinator {
       }))),
     };
     this.dispatch({ type: 'action.sent', actionId: request.actionId });
-    this.onMetric({
+    this.onMetric(Object.freeze({
       type: 'activation', actionId: request.actionId, activationUnixMs,
       pathsSent: sentPorts.map((port) => port.name).join('+'),
-    });
+    }));
     this.onBusyChange(true);
     this.resultTimer = this.scheduler.setTimeout(() => {
       if (this.pending?.request.actionId !== request.actionId) return;
       this.dispatch({ type: 'action.timeout', actionId: request.actionId });
-      this.onMetric({ type: 'terminal', actionId: request.actionId, status: 'Unknown',
-        reason: 'result_timeout', confirmationMs: this.clock.monotonicNow() - this.pending.activationMonotonicMs });
+      this.onMetric(Object.freeze({ type: 'terminal', actionId: request.actionId, status: 'Unknown',
+        reason: 'result_timeout', confirmationMs: this.clock.monotonicNow() - this.pending.activationMonotonicMs }));
       this.#settled();
     }, PHONE_RESULT_TIMEOUT_MS);
     return 'sent';
@@ -94,16 +94,16 @@ export class TransportCoordinator {
         reason: message.reason,
         clockDiagnostics: message.reason === 'expired' ? this.getClockDiagnostics() : null,
       });
-      this.onMetric({
+      this.onMetric(Object.freeze({
         type: 'ack', actionId: message.actionId,
         ackMs: this.clock.monotonicNow() - this.pending.activationMonotonicMs,
         relayProcessingUs: message.relayProcessingUs, status: message.status, reason: message.reason,
-      });
+      }));
       if (terminal) {
         const confirmationMs = this.clock.monotonicNow() - this.pending.activationMonotonicMs;
-        this.onMetric({ type: 'terminal', actionId: message.actionId, status: 'Rejected',
+        this.onMetric(Object.freeze({ type: 'terminal', actionId: message.actionId, status: 'Rejected',
           reason: message.reason, confirmationMs,
-          relayProcessingUs: message.relayProcessingUs, firstResultVia: _via });
+          relayProcessingUs: message.relayProcessingUs, firstResultVia: _via }));
         this.#settled();
       }
       return true;
@@ -115,7 +115,7 @@ export class TransportCoordinator {
           type: 'action.result', actionId: message.actionId,
           status: message.status, reason: message.reason, ms: null,
         });
-        this.onMetric({ type: 'late-result', actionId: message.actionId, via: _via });
+        this.onMetric(Object.freeze({ type: 'late-result', actionId: message.actionId, via: _via }));
         return false;
       }
       const ms = this.clock.monotonicNow() - this.pending.activationMonotonicMs;
@@ -123,12 +123,12 @@ export class TransportCoordinator {
         type: 'action.result', actionId: message.actionId,
         status: message.status, reason: message.reason, ms,
       });
-      this.onMetric({
+      this.onMetric(Object.freeze({
         type: 'terminal', actionId: message.actionId, confirmationMs: ms,
         status: message.status, reason: message.reason, acceptedVia: message.acceptedVia,
         firstResultVia: _via, macProcessingUs: message.macProcessingUs,
         mouseDownPostedUnixMs: message.mouseDownPostedUnixMs ?? null,
-      });
+      }));
       this.#settled();
       return true;
     }
@@ -139,8 +139,8 @@ export class TransportCoordinator {
     if (!this.pending) return;
     const actionId = this.pending.request.actionId;
     this.dispatch({ type: 'action.timeout', actionId, reason });
-    this.onMetric({ type: 'terminal', actionId, status: 'Unknown', reason,
-      confirmationMs: this.clock.monotonicNow() - this.pending.activationMonotonicMs });
+    this.onMetric(Object.freeze({ type: 'terminal', actionId, status: 'Unknown', reason,
+      confirmationMs: this.clock.monotonicNow() - this.pending.activationMonotonicMs }));
     this.#settled();
   }
 

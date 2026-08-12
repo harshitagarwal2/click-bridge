@@ -8,7 +8,14 @@ function request(actionId, issuedAtUnixMs) {
     issuedAtUnixMs, expiresAtUnixMs: issuedAtUnixMs + lifetime });
 }
 
-export async function runNegativeMatrix({ harness, nowUnixMs = Date.now, idGenerator = () => crypto.randomUUID() }) {
+function observedIncrement(observation) {
+  if (!Number.isSafeInteger(observation?.before) || !Number.isSafeInteger(observation?.after)
+    || observation.after < observation.before) return null;
+  return observation.after - observation.before;
+}
+
+export async function runNegativeMatrix({ harness, octoObservations = {},
+  nowUnixMs = Date.now, idGenerator = () => crypto.randomUUID() }) {
   const now = nowUnixMs();
   const duplicateRequest = request(idGenerator(), now);
   const duplicate = await harness.duplicate(duplicateRequest);
@@ -16,12 +23,22 @@ export async function runNegativeMatrix({ harness, nowUnixMs = Date.now, idGener
   const conflict = await harness.conflict(conflictOriginal, request(conflictOriginal.actionId, now + 1));
   const expired = await harness.expired(request(idGenerator(), now - lifetime - 1_001));
   const dropped = await harness.resultDrop(request(idGenerator(), now));
-  return [
-    { scenario: 'exact_duplicate', outcome: duplicate.exactCached && duplicate.increment === 1 ? 'pass' : 'fail', detail: duplicate },
-    { scenario: 'id_conflict', outcome: conflict.reason === 'id_conflict' && conflict.increment === 0 ? 'pass' : 'fail', detail: conflict },
-    { scenario: 'expired', outcome: expired.reason === 'expired' && expired.increment === 0 ? 'pass' : 'fail', detail: expired },
-    { scenario: 'result_drop', outcome: !dropped.lateDelivery && !dropped.replay ? 'pass' : 'fail', detail: dropped },
+  const cases = [
+    ['exact_duplicate', duplicate, 1, duplicate.exactCached
+      && duplicate.mouseDownIncrement === 1 && duplicate.mouseUpIncrement === 1],
+    ['id_conflict', conflict, 0, conflict.reason === 'id_conflict'
+      && conflict.mouseDownIncrement === 0 && conflict.mouseUpIncrement === 0],
+    ['expired', expired, 0, expired.reason === 'expired'
+      && expired.mouseDownIncrement === 0 && expired.mouseUpIncrement === 0],
+    ['result_drop', dropped, 0, !dropped.lateDelivery
+      && dropped.replayDownIncrement === 0 && dropped.replayUpIncrement === 0],
   ];
+  return cases.map(([scenario, detail, expectedOctoIncrement, protocolPassed]) => {
+    const octoIncrement = observedIncrement(octoObservations[scenario]);
+    return Object.freeze({ scenario,
+      outcome: protocolPassed && octoIncrement === expectedOctoIncrement ? 'pass' : 'fail',
+      octoIncrement, octoObservation: octoObservations[scenario] ?? null, detail });
+  });
 }
 
 class PhoneConnection {
@@ -86,7 +103,8 @@ class LiveNegativeHarness {
       const second = await connection.next((message) => message.type === 'action.result' && message.actionId === action.actionId);
       const after = await connection.counters();
       return { exactCached: first.__raw === second.__raw,
-        increment: after.mouseDownPostCount - before.mouseDownPostCount };
+        mouseDownIncrement: after.mouseDownPostCount - before.mouseDownPostCount,
+        mouseUpIncrement: after.mouseUpPostCount - before.mouseUpPostCount };
     });
   }
   async conflict(original, changed) {
@@ -97,7 +115,9 @@ class LiveNegativeHarness {
       connection.send(changed);
       const result = await connection.next((message) => message.type === 'action.result' && message.actionId === changed.actionId);
       const after = await connection.counters();
-      return { reason: result.reason, increment: after.mouseDownPostCount - before.mouseDownPostCount };
+      return { reason: result.reason,
+        mouseDownIncrement: after.mouseDownPostCount - before.mouseDownPostCount,
+        mouseUpIncrement: after.mouseUpPostCount - before.mouseUpPostCount };
     });
   }
   async expired(action) {
@@ -106,7 +126,9 @@ class LiveNegativeHarness {
       connection.send(action);
       const ack = await connection.next((message) => message.type === 'relay.ack' && message.actionId === action.actionId);
       const after = await connection.counters();
-      return { reason: ack.reason, increment: after.mouseDownPostCount - before.mouseDownPostCount };
+      return { reason: ack.reason,
+        mouseDownIncrement: after.mouseDownPostCount - before.mouseDownPostCount,
+        mouseUpIncrement: after.mouseUpPostCount - before.mouseUpPostCount };
     });
   }
   async resultDrop(action) {
@@ -118,11 +140,15 @@ class LiveNegativeHarness {
     await new Promise((resolve) => setTimeout(resolve, 500));
     const replacement = new PhoneConnection(this.url, this.token);
     await replacement.connect();
+    const afterOriginal = await replacement.counters();
     let lateDelivery = false;
     try { await replacement.next((message) => message.type === 'action.result' && message.actionId === action.actionId, 750); lateDelivery = true; }
     catch (error) { if (!/timed out/.test(error.message)) throw error; }
+    const afterReconnect = await replacement.counters();
     await replacement.close();
-    return { lateDelivery, replay: lateDelivery };
+    return { lateDelivery,
+      replayDownIncrement: afterReconnect.mouseDownPostCount - afterOriginal.mouseDownPostCount,
+      replayUpIncrement: afterReconnect.mouseUpPostCount - afterOriginal.mouseUpPostCount };
   }
 }
 
@@ -130,8 +156,12 @@ async function main() {
   if (!process.env.CLICK_BRIDGE_URL || !process.env.PHONE_TOKEN) {
     throw new Error('CLICK_BRIDGE_URL and PHONE_TOKEN are required; tokens are never command arguments');
   }
+  if (!process.env.NEGATIVE_MATRIX_OCTO_OBSERVATIONS) {
+    throw new Error('NEGATIVE_MATRIX_OCTO_OBSERVATIONS is required for explicit operator evidence');
+  }
   const report = await runNegativeMatrix({
     harness: new LiveNegativeHarness(process.env.CLICK_BRIDGE_URL, process.env.PHONE_TOKEN),
+    octoObservations: JSON.parse(process.env.NEGATIVE_MATRIX_OCTO_OBSERVATIONS),
   });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.some((row) => row.outcome !== 'pass')) process.exitCode = 1;

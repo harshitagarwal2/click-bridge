@@ -57,6 +57,7 @@ test('metrics expose activation, ack, terminal timing, and late results without 
     acceptedVia: 'oci', macProcessingUs: 8, mouseDownPostedUnixMs: 1011,
   });
   assert.deepEqual(metrics.map((event) => event.type), ['activation', 'ack', 'terminal', 'late-result']);
+  assert.equal(metrics.every(Object.isFrozen), true);
   assert.equal(metrics[1].ackMs, 5);
   assert.equal(metrics[0].activationUnixMs, 11_000);
   assert.equal(metrics[2].confirmationMs, 12);
@@ -79,6 +80,14 @@ test('Milestone 1 sends one logical action over OCI and never regenerates it', (
   assert.equal(sent.length, 1);
   assert.equal(sent[0].actionId, ID);
   assert.equal(getState().action.id, ID);
+});
+
+test('normal path without benchmark observer adds no send or timer ownership', () => {
+  const { coordinator, sent, scheduler } = harness();
+  coordinator.onMetric = () => {};
+  coordinator.activate();
+  assert.equal(sent.length, 1);
+  assert.equal(scheduler.tasks.size, 1);
 });
 
 test('relay acknowledgement cannot produce Posted', () => {
