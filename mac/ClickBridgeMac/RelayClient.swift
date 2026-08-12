@@ -57,7 +57,6 @@ enum RelayEndpoint {
 
 actor RelayClient {
     enum Status: Equatable, Sendable { case disconnected, connecting, connected }
-
     typealias Sleep = @Sendable (TimeInterval) async throws -> Void
     typealias Jitter = @Sendable (TimeInterval) -> TimeInterval
 
@@ -77,6 +76,7 @@ actor RelayClient {
     private var heartbeatTask: Task<Void, Never>?
     private var heartbeatTimeoutTask: Task<Void, Never>?
     private var generation = 0
+    private var authenticatedGeneration: Int?
     private var reconnectAttempt = 0
     private var sequence = 0
     private var pendingHeartbeat: Int?
@@ -115,7 +115,10 @@ actor RelayClient {
 
     func updateAdvertisedState(_ snapshot: MacState) async {
         advertisedState = snapshot
-        if status == .connected { try? await send(snapshot) }
+        guard status == .connected, authenticatedGeneration == generation, let socket = transport else { return }
+        let expected = generation
+        do { try await send(snapshot, socket: socket, generation: expected, requireAuthentication: true) }
+        catch { await generationFailed(expected, socket: socket) }
     }
 
     func start() {
@@ -138,6 +141,7 @@ actor RelayClient {
 
     private func cancelGeneration() async {
         generation += 1
+        authenticatedGeneration = nil
         receiveTask?.cancel(); receiveTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
@@ -157,7 +161,8 @@ actor RelayClient {
     private func openGeneration() {
         guard running, let endpoint, let token, !token.isEmpty else { setStatus(.disconnected); return }
         generation += 1
-        let currentGeneration = generation
+        authenticatedGeneration = nil
+        let expected = generation
         let socket = makeTransport()
         transport = socket
         setStatus(.connecting)
@@ -165,98 +170,144 @@ actor RelayClient {
             guard let self else { return }
             do {
                 try await socket.connect(to: endpoint)
+                guard await self.isCurrent(expected) else { return }
                 try await socket.sendText(Wire.encode(Hello(role: "mac", token: token)))
+                guard await self.isCurrent(expected) else { return }
                 while !Task.isCancelled {
                     let text = try await socket.receiveText()
-                    try await self.handle(text, generation: currentGeneration, socket: socket)
+                    guard await self.isCurrent(expected) else { return }
+                    try await self.handle(text, generation: expected, socket: socket)
                 }
             } catch {
-                await self.generationFailed(currentGeneration)
+                await self.generationFailed(expected, socket: socket)
             }
         }
     }
 
     private func handle(_ text: String, generation expected: Int, socket: any WebSocketTransport) async throws {
-        guard expected == generation else { return }
+        guard isCurrent(expected) else { throw CancellationError() }
         let message = try decoder.decodeText(text, for: .mac)
-        switch message {
-        case .helloOK(let hello) where hello.role == "mac":
+
+        if authenticatedGeneration != expected {
+            guard case .helloOK(let hello) = message, hello.role == "mac" else {
+                throw WireError.messageNotAllowed
+            }
+            authenticatedGeneration = expected
             reconnectAttempt = 0
             setStatus(.connected)
-            try await send(advertisedState)
-            startHeartbeat(generation: expected)
+            try await send(advertisedState, socket: socket, generation: expected, requireAuthentication: true)
+            guard isAuthenticated(expected) else { throw CancellationError() }
+            startHeartbeat(generation: expected, socket: socket)
+            return
+        }
+
+        guard !message.isHelloOK else { throw WireError.messageNotAllowed }
+        switch message {
         case .heartbeatAck(let ack):
             if ack.sequence == pendingHeartbeat {
                 pendingHeartbeat = nil
                 heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
             }
-        case .heartbeatRequest(let request):
-            try await send(HeartbeatAck(sequence: request.sequence))
         case .actionRequest(let request):
             let result = await actionSink.receive(request, via: .oci)
+            guard isAuthenticated(expected) else { throw CancellationError() }
             resultHandler?(result)
-            try await send(result)
+            try await send(result, socket: socket, generation: expected, requireAuthentication: true)
         case .timeSyncRequest(let request):
             let received = wallClockMilliseconds()
             try await send(TimeSyncResponse(syncId: request.syncId,
                                             phoneSendUnixMs: request.phoneSendUnixMs,
                                             macReceiveUnixMs: received,
-                                            macSendUnixMs: wallClockMilliseconds()))
+                                            macSendUnixMs: wallClockMilliseconds()),
+                           socket: socket, generation: expected, requireAuthentication: true)
         case .diagnosticsRequest(let request):
             let counts = await diagnostics.diagnosticPostCounts()
+            guard isAuthenticated(expected) else { throw CancellationError() }
             try await send(DiagnosticsCounters(requestId: request.requestId,
                                                mouseDownPostCount: counts.mouseDownPostCount,
-                                               mouseUpPostCount: counts.mouseUpPostCount))
-        default: break
+                                               mouseUpPostCount: counts.mouseUpPostCount),
+                           socket: socket, generation: expected, requireAuthentication: true)
+        default:
+            throw WireError.messageNotAllowed
         }
     }
 
-    private func send<T: Encodable>(_ value: T) async throws {
-        guard let transport else { throw WebSocketTransportError.notConnected }
-        try await transport.sendText(Wire.encode(value))
+    private func send<T: Encodable>(
+        _ value: T,
+        socket: any WebSocketTransport,
+        generation expected: Int,
+        requireAuthentication: Bool
+    ) async throws {
+        guard isCurrent(expected), !requireAuthentication || isAuthenticated(expected) else {
+            throw CancellationError()
+        }
+        try await socket.sendText(Wire.encode(value))
+        guard isCurrent(expected), !requireAuthentication || isAuthenticated(expected) else {
+            throw CancellationError()
+        }
     }
 
-    private func startHeartbeat(generation expected: Int) {
+    private func startHeartbeat(generation expected: Int, socket: any WebSocketTransport) {
         heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 do { try await self.sleep(Constants.heartbeatInterval) } catch { return }
-                guard await self.isCurrent(expected) else { return }
-                await self.originateHeartbeat(generation: expected)
+                guard await self.isAuthenticated(expected) else { return }
+                await self.originateHeartbeat(generation: expected, socket: socket)
             }
         }
     }
 
     private func isCurrent(_ expected: Int) -> Bool { running && expected == generation }
+    private func isAuthenticated(_ expected: Int) -> Bool {
+        isCurrent(expected) && authenticatedGeneration == expected
+    }
 
-    private func originateHeartbeat(generation expected: Int) async {
+    private func originateHeartbeat(generation expected: Int, socket: any WebSocketTransport) async {
+        guard isAuthenticated(expected) else { return }
         sequence += 1
         let sentSequence = sequence
         pendingHeartbeat = sentSequence
-        do { try await send(HeartbeatRequest(sequence: sentSequence)) }
-        catch { await generationFailed(expected); return }
+        do {
+            try await send(HeartbeatRequest(sequence: sentSequence), socket: socket,
+                           generation: expected, requireAuthentication: true)
+        } catch {
+            await generationFailed(expected, socket: socket)
+            return
+        }
+        guard isAuthenticated(expected) else { return }
         heartbeatTimeoutTask?.cancel()
         heartbeatTimeoutTask = Task { [weak self] in
             guard let self else { return }
             do { try await self.sleep(Constants.heartbeatTimeout) } catch { return }
-            await self.heartbeatTimedOut(sentSequence, generation: expected)
+            await self.heartbeatTimedOut(sentSequence, generation: expected, socket: socket)
         }
     }
 
-    private func heartbeatTimedOut(_ expectedSequence: Int, generation expected: Int) async {
-        guard expected == generation, pendingHeartbeat == expectedSequence else { return }
-        await generationFailed(expected)
+    private func heartbeatTimedOut(
+        _ expectedSequence: Int,
+        generation expected: Int,
+        socket: any WebSocketTransport
+    ) async {
+        guard isAuthenticated(expected), pendingHeartbeat == expectedSequence else { return }
+        await generationFailed(expected, socket: socket)
     }
 
-    private func generationFailed(_ expected: Int) async {
+    private func generationFailed(_ expected: Int, socket: any WebSocketTransport) async {
         guard running, expected == generation else { return }
-        receiveTask = nil
+
+        generation += 1
+        let reconnectGeneration = generation
+        authenticatedGeneration = nil
+        receiveTask?.cancel(); receiveTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
         pendingHeartbeat = nil
-        let old = transport; transport = nil
-        await old?.close()
+        transport = nil
+        await socket.close()
+
+        guard running, generation == reconnectGeneration else { return }
         setStatus(.disconnected)
         reconnectAttempt += 1
         let ceiling = min(Constants.macReconnectCap, 0.5 * pow(2, Double(reconnectAttempt - 1)))
@@ -265,7 +316,7 @@ actor RelayClient {
         reconnectTask = Task { [weak self] in
             guard let self else { return }
             do { try await self.sleep(delay) } catch { return }
-            await self.resumeAfterBackoff(expected)
+            await self.resumeAfterBackoff(reconnectGeneration)
         }
     }
 
@@ -274,4 +325,8 @@ actor RelayClient {
         reconnectTask = nil
         openGeneration()
     }
+}
+
+private extension WireMessage {
+    var isHelloOK: Bool { if case .helloOK = self { return true }; return false }
 }

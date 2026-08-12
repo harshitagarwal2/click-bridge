@@ -6,6 +6,19 @@ protocol SecretStoring: Sendable {
     func delete(account: String) throws
 }
 
+struct SecretStoreUnavailable: Error, LocalizedError, Sendable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+struct UnavailableSecretStore: SecretStoring {
+    private let unavailable: SecretStoreUnavailable
+    init(failure: any Error) { unavailable = SecretStoreUnavailable(message: failure.localizedDescription) }
+    func read(account: String) throws -> String? { throw unavailable }
+    func write(_ value: String, account: String) throws { throw unavailable }
+    func delete(account: String) throws { throw unavailable }
+}
+
 @MainActor
 final class SettingsStore: ObservableObject {
     static let relayURLKey = "relayURL"
@@ -31,6 +44,17 @@ final class SettingsStore: ObservableObject {
         remoteEnabled = defaults.object(forKey: Self.remoteEnabledKey) as? Bool ?? false
         do { hasToken = try secrets.read(account: Self.macTokenAccount)?.isEmpty == false }
         catch { throw error }
+    }
+
+    init(defaults: UserDefaults = .standard,
+         unavailableSecrets: UnavailableSecretStore,
+         failure: any Error) {
+        self.defaults = defaults
+        secrets = unavailableSecrets
+        relayURLString = defaults.string(forKey: Self.relayURLKey) ?? ""
+        remoteEnabled = defaults.object(forKey: Self.remoteEnabledKey) as? Bool ?? false
+        hasToken = false
+        storageError = "Keychain is unavailable: \(failure.localizedDescription)"
     }
 
     func macToken() throws -> String? {

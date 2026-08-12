@@ -80,4 +80,15 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.clearMacToken())
         XCTAssertNotNil(store.storageError)
     }
+
+    func testKnownKeychainInitializationFailureKeepsAllOperationsThrowing() throws {
+        let failure = FakeSecretStore.Failure.read
+        let unavailable = UnavailableSecretStore(failure: failure)
+        let store = SettingsStore(defaults: defaults, unavailableSecrets: unavailable, failure: failure)
+        XCTAssertNotNil(store.storageError)
+        XCTAssertThrowsError(try store.macToken())
+        XCTAssertThrowsError(try store.saveMacToken("token"))
+        XCTAssertThrowsError(try store.clearMacToken())
+        XCTAssertFalse(store.hasToken)
+    }
 }

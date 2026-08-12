@@ -45,6 +45,7 @@
 		A4EC4708AAAA25E75D01FF99 /* hello.ok.mac.json in Resources */ = {isa = PBXBuildFile; fileRef = 1CF8333D1013D5B2F5298E1D /* hello.ok.mac.json */; };
 		AE76BDE7458326E01C5AAA82 /* action.result.rejected.permission-required.json in Resources */ = {isa = PBXBuildFile; fileRef = 8E3444FDEB9C1933D8C76695 /* action.result.rejected.permission-required.json */; };
 		B09A3E66040D2BBE6B67A0BC /* RelayClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */; };
+		BB30EACE97D772798509C6D6 /* AppStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 635504752060C9C6F78E9A8D /* AppStateTests.swift */; };
 		BDEC21571CE1512A736B8C29 /* ActionProcessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65146BE8CDF80C1E24CFBEFD /* ActionProcessor.swift */; };
 		C7A1BA635D65780755F7253A /* action.result.rejected.invalid-request.json in Resources */ = {isa = PBXBuildFile; fileRef = BC816C4C3B5F984E255116FB /* action.result.rejected.invalid-request.json */; };
 		C7F547B6F56E2BDFE02DF07B /* ClickBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */; };
@@ -84,6 +85,7 @@
 		540A03DF89931A32C0E0A284 /* SettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStore.swift; sourceTree = "<group>"; };
 		58E4D64A981A0719451B998A /* wrong-version.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "wrong-version.json"; sourceTree = "<group>"; };
 		5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacInputExecutor.swift; sourceTree = "<group>"; };
+		635504752060C9C6F78E9A8D /* AppStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateTests.swift; sourceTree = "<group>"; };
 		65146BE8CDF80C1E24CFBEFD /* ActionProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionProcessor.swift; sourceTree = "<group>"; };
 		6619A4AB88AFCF4E099D06B9 /* ClickBridgeMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClickBridgeMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		66F55DAA64B97B3AA76D70DC /* relay.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = relay.ack.json; sourceTree = "<group>"; };
@@ -238,6 +240,7 @@
 			isa = PBXGroup;
 			children = (
 				42F56CF837ED2862327D252E /* ActionProcessorTests.swift */,
+				635504752060C9C6F78E9A8D /* AppStateTests.swift */,
 				2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */,
 				9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */,
 				F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */,
@@ -383,6 +386,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				14076C680E5DBA725DD1DD7C /* ActionProcessorTests.swift in Sources */,
+				BB30EACE97D772798509C6D6 /* AppStateTests.swift in Sources */,
 				4C9339C67D82AB5B662F7B50 /* MacInputExecutorTests.swift in Sources */,
 				41FFD1C3772E69872A80A968 /* PermissionServiceTests.swift in Sources */,
 				B09A3E66040D2BBE6B67A0BC /* RelayClientTests.swift in Sources */,

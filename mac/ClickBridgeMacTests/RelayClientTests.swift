@@ -30,8 +30,39 @@ private actor FakeWebSocketTransport: WebSocketTransport {
             inbound.append(.success(text))
         }
     }
+    func pushFailure(_ error: Error) {
+        if let waiter = waiters.first {
+            waiters.removeFirst()
+            waiter.resume(throwing: error)
+        } else {
+            inbound.append(.failure(error))
+        }
+    }
     func sentMessages() -> [String] { sent }
     func connections() -> Int { connectCount }
+    func closes() -> Int { closeCount }
+}
+
+private final class TransportFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var transports: [FakeWebSocketTransport]
+    init(_ transports: [FakeWebSocketTransport]) { self.transports = transports }
+    func make() -> any WebSocketTransport {
+        lock.lock(); defer { lock.unlock() }
+        return transports.removeFirst()
+    }
+}
+
+private actor GatedSink: ActionRequestSink {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var started = false
+    func receive(_ request: ActionRequest, via ingress: ActionIngress) async -> ActionResult {
+        started = true
+        await withCheckedContinuation { continuation = $0 }
+        return ActionResult(actionId: request.actionId, status: .rejected, reason: .remoteDisabled,
+                            acceptedVia: ingress, macProcessingUs: 1, mouseDownPostedUnixMs: nil)
+    }
+    func release() { continuation?.resume(); continuation = nil }
 }
 
 private actor ManualSleeper {
@@ -77,6 +108,8 @@ private struct FixedCounters: DiagnosticCounterReading {
 }
 
 final class RelayClientTests: XCTestCase {
+    private let actionID = "018f63f5-6f3d-7d21-88bc-9ef561f030de"
+    private let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030ab"
     private func eventually(
         timeout: TimeInterval = 1,
         _ predicate: @escaping @Sendable () async -> Bool
@@ -114,7 +147,7 @@ final class RelayClientTests: XCTestCase {
         try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
         await client.start()
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
-        let request = ActionRequest(actionId: "id", action: "click",
+        let request = ActionRequest(actionId: actionID, action: "click",
                                     issuedAtUnixMs: 1_786_497_600_000,
                                     expiresAtUnixMs: 1_786_497_602_000)
         await transport.push(try Wire.encode(request))
@@ -124,7 +157,7 @@ final class RelayClientTests: XCTestCase {
         let resultSent = await eventually {
             await transport.sentMessages().contains { text in
                 guard case .actionResult(let result) = try? StrictWireDecoder().decodeText(text) else { return false }
-                return result.actionId == "id" && result.reason == .remoteDisabled
+                return result.actionId == self.actionID && result.reason == .remoteDisabled
             }
         }
         XCTAssertTrue(resultSent)
@@ -167,11 +200,11 @@ final class RelayClientTests: XCTestCase {
         try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
         await client.start()
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
-        await transport.push(try Wire.encode(DiagnosticsRequest(requestId: "r")))
+        await transport.push(try Wire.encode(DiagnosticsRequest(requestId: requestID)))
         let countersSent = await eventually {
             await transport.sentMessages().contains { text in
                 guard case .diagnosticsCounters(let counters) = try? StrictWireDecoder().decodeText(text) else { return false }
-                return counters.requestId == "r" && counters.mouseDownPostCount == 4 && counters.mouseUpPostCount == 3
+                return counters.requestId == self.requestID && counters.mouseDownPostCount == 4 && counters.mouseUpPostCount == 3
             }
         }
         XCTAssertTrue(countersSent)
@@ -228,4 +261,171 @@ final class RelayClientTests: XCTestCase {
         XCTAssertTrue(reconnected)
         await client.stop()
     }
+
+    func testPreAuthenticationActionClosesGenerationWithoutDelivery() async throws {
+        let transport = FakeWebSocketTransport()
+        let sink = RecordingSink()
+        let sleeper = ManualSleeper()
+        let client = RelayClient(
+            actionSink: sink, diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { try await sleeper.sleep($0) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(ActionRequest(actionId: actionID, action: "click",
+                                                           issuedAtUnixMs: 1_786_497_600_000,
+                                                           expiresAtUnixMs: 1_786_497_602_000)))
+        let closed = await eventually { await transport.closes() == 1 }
+        XCTAssertTrue(closed)
+        let delivered = await sink.count()
+        let status = await client.currentStatus()
+        XCTAssertEqual(delivered, 0)
+        XCTAssertNotEqual(status, .connected)
+        await client.stop()
+    }
+
+    func testOversizedAuthenticatedFrameClosesAndSchedulesReconnect() async throws {
+        let transport = FakeWebSocketTransport()
+        let sleeper = ManualSleeper()
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { try await sleeper.sleep($0) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        await transport.push(String(repeating: "x", count: 4_097))
+        let closed = await eventually { await transport.closes() == 1 }
+        let scheduled = await eventually { await sleeper.count(0) == 1 }
+        XCTAssertTrue(closed)
+        XCTAssertTrue(scheduled)
+        await client.stop()
+    }
+
+    func testBinaryTransportFailureClosesAndSchedulesReconnect() async throws {
+        let transport = FakeWebSocketTransport()
+        let sleeper = ManualSleeper()
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { try await sleeper.sleep($0) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        await transport.pushFailure(WebSocketTransportError.binaryFrame)
+        let closed = await eventually { await transport.closes() == 1 }
+        let scheduled = await eventually { await sleeper.count(0) == 1 }
+        XCTAssertTrue(closed)
+        XCTAssertTrue(scheduled)
+        await client.stop()
+    }
+
+    func testReconnectPublishesCachedSnapshotOnlyOnReplacementSocket() async throws {
+        let first = FakeWebSocketTransport()
+        let second = FakeWebSocketTransport()
+        let factory = TransportFactory([first, second])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        let snapshot = MacState(remoteEnabled: true, permission: .ready)
+        await client.updateAdvertisedState(snapshot)
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await first.push(try Wire.encode(HelloOK(role: "mac")))
+        let firstPublished = await eventually { await first.contains(snapshot) }
+        XCTAssertTrue(firstPublished)
+
+        await client.reconnect()
+        await second.push(try Wire.encode(HelloOK(role: "mac")))
+        let secondPublished = await eventually { await second.contains(snapshot) }
+        XCTAssertTrue(secondPublished)
+        let firstCount = await first.count(of: snapshot)
+        XCTAssertEqual(firstCount, 1)
+        await client.stop()
+    }
+
+    func testStaleActionCompletionCannotSendThroughOldOrReplacementSocket() async throws {
+        let first = FakeWebSocketTransport()
+        let second = FakeWebSocketTransport()
+        let factory = TransportFactory([first, second])
+        let sink = GatedSink()
+        let client = RelayClient(
+            actionSink: sink, diagnostics: FixedCounters(value: .zero),
+            makeTransport: { factory.make() },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { 0 }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await first.push(try Wire.encode(HelloOK(role: "mac")))
+        await first.push(try Wire.encode(ActionRequest(actionId: actionID, action: "click",
+                                                       issuedAtUnixMs: 1_786_497_600_000,
+                                                       expiresAtUnixMs: 1_786_497_602_000)))
+        let started = await eventually { await sink.started }
+        XCTAssertTrue(started)
+
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await second.push(try Wire.encode(HelloOK(role: "mac")))
+        await sink.release()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        let firstResults = await first.sentMessages().filter { (try? StrictWireDecoder().decodeText($0))?.isActionResult == true }
+        let secondResults = await second.sentMessages().filter { (try? StrictWireDecoder().decodeText($0))?.isActionResult == true }
+        XCTAssertTrue(firstResults.isEmpty)
+        XCTAssertTrue(secondResults.isEmpty)
+        await client.stop()
+    }
+
+    func testTimeSyncUsesReceiptAndSendSamples() async throws {
+        let transport = FakeWebSocketTransport()
+        let values = LockedMilliseconds([100, 125])
+        let client = RelayClient(
+            actionSink: RecordingSink(), diagnostics: FixedCounters(value: .zero),
+            makeTransport: { transport }, sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }, wallClockMilliseconds: { values.next() }
+        )
+        try await client.configure(urlString: "wss://example.com/ws", token: "token", allowLocalSimulator: false)
+        await client.start()
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        await transport.push(try Wire.encode(TimeSyncRequest(syncId: requestID, phoneSendUnixMs: 50)))
+        let response = await eventually {
+            await transport.sentMessages().contains {
+                guard case .timeSyncResponse(let sync) = try? StrictWireDecoder().decodeText($0) else { return false }
+                return sync.macReceiveUnixMs == 100 && sync.macSendUnixMs == 125
+            }
+        }
+        XCTAssertTrue(response)
+        await client.stop()
+    }
+}
+
+private final class LockedMilliseconds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Double]
+    init(_ values: [Double]) { self.values = values }
+    func next() -> Double { lock.withLock { values.removeFirst() } }
+}
+
+private extension WireMessage {
+    var isActionResult: Bool { if case .actionResult = self { return true }; return false }
+}
+
+private extension FakeWebSocketTransport {
+    func contains(_ snapshot: MacState) -> Bool { count(of: snapshot) > 0 }
+    func count(of snapshot: MacState) -> Int {
+        sent.compactMap { text -> MacState? in
+            guard case .macState(let state) = try? StrictWireDecoder().decodeText(text) else { return nil }
+            return state
+        }.filter { $0 == snapshot }.count
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ operation: () -> T) -> T { lock(); defer { unlock() }; return operation() }
 }

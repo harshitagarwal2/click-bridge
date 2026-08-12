@@ -85,6 +85,36 @@ final class WireMessageTests: XCTestCase {
         }
     }
 
+    func testExact4096ByteValidFramePassesAnd4097Fails() throws {
+        let base = #"{"type":"heartbeat.ack","v":1,"sequence":7}"#
+        let exact = base + String(repeating: " ", count: Constants.maxMessageBytes - base.utf8.count)
+        XCTAssertEqual(exact.utf8.count, 4_096)
+        XCTAssertNoThrow(try StrictWireDecoder().decodeText(exact, for: .phone))
+        XCTAssertThrowsError(try StrictWireDecoder().decodeText(exact + " ", for: .phone)) { error in
+            XCTAssertEqual(error as? WireError, .tooLarge)
+        }
+    }
+
+    func testScalarAndConditionalParityWithBrowserParser() {
+        let invalid = [
+            #"{"type":"hello","v":1,"role":"mac","token":"ABC"}"#,
+            #"{"type":"heartbeat.ack","v":1,"sequence":-1}"#,
+            #"{"type":"heartbeat.ack","v":1,"sequence":1.5}"#,
+            #"{"type":"time.sync.request","v":1,"syncId":"not-a-uuid","phoneSendUnixMs":1}"#,
+            #"{"type":"time.sync.request","v":1,"syncId":"018f63f5-6f3d-7d21-88bc-9ef561f030aa","phoneSendUnixMs":0}"#,
+            #"{"type":"time.sync.response","v":1,"syncId":"018f63f5-6f3d-7d21-88bc-9ef561f030aa","phoneSendUnixMs":1,"macReceiveUnixMs":3,"macSendUnixMs":2}"#,
+            #"{"type":"diagnostics.counters","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030ab","mouseDownPostCount":-1,"mouseUpPostCount":0}"#,
+            #"{"type":"action.request","v":1,"actionId":"bad","action":"click","issuedAtUnixMs":1,"expiresAtUnixMs":2001}"#,
+            #"{"type":"action.request","v":1,"actionId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","action":"move","issuedAtUnixMs":1,"expiresAtUnixMs":2001}"#,
+            #"{"type":"relay.ack","v":1,"actionId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","status":"forwarded","reason":"ok","relayProcessingUs":-1}"#,
+            #"{"type":"action.result","v":1,"actionId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","status":"rejected","reason":"expired","acceptedVia":"oci","macProcessingUs":1,"mouseDownPostedUnixMs":null}"#,
+            #"{"type":"action.result","v":1,"actionId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","status":"posted","reason":"ok","acceptedVia":"oci","macProcessingUs":1,"mouseDownPostedUnixMs":0}"#,
+        ]
+        for text in invalid {
+            XCTAssertThrowsError(try StrictWireDecoder().decodeText(text), text)
+        }
+    }
+
     func testBinaryFrameIsRejected() {
         XCTAssertThrowsError(try StrictWireDecoder().rejectBinary(Data([1, 2, 3]))) { error in
             XCTAssertEqual(error as? WireError, .binaryFrame)

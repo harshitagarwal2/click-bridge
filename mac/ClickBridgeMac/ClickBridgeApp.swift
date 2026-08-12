@@ -1,11 +1,5 @@
 import SwiftUI
 
-private struct EmptySecretStore: SecretStoring {
-    func read(account: String) throws -> String? { nil }
-    func write(_ value: String, account: String) throws {}
-    func delete(account: String) throws {}
-}
-
 @main
 struct ClickBridgeApp: App {
     @StateObject private var app: AppState
@@ -18,7 +12,7 @@ struct ClickBridgeApp: App {
             settings = try SettingsStore()
             startupNotice = nil
         } catch {
-            settings = try! SettingsStore(secrets: EmptySecretStore())
+            settings = SettingsStore(unavailableSecrets: UnavailableSecretStore(failure: error), failure: error)
             startupNotice = "Keychain is unavailable: \(error.localizedDescription)"
         }
         let permission = PostEventPermissionService()

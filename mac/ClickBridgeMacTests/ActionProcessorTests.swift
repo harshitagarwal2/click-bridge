@@ -169,6 +169,23 @@ final class ActionProcessorTests: XCTestCase {
         _ = await subject.receive(action, via: .tailscale)
         XCTAssertEqual(poster.callCount(), 1)
     }
+
+    func testToggleRaceIsSerializedAndResultMatchesActualPostBoundary() async {
+        for index in 0..<200 {
+            let poster = LockedPoster()
+            let subject = processor(poster: poster)
+            async let gate: Void = subject.setRemoteEnabled(true)
+            async let result = subject.receive(request(id: String(format: "018f63f5-6f3d-7d21-88bc-%012x", index)), via: .oci)
+            _ = await gate
+            let terminal = await result
+            if terminal.status == .posted {
+                XCTAssertEqual(poster.callCount(), 1)
+            } else {
+                XCTAssertEqual(terminal.reason, .remoteDisabled)
+                XCTAssertEqual(poster.callCount(), 0)
+            }
+        }
+    }
 }
 
 private extension NSLock {

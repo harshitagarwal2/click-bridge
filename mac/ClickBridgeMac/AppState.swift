@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 @MainActor
 final class AppState: ObservableObject {
@@ -11,15 +12,27 @@ final class AppState: ObservableObject {
     private let client: RelayClient
     private let processor: ActionProcessor
     private let permissionService: PostEventPermissionService
+    private let activationNotifications: NotificationCenter
+    private var activationObserver: NSObjectProtocol?
 
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
-         permissionService: PostEventPermissionService, initialNotice: String? = nil) {
+         permissionService: PostEventPermissionService,
+         activationNotifications: NotificationCenter = .default,
+         initialNotice: String? = nil) {
         self.settings = settings
         self.client = client
         self.processor = processor
         self.permissionService = permissionService
+        self.activationNotifications = activationNotifications
         notice = initialNotice
         permission = permissionService.isGranted() ? .ready : .required
+        activationObserver = activationNotifications.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshPermission() }
+        }
         Task { [weak self, client, processor, settings] in
             await client.setStatusHandler { [weak self] status in
                 Task { @MainActor in self?.connection = status }
@@ -34,6 +47,10 @@ final class AppState: ObservableObject {
             await self?.publishState()
             self?.reconnect()
         }
+    }
+
+    deinit {
+        if let activationObserver { activationNotifications.removeObserver(activationObserver) }
     }
 
     var remoteToggleEnabled: Bool { true }
