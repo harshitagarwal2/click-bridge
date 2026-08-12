@@ -143,19 +143,31 @@ final class AppState: ObservableObject {
     @discardableResult
     private func connect(credentialRevision revision: UInt64) -> Task<Void, Never> {
         let task = Task {
+            do { try Task.checkCancellation() }
+            catch { return }
+            guard revision == credentialRevision else { return }
+            guard credentialEligible else {
+                await client.clearConfigurationAndStop(credentialRevision: revision)
+                return
+            }
+            let token: String
             do {
-                try Task.checkCancellation()
-                guard revision == credentialRevision else { return }
-                guard credentialEligible else {
-                    await client.clearConfigurationAndStop(credentialRevision: revision)
-                    return
-                }
-                guard let token = try settings.macToken(), !token.isEmpty else {
+                guard let storedToken = try settings.macToken(), !storedToken.isEmpty else {
                     guard revision == credentialRevision, credentialEligible else { return }
                     notice = "Save MAC_TOKEN in Settings before connecting."
                     return
                 }
-                guard revision == credentialRevision, credentialEligible else { return }
+                token = storedToken
+            } catch {
+                guard revision == credentialRevision, !Task.isCancelled else { return }
+                credentialEligible = false
+                await client.clearConfigurationAndStop(credentialRevision: revision)
+                guard revision == credentialRevision, !Task.isCancelled else { return }
+                notice = settings.storageError
+                return
+            }
+            guard revision == credentialRevision, credentialEligible else { return }
+            do {
                 let configured = try await client.configure(urlString: settings.relayURLString,
                                                             token: token,
                                                             allowLocalSimulator: false,
@@ -165,9 +177,6 @@ final class AppState: ObservableObject {
                 guard revision == credentialRevision, credentialEligible else { return }
                 await client.start(credentialRevision: revision)
             } catch {
-                guard revision == credentialRevision, !Task.isCancelled else { return }
-                credentialEligible = false
-                await client.clearConfigurationAndStop(credentialRevision: revision)
                 guard revision == credentialRevision, !Task.isCancelled else { return }
                 notice = "Connection settings are invalid: \(error.localizedDescription)"
             }
