@@ -47,6 +47,9 @@ targets:
       properties:
         CFBundleName: Click Bridge
         CFBundleDisplayName: Click Bridge
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
         # Menu-bar only: no Dock icon, no main window.
         LSUIElement: true
         LSMinimumSystemVersion: "13.0"

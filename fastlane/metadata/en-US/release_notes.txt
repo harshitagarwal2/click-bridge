@@ -1,1 +1,1 @@
-REPLACE BEFORE RELEASE: Summarize user-visible changes in this version.
+Initial TestFlight build of Click Bridge for iPhone and Mac. Test relay setup, volume-change and on-screen click actions on iPhone, Mac connectivity and permission status, and end-to-end click delivery.
