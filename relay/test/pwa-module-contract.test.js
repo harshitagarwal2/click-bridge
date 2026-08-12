@@ -65,12 +65,12 @@ test('startup recovery derives active and pending state from one current credent
   const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(source, /const credentialSnapshot = settings\.getSnapshot\(\)/);
   assert.match(source,
-    /needed: pairingEnabled && Boolean\(credentialSnapshot\?\.pending\)/);
+    /needed: pairingStartup\.recoveryNeeded/);
 });
 
 test('initially hidden pending recovery runs before any ordinary visible reconnect', () => {
   const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  assert.match(source, /needed: pairingEnabled && Boolean\(credentialSnapshot\?\.pending\)/);
+  assert.match(source, /needed: pairingStartup\.recoveryNeeded/);
   assert.match(source, /function goVisible\(\)[\s\S]*pairingRecovery\.visible\(\)/);
   assert.match(source, /if \(document\.visibilityState === 'visible'\) goVisible\(\)/);
 });
@@ -79,7 +79,7 @@ test('credential probes reject transient backoff and timeout and are abortable',
   const source = readFileSync(
     new URL('../public/credential-lifecycle-controller.js', import.meta.url), 'utf8',
   );
-  assert.match(source, /state === 'taken_over'\) finish\(false\)/);
+  assert.match(source, /state === 'auth_rejected'\) finish\(false\)/);
   assert.match(source, /state === 'backoff'\) finish\(null, new Error\('pairing_probe_unavailable'\)\)/);
   assert.match(source, /signal\?\.addEventListener\('abort', abort/);
 });

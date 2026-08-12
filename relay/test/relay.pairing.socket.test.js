@@ -405,7 +405,7 @@ test('full pairing uses a dedicated claimant socket and rotates only after ackno
     const oldRejected = peer(url);
     await oldRejected.open();
     oldRejected.send({ type: 'hello', v: 1, role: 'phone', token: PHONE_TOKEN });
-    assert.equal(await oldRejected.closed(), 4003);
+    assert.equal(await oldRejected.closed(), 4005);
     const current = peer(url);
     await hello(current, 'phone', NEXT_TOKEN);
   } finally {

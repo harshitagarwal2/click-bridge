@@ -69,7 +69,9 @@ test('every asset referenced by index.html exists', () => {
 });
 
 test('the PWA pairing composition modules are served as JavaScript', async () => {
-  for (const name of ['pairing-link.js', 'pairing-controller.js', 'pairing-ui.js']) {
+  for (const name of [
+    'app-composition.js', 'pairing-link.js', 'pairing-controller.js', 'pairing-ui.js',
+  ]) {
     const response = await requestStatic(`/${name}`);
     assert.equal(response.status, 200, `${name} must be available to app.js imports`);
   }
@@ -147,10 +149,53 @@ test('pairing is a first-class accessible flow while legacy credentials stay Adv
   assert.match(html, /id="pairing-message"[\s\S]*aria-live="polite"/);
   assert.match(html, /id="pairing-alert"[\s\S]*role="alert"/);
   assert.match(html, /id="pairing-code"[\s\S]*aria-label="Confirmation code"/);
-  assert.match(html, /<details[\s\S]*<summary>Advanced<\/summary>[\s\S]*id="token-input"/);
+  assert.match(html, /id="manual-token-guidance"/);
+  assert.match(html, /<details[^>]*id="manual-token-settings"[\s\S]*<summary>Set up phone token<\/summary>[\s\S]*id="token-input"/);
   assert.match(html, /id="pair-again"[^>]*>Pair Again<\/button>/);
   assert.match(html, /id="pairing-forget"[^>]*>Forget this browser<\/button>/);
   assert.equal(/pairing-reference|pairing-url|reference-input/i.test(html), false);
+});
+
+test('default-off composition keeps manual token recovery first-class without pairing copy', async () => {
+  const meta = html.match(/<meta name="clickbridge-pairing" content="([^"]+)">/)?.[1];
+  assert.equal(meta, 'off');
+  const { composeCredentialAccess } = await import('../public/app-composition.js');
+  const { initialState, reduce, view } = await import('../public/state.js');
+  const app = readFileSync(join(PUBLIC, 'app.js'), 'utf8');
+  assert.match(app, /function render\(\)[\s\S]*composeCredentialAccess\(\{/,
+    'the state-driven production render must own this composition');
+  const elements = {
+    pairingPanel: { hidden: false },
+    pairingGuidance: { hidden: false },
+    manualSettings: { open: false },
+    manualGuidance: { hidden: true, textContent: '' },
+  };
+
+  composeCredentialAccess({ pairingEnabled: meta === 'on', phase: view(initialState()).phase, elements });
+  assert.equal(elements.pairingPanel.hidden, true);
+  assert.equal(elements.pairingGuidance.hidden, true);
+  assert.equal(elements.manualSettings.open, true);
+  assert.match(elements.manualGuidance.textContent, /phone token/i);
+
+  let takenOver = reduce(initialState(), { type: 'token.set', token: 'a'.repeat(64) });
+  takenOver = reduce(takenOver, { type: 'transport.taken_over' });
+  composeCredentialAccess({ pairingEnabled: false, phase: view(takenOver).phase, elements });
+  assert.match(elements.manualGuidance.textContent, /replace/i);
+});
+
+test('a new invitation owns startup instead of pending recovery retiring its claimant', async () => {
+  const { composePairingStartup } = await import('../public/app-composition.js');
+  const events = [];
+
+  const plan = composePairingStartup({
+    pairingEnabled: true,
+    hasPending: true,
+    invitation: { pairingVersion: 1, reference: 'A'.repeat(43) },
+    startInvitation: () => events.push('invitation'),
+  });
+
+  assert.deepEqual(events, ['invitation']);
+  assert.equal(plan.recoveryNeeded, false);
 });
 
 test('pairing controls meet the minimum touch target and reduced-motion contract', () => {

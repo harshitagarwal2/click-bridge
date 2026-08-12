@@ -174,7 +174,7 @@ test('credential acknowledgment waits for the durable async stage and uses its g
   assert.equal(h.sockets[0].sent.some(({ type }) => type === 'pair.credential.ack'), true);
 });
 
-test('first enrollment durably installs authoritative version one before acknowledgment', async () => {
+test('first enrollment is durable provisional pending until pair.active promotes it', async () => {
   const settings = new MemorySettingsStore();
   const h = harness({ settings, seedAuthoritative: false });
   h.controller.start(REFERENCE);
@@ -188,15 +188,76 @@ test('first enrollment durably installs authoritative version one before acknowl
   }));
   await ackSent;
 
-  assert.deepEqual(settings.getActive(), { credential: CREDENTIAL, version: 1 });
-  assert.equal(settings.getPending(), null);
+  assert.equal(settings.getActive(), null);
+  assert.deepEqual(settings.getPending(), { credential: CREDENTIAL, version: 1 });
   assert.deepEqual(h.started, []);
 
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 1,
   }));
   await settleAsyncWork();
+  assert.deepEqual(settings.getActive(), { credential: CREDENTIAL, version: 1 });
+  assert.equal(settings.getPending(), null);
   assert.deepEqual(h.started, [{ credential: CREDENTIAL, version: 1 }]);
+});
+
+test('an interrupted first enrollment can be replaced by a fresh version-one invite', async () => {
+  const settings = new MemorySettingsStore();
+  const h = harness({ settings, seedAuthoritative: false });
+  h.controller.start(REFERENCE);
+  let ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 1,
+  }));
+  await ackSent;
+  h.sockets[0].serverClose(1006, 'connection interrupted');
+
+  h.controller.start(REFERENCE);
+  ackSent = observeAck(h.sockets[1]);
+  h.sockets[1].open();
+  acceptClaim(h.sockets[1]);
+  h.sockets[1].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: REPLACEMENT, credentialVersion: 1,
+  }));
+  await ackSent;
+
+  assert.notEqual(h.states.at(-1).reason, 'storage_failed');
+  assert.equal(settings.getActive(), null);
+  assert.deepEqual(settings.getPending(), { credential: REPLACEMENT, version: 1 });
+});
+
+test('a fresh invite cannot overwrite an interrupted authoritative replacement', async () => {
+  const h = harness();
+  const oldActive = h.settings.getActive();
+  const originalPending = { credential: CREDENTIAL, version: 7 };
+  h.controller.start(REFERENCE);
+  let ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  h.sockets[0].serverClose(1006, 'connection interrupted');
+
+  h.controller.start(REFERENCE);
+  h.sockets[1].open();
+  acceptClaim(h.sockets[1]);
+  h.sockets[1].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: REPLACEMENT, credentialVersion: 7,
+  }));
+  await settleAsyncWork();
+
+  assert.deepEqual(h.settings.getActive(), oldActive);
+  assert.deepEqual(h.settings.getPending(), originalPending);
+  assert.equal(h.sockets[1].sent.some(({ type }) => type === 'pair.credential.ack'), false);
+  assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'storage_failed' });
 });
 
 test('cancelling during durable staging prevents a late acknowledgment', async () => {
@@ -332,6 +393,22 @@ test('startup recovery authenticates pending first and promotes it before transp
   assert.deepEqual(h.started, [{ credential: CREDENTIAL, version: 7 }]);
 });
 
+test('startup recovery authenticates and promotes a provisional first enrollment', async () => {
+  const settings = new MemorySettingsStore();
+  const pending = { credential: CREDENTIAL, version: 1 };
+  await settings.stage(pending, settings.getSnapshot().generation);
+  const h = harness({
+    settings,
+    seedAuthoritative: false,
+    authenticateCredential: async (slot) => slot.credential === CREDENTIAL,
+  });
+
+  assert.equal(await h.controller.recover(), true);
+  assert.deepEqual(settings.getActive(), pending);
+  assert.equal(settings.getPending(), null);
+  assert.deepEqual(h.started, [pending]);
+});
+
 test('recovery discards rejected pending and falls back to the old active credential', async () => {
   const attempts = [];
   const h = harness({
@@ -350,6 +427,18 @@ test('recovery discards rejected pending and falls back to the old active creden
   assert.equal(h.settings.getPending(), null);
   assert.deepEqual(h.settings.getActive(), active);
   assert.deepEqual(h.started, [active]);
+});
+
+test('transient pending authentication failure preserves pending and old active', async () => {
+  const h = harness({ authenticateCredential: async () => { throw new Error('network'); } });
+  const active = h.settings.getActive();
+  const pending = { credential: CREDENTIAL, version: 7 };
+  await h.settings.stage(pending, h.settings.getSnapshot().generation);
+
+  assert.equal(await h.controller.recover(), false);
+  assert.deepEqual(h.settings.getActive(), active);
+  assert.deepEqual(h.settings.getPending(), pending);
+  assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'authentication_failed' });
 });
 
 test('credential replacement is terminal until an explicit new pairing start', () => {

@@ -7,6 +7,7 @@ export const MAX_MESSAGE_BYTES = 4096;
 export const ACTION_LIFETIME_MS = 2000;
 export const TOKEN_HEX_LENGTH = 64;
 export const PHONE_TAKEN_OVER_CLOSE_CODE = 4004;
+export const AUTHENTICATION_REJECTED_CLOSE_CODE = 4005;
 export const PAIRING_VERSION = 1;
 export const PAIRING_TTL_MS = 300_000;
 export const LEGACY_PHONE_CREDENTIAL_VERSION = 0;

@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 
 import {
   AUTH_TIMEOUT_MS,
+  AUTHENTICATION_REJECTED_CLOSE_CODE,
   MAX_MESSAGE_BYTES,
   MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
@@ -192,6 +193,7 @@ const STATIC_FILES = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/app-composition.js', ['app-composition.js', 'text/javascript; charset=utf-8']],
   ['/state.js', ['state.js', 'text/javascript; charset=utf-8']],
   ['/wire-protocol.js', ['wire-protocol.js', 'text/javascript; charset=utf-8']],
   ['/runtime-constants.js', ['runtime-constants.js', 'text/javascript; charset=utf-8']],
@@ -664,7 +666,8 @@ export function attachWebSocketServer({
             event: 'auth_rejected', code: 'bad_token', role: message.role,
           }));
           closeWithDeadline(
-            ws, 4003, 'bad token', terminalCloseDeadlineMs, scheduleTerminalClose,
+            ws, AUTHENTICATION_REJECTED_CLOSE_CODE, 'bad token',
+            terminalCloseDeadlineMs, scheduleTerminalClose,
           );
           return;
         }
