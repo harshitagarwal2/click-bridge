@@ -142,7 +142,7 @@
 		2C941661EA7AAD864246CDD0 /* action.result.posted.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = action.result.posted.json; sourceTree = "<group>"; };
 		2D10BF941DBB865E2E0C9BE0 /* VolumeDeltaController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeDeltaController.swift; sourceTree = "<group>"; };
 		2D1DDF6E89B6B464138B68F3 /* heartbeat.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = heartbeat.ack.json; sourceTree = "<group>"; };
-		2DC647D7703D8183680FB97F /* ClickBridgePhoneTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClickBridgePhoneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2DC647D7703D8183680FB97F /* ClickBridgePhoneTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ClickBridgePhoneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		2DCA40F0B7448CB03FBDF634 /* PairingLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingLink.swift; sourceTree = "<group>"; };
 		2DCB0BA64569BFDEFB80A273 /* pair.claimed.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pair.claimed.mac.json; sourceTree = "<group>"; };
 		2E732BEF4A9C9923D0AC11D2 /* relay.ack.rejected-invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "relay.ack.rejected-invalid-request.json"; sourceTree = "<group>"; };
@@ -183,7 +183,7 @@
 		720491FC42ED8E19B9D4728F /* PhoneSettingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneSettingsStore.swift; sourceTree = "<group>"; };
 		72377CBCC5F25464655C4F52 /* pair-wrong-state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair-wrong-state.json"; sourceTree = "<group>"; };
 		751FF4BD78E51CB183F13C80 /* unknown-field.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "unknown-field.json"; sourceTree = "<group>"; };
-		7A3E77A004AA5F923DF69812 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		7A3E77A004AA5F923DF69812 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		7BA6F46C08252D6500E29AA1 /* PhoneRelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRelayClient.swift; sourceTree = "<group>"; };
 		7C70026D00D083C118547E04 /* pair.cancel.claim.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pair.cancel.claim.json; sourceTree = "<group>"; };
 		7FABD57413C17B471DA7805E /* invalid-result-status.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-result-status.json"; sourceTree = "<group>"; };
@@ -213,7 +213,7 @@
 		C0817A6D22EB57F260F83894 /* runtime-constants.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "runtime-constants.json"; sourceTree = "<group>"; };
 		C0DAB7B7A3B85BFF793CCE7D /* ProductionWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionWiringTests.swift; sourceTree = "<group>"; };
 		C0E9717BF1CD2631C085B786 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
-		C15E535E885EE67A070ADC46 /* ClickBridgePhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClickBridgePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C15E535E885EE67A070ADC46 /* ClickBridgePhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ClickBridgePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1A5255CDC3C06093783E9C4 /* pair.credential.ack.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pair.credential.ack.json; sourceTree = "<group>"; };
 		C1E028EEC1D3CD8B321DD886 /* pair-noncanonical-uuid.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair-noncanonical-uuid.json"; sourceTree = "<group>"; };
 		C295E5126681E09E40920B2E /* pair-wrong-pairing-version.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair-wrong-pairing-version.json"; sourceTree = "<group>"; };
@@ -736,7 +736,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = EC3R6XQ226;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -831,7 +830,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = EC3R6XQ226;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
