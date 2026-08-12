@@ -360,8 +360,18 @@ function shellCommandSubstitutionBodies(source) {
 function shellWithoutLineContinuations(source) {
   let normalized = "";
   let quote = "";
+  let comment = false;
+  let wordStarted = false;
   for (let index = 0; index < source.length; index += 1) {
     const character = source[index];
+    if (comment) {
+      normalized += character;
+      if (character === "\n") {
+        comment = false;
+        wordStarted = false;
+      }
+      continue;
+    }
     if (
       quote !== "'" &&
       character === "\\" &&
@@ -384,11 +394,21 @@ function shellWithoutLineContinuations(source) {
       }
       continue;
     }
+    if (character === "#" && !wordStarted) {
+      comment = true;
+      continue;
+    }
     if (character === "'" || character === '"') {
       quote = character;
+      wordStarted = true;
     } else if (character === "\\" && index + 1 < source.length) {
       normalized += source[index + 1];
       index += 1;
+      wordStarted = true;
+    } else if (/\s/.test(character) || ";&|()<>{}".includes(character)) {
+      wordStarted = false;
+    } else {
+      wordStarted = true;
     }
   }
   return normalized;

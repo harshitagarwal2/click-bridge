@@ -623,6 +623,57 @@ assert.doesNotThrow(
   "the two exact reviewed smoke-container assignments must remain valid",
 );
 
+const secretContinuationCommentCases = [
+  [
+    "single quote in comment before split unbraced PHONE_TOKEN stdout",
+    "# unmatched ' comment\n",
+    `$${shellLineContinuation}PHONE_TOKEN`,
+    "",
+  ],
+  [
+    "double quote in comment before split braced MAC_TOKEN stderr",
+    '# unmatched " comment\n',
+    `\${MAC_${shellLineContinuation}TOKEN}`,
+    ">&2",
+  ],
+  [
+    "single quote in CRLF comment before split braced PHONE_TOKEN stderr",
+    "# unmatched ' comment\r\n",
+    `\${PHONE_${String.fromCharCode(92, 13, 10)}TOKEN}`,
+    ">&2",
+  ],
+  [
+    "double quote in CRLF comment before split unbraced MAC_TOKEN stdout",
+    '# unmatched " comment\r\n',
+    `$MAC_${String.fromCharCode(92, 13, 10)}TOKEN`,
+    "",
+  ],
+  [
+    "escaped hash before split PHONE_TOKEN stdout",
+    "printf '%s\\n' \\#\n",
+    `$PHONE_${shellLineContinuation}TOKEN`,
+    "",
+  ],
+  [
+    "hash in word before split MAC_TOKEN stderr",
+    "printf '%s\\n' word#fragment\n",
+    `$${shellLineContinuation}MAC_TOKEN`,
+    ">&2",
+  ],
+];
+for (const [shape, prefix, expansion, redirection] of secretContinuationCommentCases) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}${prefix}printf '%s\\n' "${expansion}" ${redirection}\n`,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|environment assignment/,
+    `deployment validation must reject ${shape}`,
+  );
+}
+
 function readRequired(relativePath) {
   const absolutePath = path.join(repositoryRoot, relativePath);
   assert.ok(existsSync(absolutePath), `${relativePath} must exist`);
