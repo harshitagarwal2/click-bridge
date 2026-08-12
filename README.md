@@ -27,11 +27,11 @@ menu-bar receiver.
    **Share…** to send the single-use HTTPS link to a phone anywhere on the
    internet. Confirm that both devices show the same six-digit code, then
    approve on the Mac. The phone user never enters the relay WSS URL or a token.
-4. **PWA fallback:** without the native app, the invitation opens the browser
-   pairing flow. To force the PWA when Universal Links would open the app,
-   change only `/pair` to `/pair/web` in the copied HTTPS invitation and keep
-   its `#v=1&r=...` fragment unchanged. Disconnect or background the native app
-   before using the PWA; only one phone client can be live.
+4. **PWA fallback:** without the native app, choose **Copy PWA Invitation** on
+   the Mac and open that HTTPS link on the phone. It uses the same single-use
+   invitation and Mac approval, but opens `/pair/web` so Universal Links cannot
+   divert it into the native app. Disconnect or background the native app before
+   using the PWA; only one phone client can be live.
 5. Wait for **Ready**, place the Mac pointer over the intended target, then use
    one phone trigger. One accepted logical action becomes three left-button
    down/up pairs; it is not one physical click and the phone supplies no cursor

@@ -1173,7 +1173,7 @@ const validMacNotes = `Please test the complete iPhone-to-Mac click path:
 Setup and action paths:
 1. Use an operator-bootstrapped Mac that is already connected to the relay. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN.
 2. In Mac Settings, choose Pair Phone. If a phone is enrolled, choose Replace Phone and confirm.
-3. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet. Without the native app, use the /pair/web PWA fallback and preserve the invitation fragment.
+3. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet. Without the native app, use Copy PWA Invitation for the /pair/web browser fallback.
 4. Confirm that both devices show the same six-digit code, then approve on the Mac. Do not approve a mismatch.
 5. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
 6. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.

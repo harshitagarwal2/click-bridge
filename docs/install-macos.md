@@ -104,9 +104,10 @@ normal phone pairing.
    else on the internet, choose **Copy Invitation** or **Share…** and send the
    single-use HTTPS link through a trusted channel. The devices do not need to
    share a LAN.
-3. Open the invitation in the native iOS app. Without the app, it opens the web
-   claimant; to force the PWA, change only `/pair` to `/pair/web` and preserve
-   the `#v=1&r=...` fragment.
+3. Open the invitation in the native iOS app. To use the browser instead,
+   choose **Copy PWA Invitation** on the Mac and open that HTTPS link on the
+   phone. It safely targets `/pair/web` while preserving the same opaque,
+   single-use invitation and approval flow.
 4. Verify that the same six-digit confirmation code appears on the phone and
    Mac, then approve on the Mac. Do not approve a mismatch.
 

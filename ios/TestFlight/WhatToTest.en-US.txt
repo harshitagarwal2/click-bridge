@@ -1,4 +1,4 @@
-Pair the phone before testing: on the connected Mac choose Pair Phone (or Replace Phone), then scan the QR code or open its shared HTTPS invitation. The link works when the phone is far away over the internet. Confirm that both devices show the same six-digit code and approve on the Mac. Without the native app, use the /pair/web PWA fallback and preserve the invitation fragment. Advanced Legacy relay and token fields are only for alternate or self-hosted deployments.
+Pair the phone before testing: on the connected Mac choose Pair Phone (or Replace Phone), then scan the QR code or open its shared HTTPS invitation. The link works when the phone is far away over the internet. Confirm that both devices show the same six-digit code and approve on the Mac. Without the native app, choose Copy PWA Invitation on the Mac for the /pair/web PWA fallback. Advanced Legacy relay and token fields are only for alternate or self-hosted deployments.
 
 Please test all three click triggers while the iPhone app is in the foreground:
 

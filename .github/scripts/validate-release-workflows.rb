@@ -61,7 +61,7 @@ def validate_mac_testflight_notes(notes_path)
     "Setup and action paths:" => [
       /\A1\. Use an operator-bootstrapped Mac that is already connected to the relay\. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN\.\z/,
       /\A2\. In Mac Settings, choose Pair Phone\. If a phone is enrolled, choose Replace Phone and confirm\.\z/,
-      /\A3\. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet\. Without the native app, use the \/pair\/web PWA fallback and preserve the invitation fragment\.\z/,
+      /\A3\. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet\. Without the native app, use Copy PWA Invitation for the \/pair\/web browser fallback\.\z/,
       /\A4\. Confirm that both devices show the same six-digit code, then approve on the Mac\. Do not approve a mismatch\.\z/,
       /\A5\. Set Mac Remote control ON\. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled\.\z/,
       /\A6\. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready\.\z/,

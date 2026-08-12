@@ -84,7 +84,7 @@ This evidence proves compilation and deterministic behavior under injected fakes
 5. Confirm that the same six-digit code appears on both devices, then approve
    on the Mac. Do not approve a mismatch.
 6. Keep the app in its foreground session and wait for **Ready** before changing system volume.
-7. Use either the native client or the PWA as the live phone client, not both simultaneously. To force the PWA, change only `/pair` to `/pair/web` in the invitation while preserving its fragment.
+7. Use either the native client or the PWA as the live phone client, not both simultaneously. For the PWA, choose **Copy PWA Invitation** on the Mac and open its `/pair/web` HTTPS link on the phone.
 
 For an alternate/self-hosted relay, expand **Advanced Legacy** in Settings and
 enter its exact `wss://<host>/ws` URL and `PHONE_TOKEN`. Credentials, query
@@ -145,7 +145,9 @@ The existing PWA behavior remains the tap-based fallback, with truthful
 three-click button copy. The native client uses the same phone role and
 unchanged protocol v1; it adds no iOS-specific relay message or field.
 Disconnect or background the native client before using the PWA because the
-product supports one live authenticated phone client.
+product supports one live authenticated phone client. Use **Copy PWA
+Invitation** on the Mac so the same single-use invitation opens the browser
+fallback directly.
 
 ## Physical iPhone acceptance checklist
 
