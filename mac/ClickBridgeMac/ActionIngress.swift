@@ -2,9 +2,14 @@ import Foundation
 
 enum ActionIngress: String, Codable, Sendable { case oci, tailscale }
 
-struct ActionAuthorizationGeneration: Hashable, Sendable {
+struct ActionAuthorizationGeneration: Comparable, Hashable, Sendable {
     let credentialMutationEpoch: UInt64
     let connectionGeneration: Int
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.credentialMutationEpoch, lhs.connectionGeneration)
+            < (rhs.credentialMutationEpoch, rhs.connectionGeneration)
+    }
 }
 
 struct ActionAuthorizationLease: Hashable, Sendable {

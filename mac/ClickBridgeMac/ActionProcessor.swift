@@ -25,6 +25,7 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
     private let capacity: Int
     private let skewToleranceMilliseconds: Double
     private var remoteEnabled = false
+    private var newestAuthorizationLease: ActionAuthorizationLease?
     private var activeAuthorizationLease: ActionAuthorizationLease?
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
@@ -50,7 +51,16 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
     func activateAuthorizationLease(
         for generation: ActionAuthorizationGeneration
     ) async -> ActionAuthorizationLease {
+        if let newestAuthorizationLease {
+            if generation == newestAuthorizationLease.generation {
+                return newestAuthorizationLease
+            }
+            guard generation > newestAuthorizationLease.generation else {
+                return ActionAuthorizationLease(generation: generation)
+            }
+        }
         let lease = ActionAuthorizationLease(generation: generation)
+        newestAuthorizationLease = lease
         activeAuthorizationLease = lease
         return lease
     }

@@ -58,6 +58,39 @@ private final class LockedClock: @unchecked Sendable {
     func advance(_ value: Double) { lock.withLock { milliseconds += value } }
 }
 
+private actor ActivationGatedSink: ActionRequestSink {
+    private let processor: ActionProcessor
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var activationStarted = false
+
+    init(processor: ActionProcessor) { self.processor = processor }
+
+    func activateAuthorizationLease(
+        for generation: ActionAuthorizationGeneration
+    ) async -> ActionAuthorizationLease {
+        activationStarted = true
+        await withCheckedContinuation { continuation = $0 }
+        return await processor.activateAuthorizationLease(for: generation)
+    }
+
+    func revokeAuthorizationLease(_ lease: ActionAuthorizationLease) async {
+        await processor.revokeAuthorizationLease(lease)
+    }
+
+    func receive(
+        _ request: ActionRequest,
+        via ingress: ActionIngress,
+        authorization: ActionAuthorizationLease
+    ) async -> ActionResult {
+        await processor.receive(request, via: ingress, authorization: authorization)
+    }
+
+    func releaseActivation() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class ActionProcessorTests: XCTestCase {
     private let base = 1_786_497_600_000.0
 
@@ -303,6 +336,54 @@ final class ActionProcessorTests: XCTestCase {
         let stale = await subject.receive(action, via: .oci, authorization: oldLease)
         let current = await subject.receive(action, via: .oci, authorization: newLease)
 
+        XCTAssertEqual(stale.status, .rejected)
+        XCTAssertEqual(current.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+    }
+
+    func testDelayedOlderActivationCannotReplaceNewerLease() async {
+        let poster = LockedPoster()
+        let subject = processor(poster: poster)
+        await subject.setRemoteEnabled(true)
+        let gatedSink = ActivationGatedSink(processor: subject)
+        let oldGeneration = ActionAuthorizationGeneration(credentialMutationEpoch: 1, connectionGeneration: 1)
+        let newGeneration = ActionAuthorizationGeneration(credentialMutationEpoch: 2, connectionGeneration: 2)
+
+        let activatingOld = Task { await gatedSink.activateAuthorizationLease(for: oldGeneration) }
+        for _ in 0..<100 where !(await gatedSink.activationStarted) {
+            await Task.yield()
+        }
+        let activationStarted = await gatedSink.activationStarted
+        XCTAssertTrue(activationStarted)
+        let newLease = await subject.activateAuthorizationLease(for: newGeneration)
+        await gatedSink.releaseActivation()
+        let oldLease = await activatingOld.value
+        await gatedSink.revokeAuthorizationLease(oldLease)
+
+        let stale = await subject.receive(request(id: "delayed-old"), via: .oci, authorization: oldLease)
+        let current = await subject.receive(request(id: "current-after-delay"), via: .oci,
+                                            authorization: newLease)
+
+        XCTAssertEqual(stale.status, .rejected)
+        XCTAssertEqual(current.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+    }
+
+    func testOlderActivationAfterNewerGenerationCannotMutateCurrentLease() async {
+        let poster = LockedPoster()
+        let subject = processor(poster: poster)
+        await subject.setRemoteEnabled(true)
+        let newGeneration = ActionAuthorizationGeneration(credentialMutationEpoch: 3, connectionGeneration: 4)
+        let oldGeneration = ActionAuthorizationGeneration(credentialMutationEpoch: 3, connectionGeneration: 3)
+
+        let newLease = await subject.activateAuthorizationLease(for: newGeneration)
+        let repeatedNewLease = await subject.activateAuthorizationLease(for: newGeneration)
+        let oldLease = await subject.activateAuthorizationLease(for: oldGeneration)
+        await subject.revokeAuthorizationLease(oldLease)
+
+        XCTAssertEqual(repeatedNewLease, newLease)
+        let stale = await subject.receive(request(id: "older-direct"), via: .oci, authorization: oldLease)
+        let current = await subject.receive(request(id: "newer-direct"), via: .oci, authorization: newLease)
         XCTAssertEqual(stale.status, .rejected)
         XCTAssertEqual(current.status, .posted)
         XCTAssertEqual(poster.callCount(), 1)
