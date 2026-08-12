@@ -1,6 +1,6 @@
 # Native iOS Client Acceptance
 
-**Automated status:** Passed: 90/90 tests, Release Simulator run, and generic iOS Release build
+**Automated status:** Passed: 173/173 tests, Release Simulator run, and generic iOS Release build
 
 **Physical iPhone status:** `NOT RUN`
 
@@ -19,7 +19,10 @@ The SwiftUI app composes these responsibilities:
 - `PhoneClockHealthController` reproduces the five-sample clock-health gate.
 - `PhoneActionCoordinator` permits one action in flight and has no queue. It creates one action ID and one immutable protocol-v1 `click` request for each accepted delta. A distinct delta observed while an action is pending is consumed and not replayed.
 - `PhoneAppIssue` distinguishes invalid settings, unavailable secure storage, and unavailable system-volume monitoring instead of collapsing those failures into one settings error. Connection progress also reports whether the app is connecting, authenticating, or retrying after a loss.
-- The SwiftUI settings sheet owns a validated draft. First setup requires both a valid relay URL and token; after a token is stored, a valid URL can be saved with the token field blank to reuse the Keychain value. A failed save keeps the sensitive draft in memory for correction, and editing either field clears the stale error.
+- Normal setup uses a single-use HTTPS invitation created by the Mac. The iOS
+  app scans its QR code or accepts the shared link, shows the six-digit
+  confirmation code, and activates only after Mac approval. Relay URL and token
+  fields remain under **Advanced Legacy** for alternate/self-hosted deployments.
 - The on-screen **Trigger 3 Clicks** button calls the same action coordinator and
   is enabled only while the current readiness state can accept an action.
 - `TriggerClickIntent` publishes a **Trigger 3 Clicks** App Shortcut and opens the
@@ -28,7 +31,7 @@ The SwiftUI app composes these responsibilities:
   discards not-ready, pending, failed, or backgrounded requests rather than
   queueing a delayed click.
 - `TerminalNotificationHaptics` runs only after a matching current-generation Mac `action.result`. Relay acceptance, relay rejection, timeout, disconnect, backgrounding, stale results, and duplicate results do not produce a terminal-result haptic.
-- The dashboard scrolls at large Dynamic Type sizes, gives rejection results readable descriptions, moves VoiceOver focus only to newly presented or changed issues and outcomes, and exposes stable accessibility labels and identifiers. Deterministic previews cover disconnected, ready, clock-retry accessibility text, first setup, and stored-token error states.
+- The dashboard scrolls at large Dynamic Type sizes, gives rejection results readable descriptions, moves VoiceOver focus only to newly presented or changed issues and outcomes, and exposes stable accessibility labels and identifiers. Deterministic previews cover disconnected, ready, clock-retry accessibility text, pairing, and Advanced Legacy error states.
 
 A delta is accepted only when the current foreground session, authenticated socket generation, Mac-online state, Mac remote-control setting, Mac permission, healthy clock, and no-pending-action gates are all ready.
 
@@ -42,10 +45,10 @@ A delta is accepted only when the current foreground session, authenticated sock
 | Release Simulator build | Passed | `ClickBridgePhone` built in Release configuration for iOS Simulator |
 | Release Simulator install and launch | Passed | The Release app installed and launched on iPhone 17 / iOS 26.3 |
 | Generic device build | Passed | Release build for generic platform `iOS` with code signing disabled |
-| Full XCTest suite | Passed: **90/90 tests** | XcodeBuildMCP full suite, including takeover close ordering, focused three-click triggering, App Intent routing, no-delayed-shortcut guarantees, fail-closed Keychain coverage, validated settings drafts, stored-token reuse and repair, typed issues, accessibility-focus transitions and priority, connection-specific detail, and readable rejection results. |
+| Full XCTest suite | Passed: **173/173 tests** | Exact-main CI, including native pairing links and lifecycle recovery, takeover close ordering, focused three-click triggering, App Intent routing, no-delayed-shortcut guarantees, fail-closed Keychain coverage, validated advanced settings, stored-token reuse and repair, typed issues, accessibility-focus transitions and priority, connection-specific detail, and readable rejection results. |
 | Release bundle inspection | Passed | The app bundle contains `Assets.car` with `AppIcon`, `PrivacyInfo.xcprivacy`, and `Metadata.appintents`; `ITSAppUsesNonExemptEncryption` is `false` |
 
-The 90 passing automated tests cover the deterministic contracts for:
+The 173 passing automated tests cover the deterministic contracts for:
 
 - upward and downward volume deltas;
 - initial baseline and exact duplicate-value callback suppression;
@@ -55,8 +58,10 @@ The 90 passing automated tests cover the deterministic contracts for:
 - foreground, transient inactive, background, and stale lifecycle callbacks;
 - stale WebSocket generations, authentication, heartbeat, reconnect, and strict frames;
 - five-sample clock health, timeout, refresh, and stale clock batches;
-- relay URL, token validation, UserDefaults, and Keychain behavior;
-- first-setup token requirements, later URL-only saves that reuse the Keychain token, and failed-save draft/error behavior;
+- pairing-link validation, claimant lifecycle, replacement confirmation, and
+  recovery after failed or interrupted activation;
+- Advanced Legacy relay URL and token validation, UserDefaults and Keychain
+  behavior, stored-token reuse, and failed-save draft/error behavior;
 - Ready, Not connected, Mac offline, Clock mismatch, and boundary presentation states;
 - typed settings, secure-storage, and volume-monitoring issues, connection-specific status detail, readable rejection results, and accessibility-focus transitions;
 - on-screen **Trigger 3 Clicks** readiness and one-action-in-flight behavior;
@@ -71,13 +76,26 @@ This evidence proves compilation and deterministic behavior under injected fakes
 
 1. Generate the project from `ios/project.yml` and open `ios/ClickBridgePhone.xcodeproj`, or build the shared `ClickBridgePhone` scheme with XcodeBuildMCP.
 2. Sign and install the app on an iPhone.
-3. Open **Settings** in the app.
-4. Enter the relay URL as a `wss://` URL ending exactly in `/ws`. Credentials, query strings, fragments, other schemes, and other paths are rejected.
-5. On first setup, enter `PHONE_TOKEN` as exactly 64 lowercase hexadecimal characters, then tap **Save**. On later edits, leave the token blank to keep the stored Keychain token, or enter a valid replacement token.
+3. On the connected Mac, open Click Bridge **Settings…** and choose **Pair
+   Phone**. If another phone is enrolled, choose **Replace Phone** and confirm.
+4. Scan the QR code with the iPhone app. If the phone is far away, use **Copy
+   Invitation** or **Share…** on the Mac and open the single-use HTTPS link on
+   the phone; pairing works over the internet and does not require a shared LAN.
+5. Confirm that the same six-digit code appears on both devices, then approve
+   on the Mac. Do not approve a mismatch.
 6. Keep the app in its foreground session and wait for **Ready** before changing system volume.
-7. Use either the native client or the PWA as the live phone client, not both simultaneously.
+7. Use either the native client or the PWA as the live phone client, not both simultaneously. For the PWA, choose **Copy PWA Invitation** on the Mac and open its `/pair/web` HTTPS link on the phone.
 
-The relay URL is stored in UserDefaults. `PHONE_TOKEN` is stored in Keychain and is cleared from the settings field after a successful save. If saving fails, the settings sheet stays open and preserves the entered token so the user can correct or retry; editing either field clears the stale error. The token must not be placed in the relay URL or logs.
+For an alternate/self-hosted relay, expand **Advanced Legacy** in Settings and
+enter its exact `wss://<host>/ws` URL and `PHONE_TOKEN`. Credentials, query
+strings, fragments, insecure schemes, and other paths are rejected. These
+fields are not part of normal pairing.
+
+For **Advanced Legacy** only, the relay URL is stored in UserDefaults and
+`PHONE_TOKEN` is stored in Keychain. The token field clears after a successful
+save. If saving fails, the sheet stays open and preserves the entered token for
+correction or retry; editing either field clears the stale error. Never put the
+token in the relay URL or logs.
 
 The app can also show:
 
@@ -127,7 +145,9 @@ The existing PWA behavior remains the tap-based fallback, with truthful
 three-click button copy. The native client uses the same phone role and
 unchanged protocol v1; it adds no iOS-specific relay message or field.
 Disconnect or background the native client before using the PWA because the
-product supports one live authenticated phone client.
+product supports one live authenticated phone client. Use **Copy PWA
+Invitation** on the Mac so the same single-use invitation opens the browser
+fallback directly.
 
 ## Physical iPhone acceptance checklist
 
@@ -153,6 +173,6 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 
 ## Acceptance conclusion
 
-Automated implementation status is **passed** with 90/90 XcodeBuildMCP tests, including the current SwiftUI correction coverage and three accessibility-focus transition regressions, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
+Automated implementation status is **passed** with 173/173 exact-main tests, including the current SwiftUI correction and pairing lifecycle coverage, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
 
 Physical hardware-volume and live end-to-end acceptance remain **`NOT RUN`**. A physical iPhone run is mandatory before claiming the user requirement is fully accepted.

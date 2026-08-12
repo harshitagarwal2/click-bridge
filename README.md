@@ -16,19 +16,23 @@ menu-bar receiver.
 
 1. **Relay:** use the existing trusted HTTPS/WSS endpoint, or follow the
    [OCI deployment runbook](docs/oci-deployment.md). Production clients require
-   `wss://<host>/ws`. Keep `PHONE_TOKEN` and `MAC_TOKEN` out of URLs, logs,
-   screenshots, and Git; the VM's canonical copy is the mode-`0600`
-   `/opt/click-bridge/shared/secrets.env` file.
+   `wss://<host>/ws`. The relay operator owns its credentials; phone users and
+   testers do not copy tokens during normal setup.
 2. **Mac receiver:** follow [Install and run the macOS receiver](docs/install-macos.md),
-   save the matching `MAC_TOKEN`, grant macOS Accessibility access, and turn on
-   **Remote control enabled** from the Click Bridge menu-bar item.
-3. **Phone — choose one live client:** in the native app, open **Settings**,
-   enter the relay WSS URL and `PHONE_TOKEN`, save, and keep the app in the
-   foreground. Or open the relay's HTTPS page, install the PWA from the browser
-   menu, then use **Settings → Save / replace** for `PHONE_TOKEN`. Disconnect or
-   background the native app before using the PWA, and keep the chosen client
-   foreground-visible.
-4. Wait for **Ready**, place the Mac pointer over the intended target, then use
+   have the operator bootstrap its relay connection, grant macOS Accessibility
+   access, and turn on **Remote control enabled** from the menu-bar item.
+3. **Pair a phone:** on the connected Mac, open **Settings…** and choose
+   **Pair Phone**. If a phone is already enrolled, choose **Replace Phone** and
+   confirm. Scan the QR code with the iPhone app, or use **Copy Invitation** or
+   **Share…** to send the single-use HTTPS link to a phone anywhere on the
+   internet. Confirm that both devices show the same six-digit code, then
+   approve on the Mac. The phone user never enters the relay WSS URL or a token.
+4. **PWA fallback:** without the native app, choose **Copy PWA Invitation** on
+   the Mac and open that HTTPS link on the phone. It uses the same single-use
+   invitation and Mac approval, but opens `/pair/web` so Universal Links cannot
+   divert it into the native app. Disconnect or background the native app before
+   using the PWA; only one phone client can be live.
+5. Wait for **Ready**, place the Mac pointer over the intended target, then use
    one phone trigger. One accepted logical action becomes three left-button
    down/up pairs; it is not one physical click and the phone supplies no cursor
    coordinates.
@@ -42,8 +46,8 @@ makes the phone report the Mac offline.
 
 - **Ready:** phone authenticated; Mac online; remote control, Accessibility,
   and clock checks ready.
-- **Not connected / Connecting:** open phone settings, verify the exact WSS URL
-  and token, then reconnect.
+- **Not connected / Connecting:** open a fresh invitation from the Mac and pair
+  again. Verify the WSS URL and token only for an **Advanced Legacy** deployment.
 - **Mac offline:** start Click Bridge on the Mac and use **Reconnect** if needed.
 - **Mac not ready / Grant input permission / Enable remote control:** grant
   Accessibility and separately enable the Mac menu-bar toggle.
@@ -56,9 +60,14 @@ makes the phone report the Mac offline.
 - **Unknown:** a click may have occurred. Inspect the Mac/target before trying
   again; the client does not replay it.
 - **Another phone took over:** stop the other client, then tap **Reconnect this
-  phone** (iOS) or re-save the PWA token. Only one phone client is live.
+  phone** (iOS) or choose **Pair Again** in the PWA. Only one phone client is live.
 
-## Token storage and replacement
+## Advanced legacy and operator recovery
+
+The fields below are not part of normal phone pairing. Use them only for an
+alternate/self-hosted deployment or operator-led credential recovery. Keep
+`PHONE_TOKEN` and `MAC_TOKEN` out of URLs, logs, screenshots, and Git; the VM's
+canonical copy is the mode-`0600` `/opt/click-bridge/shared/secrets.env` file.
 
 Both role tokens are exactly 64 lowercase hexadecimal characters and are
 different from each other.

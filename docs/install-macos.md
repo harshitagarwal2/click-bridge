@@ -10,10 +10,10 @@ clicking is still **NOT RUN** in [`physical-smoke-test.md`](physical-smoke-test.
 - macOS 13 or newer, full Xcode 15 or newer selected as the active developer
   directory, and XcodeGen 2.46.0. Apple's standalone Command Line Tools package
   is not sufficient for this app's Xcode project and SwiftUI macro build.
-- A trusted relay URL in the exact form `wss://<host>/ws`. The receiver rejects
-  insecure `ws://`, credentials, queries, fragments, and other paths.
-- The relay's 64-character lowercase hexadecimal `MAC_TOKEN`. Do not put it in
-  a URL, command argument, log, screenshot, or repository file.
+- An operator-bootstrapped connection to a trusted relay. The bootstrap uses a
+  relay URL in the exact form `wss://<host>/ws` and the relay's 64-character
+  lowercase hexadecimal `MAC_TOKEN`; it must not expose that token in a URL,
+  command argument, log, screenshot, or repository file.
 
 The default project uses deterministic ad-hoc signing and needs no Apple
 account. For a stable development signature, copy
@@ -77,18 +77,42 @@ window. Always launch and grant permission to the installed
 
 ## Connect the receiver
 
-1. Open the **Click Bridge** menu-bar item and choose **Settings…**.
-2. Enter the relay URL as `wss://<host>/ws`.
-3. Paste the matching `MAC_TOKEN` and choose **Save**. The token is stored in
-   Keychain; the relay URL and remote-control preference are stored in
-   UserDefaults. Saving a replacement token reconnects with the new credential.
-   **Clear** removes the Keychain token and disconnects the receiver.
-4. If the menu says **Input permission: required**, choose
+1. Have the relay operator run the secure owner-Mac bootstrap described in
+   [Pairing persistence and owner-Mac bootstrap](oci-deployment.md#pairing-persistence-and-owner-mac-bootstrap).
+   It installs `MAC_TOKEN` in Keychain and stores the relay URL without placing
+   the credential in an argument or log.
+2. Open the **Click Bridge** menu-bar item and choose **Settings…**. The normal
+   phone flow is **Pair Phone**, or **Replace Phone** when one is enrolled.
+3. If the menu says **Input permission: required**, choose
    **Grant Input Permission…**, allow Click Bridge under **System Settings →
    Privacy & Security → Accessibility**, then return to or relaunch the app.
-5. Turn on **Remote control enabled** only when remote input is intended. This
+4. Turn on **Remote control enabled** only when remote input is intended. This
    toggle does not grant Accessibility permission. Turn it off to reject remote
    actions without posting input.
+
+For an alternate/self-hosted deployment or operator recovery, expand
+**Advanced legacy connection**. Enter the exact `wss://<host>/ws` relay URL,
+paste the matching `MAC_TOKEN`, and choose **Save**. **Clear** removes the
+Keychain token and disconnects the receiver. These fields are not required for
+normal phone pairing.
+
+## Pair or replace a phone
+
+1. In Mac **Settings…**, choose **Pair Phone**. If a phone is already enrolled,
+   choose **Replace Phone** and confirm the replacement.
+2. For a nearby iPhone, scan the QR code in Click Bridge. For a phone anywhere
+   else on the internet, choose **Copy Invitation** or **Share…** and send the
+   single-use HTTPS link through a trusted channel. The devices do not need to
+   share a LAN.
+3. Open the invitation in the native iOS app. To use the browser instead,
+   choose **Copy PWA Invitation** on the Mac and open that HTTPS link on the
+   phone. It safely targets `/pair/web` while preserving the same opaque,
+   single-use invitation and approval flow.
+4. Verify that the same six-digit confirmation code appears on the phone and
+   Mac, then approve on the Mac. Do not approve a mismatch.
+
+The invitation expires after five minutes and can be claimed only once. Create
+a fresh invitation after expiry, cancellation, or a failed claim.
 
 The Mac menu shows **Connected**, **Connecting…**, or **Disconnected** and the
 last terminal result. The phone becomes **Ready** only after the relay sees this
