@@ -791,6 +791,31 @@ test('recovery preserves pending and reports an operational authentication excep
   assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'authentication_failed' });
 });
 
+test('cancelling recovery aborts the credential probe and preserves pending', async () => {
+  const probeStarted = deferred();
+  let observedSignal;
+  const h = harness({
+    authenticateCredential: (_slot, signal) => {
+      observedSignal = signal;
+      probeStarted.resolve();
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      });
+    },
+  });
+  const pending = { credential: CREDENTIAL, version: 7 };
+  await h.settings.stage(pending, h.settings.getSnapshot().generation);
+
+  const recovery = h.controller.recover();
+  await probeStarted.promise;
+  h.controller.cancel();
+
+  assert.equal(await recovery, false);
+  assert.equal(observedSignal.aborted, true);
+  assert.deepEqual(h.settings.getPending(), pending);
+  assert.equal(h.states.at(-1).phase, 'cancelled');
+});
+
 test('recovery leaves a newer pending slot and retries after confirmed rejection', async () => {
   const oldPending = { credential: CREDENTIAL, version: 7 };
   const newPending = { credential: REPLACEMENT, version: 7 };
@@ -804,9 +829,10 @@ test('recovery leaves a newer pending slot and retries after confirmed rejection
       if (reads === 2) snapshot = { ...snapshot, pending: newPending, generation: 2 };
       return snapshot;
     },
-    async discardPending(expectedGeneration) {
+    async discardPending(expected, expectedGeneration) {
       discardCalls += 1;
       if (expectedGeneration !== snapshot.generation) return false;
+      if (expected.credential !== snapshot.pending?.credential) return false;
       snapshot = { ...snapshot, pending: null, generation: snapshot.generation + 1 };
       return true;
     },

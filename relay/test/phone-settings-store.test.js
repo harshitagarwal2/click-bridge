@@ -382,6 +382,11 @@ test('an aborted pairing activation cannot publish or resume the ordinary transp
   assert.equal(await harness.controller.activatePairing(paired, abort.signal), false);
   assert.deepEqual(harness.applied, []);
   assert.deepEqual(harness.connected, []);
+
+  harness.controller.visible();
+  harness.controller.online();
+  assert.deepEqual(harness.applied, []);
+  assert.deepEqual(harness.connected, []);
 });
 
 test('production lifecycle blocks old-token visible and online reconnect until gated save applies', async () => {
@@ -712,7 +717,8 @@ test('cancel before stage advances generation and fences delayed staging', async
     },
   };
   let serialized = JSON.stringify({
-    active: { credential: 'a'.repeat(64), version: 1 }, pending: null,
+    active: { credential: 'a'.repeat(64), version: 1 },
+    pending: { credential: 'b'.repeat(64), version: 2 },
     generation: 4, provenance: 'authoritative',
   });
   const storage = {
@@ -723,11 +729,35 @@ test('cancel before stage advances generation and fences delayed staging', async
   const staging = new PhoneSettingsStore(storage, locks);
   const expectedGeneration = generation(staging);
 
-  assert.equal(await canceling.discardPending(), true);
+  assert.equal(await canceling.discardPending(
+    canceling.getPending(), canceling.getSnapshot().generation,
+  ), true);
   assert.equal(await staging.stage(
     { credential: 'b'.repeat(64), version: 2 }, expectedGeneration,
   ), false);
   assert.equal(staging.getPending(), null);
+});
+
+test('delayed discard cannot clear a newer pending credential from another store', async () => {
+  let serialized = null;
+  const locks = { request: (_name, _options, callback) => callback() };
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const older = { credential: 'b'.repeat(64), version: 2 };
+  const newer = { credential: 'c'.repeat(64), version: 2 };
+  await current.setActive(active, current.getSnapshot().generation);
+  await current.stage(older, current.getSnapshot().generation);
+  const staleGeneration = stale.getSnapshot().generation;
+  await current.discardPending(older, current.getSnapshot().generation);
+  await current.stage(newer, current.getSnapshot().generation);
+
+  assert.equal(await stale.discardPending(older, staleGeneration), false);
+  assert.deepEqual(current.getPending(), newer);
 });
 
 test('versioned mutations reject lower and equal versions without changing stored slots', async () => {
@@ -851,9 +881,10 @@ test('discard and forget clear only their intended recoverable slots', async () 
   const store = new MemorySettingsStore();
   const active = { credential: 'a'.repeat(64), version: 1 };
   await store.setActive(active, generation(store));
-  await store.stage({ credential: 'b'.repeat(64), version: 2 }, generation(store));
+  const pending = { credential: 'b'.repeat(64), version: 2 };
+  await store.stage(pending, generation(store));
 
-  assert.equal(await store.discardPending(), true);
+  assert.equal(await store.discardPending(pending, generation(store)), true);
   assert.deepEqual(store.getActive(), active);
   assert.equal(store.getPending(), null);
   assert.equal(await store.forget(), true);
@@ -901,7 +932,7 @@ test('every credential mutator is atomic when its single record write fails', as
     ['promotePending', { active, pending, generation: 7, provenance: 'authoritative' },
       (store) => store.promotePending(pending, 7)],
     ['discardPending', { active, pending, generation: 7, provenance: 'authoritative' },
-      (store) => store.discardPending()],
+      (store) => store.discardPending(pending, 7)],
     ['forget', { active, pending, generation: 7, provenance: 'authoritative' },
       (store) => store.forget()],
   ];
@@ -938,7 +969,7 @@ test('a present malformed embedded epoch fails closed across mutators', async ()
     () => store.setActive(next, token),
     () => store.stage(next, token),
     () => store.promotePending(next, token),
-    () => store.discardPending(),
+    () => store.discardPending(next, token),
   ]) {
     assert.equal(await mutate(), false);
     assert.equal(serialized, original);

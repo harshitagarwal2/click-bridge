@@ -54,12 +54,32 @@ test('pairing activation and Forget are credential lifecycle intents in producti
   const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(source,
     /async function startPairedTransport\(slot, signal\)[\s\S]*credentialLifecycle\.activatePairing\(slot, signal\)/);
-  assert.match(source, /forgetPairing:\s*\(\)\s*=>\s*credentialLifecycle\.clear\(\)/);
+  assert.match(source,
+    /forgetPairing:\s*\(\)\s*=>\s*\{\s*pairingController\.cancel\(\);\s*return credentialLifecycle\.clear\(\)/);
   assert.doesNotMatch(source, /forgetPairing:[\s\S]{0,300}settings\.clearToken\(/);
 });
 
 test('startup recovery derives active and pending state from one current credential snapshot', () => {
   const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(source, /const credentialSnapshot = settings\.getSnapshot\(\)/);
-  assert.match(source, /const pendingRecovery = pairingEnabled && credentialSnapshot\?\.pending/);
+  assert.match(source,
+    /let pairingRecoveryNeeded = Boolean\(pairingEnabled && credentialSnapshot\?\.pending\)/);
+});
+
+test('initially hidden pending recovery runs before any ordinary visible reconnect', () => {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(source, /let pairingRecoveryNeeded = Boolean\(pairingEnabled && credentialSnapshot\?\.pending\)/);
+  assert.match(source, /function goVisible\(\)[\s\S]*if \(pairingRecoveryNeeded\)[\s\S]*recoverPairingIfNeeded\(\)[\s\S]*else credentialLifecycle\.visible\(\)/);
+});
+
+test('credential probes reject transient backoff and timeout and are abortable', () => {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(source, /transportState === 'taken_over'\) finish\(false\)/);
+  assert.match(source, /transportState === 'backoff'\) finish\(null, new Error\('pairing_probe_unavailable'\)\)/);
+  assert.match(source, /signal\?\.addEventListener\('abort', abort/);
+});
+
+test('Forget synchronously cancels claimant ownership before durable clearing', () => {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(source, /forgetPairing:\s*\(\)\s*=>\s*\{\s*pairingController\.cancel\(\);\s*return credentialLifecycle\.clear\(\)/);
 });

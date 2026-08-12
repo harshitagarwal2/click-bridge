@@ -83,7 +83,14 @@ export class CredentialLifecycleController {
     this.reconciliationPending = true;
     this.reconciliationBlocked = false;
     this.reconciliationExpected = this.latestIntent;
-    if (signal?.aborted) return Promise.resolve(false);
+    if (signal?.aborted) {
+      this.reconciliationPending = true;
+      this.reconciliationBlocked = true;
+      this.reconciliationExpected = null;
+      this.latestSucceeded = null;
+      this.latestIntent = null;
+      return Promise.resolve(false);
+    }
     return new Promise((resolve) => {
       const activation = { operation, signal, resolve, onAbort: null };
       activation.onAbort = () => this.#finishPairingActivation(false, activation);
@@ -141,6 +148,14 @@ export class CredentialLifecycleController {
     const activation = this.pairingActivation;
     if (!activation || activation !== expected) return;
     this.pairingActivation = null;
+    if (!result && this.reconciliationExpected?.kind === 'pairing'
+      && this.reconciliationExpected === this.latestIntent) {
+      this.reconciliationPending = true;
+      this.reconciliationBlocked = true;
+      this.reconciliationExpected = null;
+      this.latestSucceeded = null;
+      this.latestIntent = null;
+    }
     activation.signal?.removeEventListener('abort', activation.onAbort);
     activation.resolve(result);
   }

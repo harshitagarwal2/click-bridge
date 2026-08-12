@@ -95,16 +95,19 @@ export class PairingController {
     this.deadlineTimer = null;
     this.pairingExpiresAtUnixMs = null;
     this.activation = null;
+    this.authentication = null;
   }
 
   start(reference) {
     const activation = this.#detachActivation();
+    const authentication = this.#detachAuthentication();
     const socketToRetire = this.socket;
     const generation = ++this.generation;
     this.#clearDeadline();
     this.#clearSensitive();
     this.#retireSocket(socketToRetire);
     this.#abortActivation(activation);
+    this.#abortAuthentication(authentication);
     if (this.generation !== generation) return;
     this.reference = reference;
     this.claimId = this.idGenerator();
@@ -169,11 +172,13 @@ export class PairingController {
       // Cancellation is local-first. Cleanup below must not depend on delivery.
     } finally {
       const activation = this.#detachActivation();
+      const authentication = this.#detachAuthentication();
       const cancellationGeneration = ++this.generation;
       this.#clearDeadline();
       this.#clearSensitive();
       this.#retireSocket(socket);
       this.#abortActivation(activation);
+      this.#abortAuthentication(authentication);
       if (this.generation === cancellationGeneration) this.#publish('cancelled');
     }
   }
@@ -195,7 +200,7 @@ export class PairingController {
       }
       const pending = snapshot.pending;
       if (pending) {
-        const authentication = await this.#authenticate(pending);
+        const authentication = await this.#authenticate(pending, ownership);
         if (!this.#owns(ownership)) return false;
         if (authentication === 'error') {
           this.#publish('failed', 'authentication_failed');
@@ -227,7 +232,7 @@ export class PairingController {
         if (!this.#sameSnapshot(snapshot)) continue;
         let discarded = false;
         try {
-          discarded = await this.settings.discardPending(snapshot.generation);
+          discarded = await this.settings.discardPending(pending, snapshot.generation);
         } catch {
           discarded = false;
         }
@@ -251,7 +256,7 @@ export class PairingController {
         this.#publish('idle');
         return false;
       }
-      const authentication = await this.#authenticate(active);
+      const authentication = await this.#authenticate(active, ownership);
       if (!this.#owns(ownership)) return false;
       if (authentication === 'error') {
         this.#publish('failed', 'authentication_failed');
@@ -422,10 +427,19 @@ export class PairingController {
     }
   }
 
-  async #authenticate(slot) {
+  async #authenticate(slot, ownership) {
+    const previous = this.#detachAuthentication();
+    this.#abortAuthentication(previous);
+    if (!this.#owns(ownership)) return 'error';
+    const operation = { controller: new AbortController(), ownership };
+    this.authentication = operation;
     try {
-      return await this.authenticateCredential(slot) === true ? 'accepted' : 'rejected';
+      const result = await this.authenticateCredential(slot, operation.controller.signal);
+      if (this.authentication === operation) this.authentication = null;
+      if (!this.#owns(ownership) || operation.controller.signal.aborted) return 'error';
+      return result === true ? 'accepted' : 'rejected';
     } catch {
+      if (this.authentication === operation) this.authentication = null;
       return 'error';
     }
   }
@@ -506,11 +520,13 @@ export class PairingController {
 
   #terminate(phase, reason, socket) {
     const activation = this.#detachActivation();
+    const authentication = this.#detachAuthentication();
     const terminalGeneration = ++this.generation;
     this.#clearDeadline();
     this.#clearSensitive();
     this.#retireSocket(socket);
     this.#abortActivation(activation);
+    this.#abortAuthentication(authentication);
     if (this.generation === terminalGeneration) this.#publish(phase, reason);
   }
 
@@ -529,8 +545,18 @@ export class PairingController {
     return activation;
   }
 
+  #detachAuthentication() {
+    const authentication = this.authentication;
+    this.authentication = null;
+    return authentication;
+  }
+
   #abortActivation(activation) {
     activation?.controller.abort();
+  }
+
+  #abortAuthentication(authentication) {
+    authentication?.controller.abort();
   }
 
   #publish(phase, reason = null, details = {}) {

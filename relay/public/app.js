@@ -163,25 +163,33 @@ const oci = createRelayTransport({
   onStatus: handleTransportStatus,
 });
 
-function authenticateCredential(slot) {
-  return new Promise((resolve) => {
+function authenticateCredential(slot, signal) {
+  return new Promise((resolve, reject) => {
     let settled = false;
-    const finish = (accepted) => {
+    const finish = (result, error = null) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
       probe.close('pairing_probe_complete');
-      resolve(accepted);
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve(result);
     };
+    const abort = () => finish(null, new Error('pairing_probe_cancelled'));
     const probe = createRelayTransport({
       location: window.location,
       token: slot.credential,
       onStatus: ({ state: transportState }) => {
         if (transportState === 'ready') finish(true);
-        else if (transportState === 'taken_over' || transportState === 'backoff') finish(false);
+        else if (transportState === 'taken_over') finish(false);
+        else if (transportState === 'backoff') finish(null, new Error('pairing_probe_unavailable'));
       },
     });
-    const timeout = window.setTimeout(() => finish(false), 10_000);
+    const timeout = window.setTimeout(
+      () => finish(null, new Error('pairing_probe_timeout')), 10_000,
+    );
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) { abort(); return; }
     probe.connect();
   });
 }
@@ -206,7 +214,10 @@ pairingUI = createPairingUI({
   expectedHost: window.location.host,
   startPairing: (reference) => pairingController.start(reference),
   cancelPairing: () => pairingController.cancel(),
-  forgetPairing: () => credentialLifecycle.clear(),
+  forgetPairing: () => {
+    pairingController.cancel();
+    return credentialLifecycle.clear();
+  },
 });
 
 if (initialPairingInvitation) {
@@ -469,12 +480,29 @@ function goHidden() {
   clockHealth.macNotReady();
   dispatch({ type: 'visibility', visible: false });
   oci.close('hidden');
+  pairingController.cancel();
   wakeLockController.suspend();
+}
+
+let pairingRecoveryNeeded = Boolean(pairingEnabled && credentialSnapshot?.pending);
+let pairingRecoveryInFlight = false;
+
+async function recoverPairingIfNeeded() {
+  if (!pairingRecoveryNeeded || pairingRecoveryInFlight
+    || document.visibilityState !== 'visible') return pairingRecoveryNeeded;
+  pairingRecoveryInFlight = true;
+  pairingUI.startRecovery();
+  const recovered = await pairingController.recover();
+  pairingRecoveryInFlight = false;
+  if (recovered) pairingRecoveryNeeded = false;
+  return pairingRecoveryNeeded;
 }
 
 function goVisible() {
   dispatch({ type: 'visibility', visible: true });
-  credentialLifecycle.visible();
+  if (pairingRecoveryNeeded) {
+    void recoverPairingIfNeeded();
+  } else credentialLifecycle.visible();
   wakeLockController.acquire();
 }
 
@@ -527,9 +555,7 @@ if (savedToken) state = reduce(state, { type: 'token.set', token: savedToken });
 element.keepWarm.checked = settings.getKeepWarm();
 oci.setKeepWarm(element.keepWarm.checked);
 render();
-const pendingRecovery = pairingEnabled && credentialSnapshot?.pending;
-if (pendingRecovery && document.visibilityState === 'visible') {
-  pairingUI.startRecovery();
-  void pairingController.recover();
+if (pairingRecoveryNeeded && document.visibilityState === 'visible') {
+  void recoverPairingIfNeeded();
 } else if (document.visibilityState === 'visible') goVisible();
 else goHidden();
