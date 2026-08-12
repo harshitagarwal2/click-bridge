@@ -144,6 +144,25 @@ testflight = File.read(File.join(WORKFLOW_DIR, "testflight.yml"))
 fail_contract("TestFlight must not upload an IPA artifact") if testflight.include?("actions/upload-artifact")
 fail_contract("TestFlight must skip submission/distribution") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("skip_submission: true")
 fail_contract("TestFlight must not distribute to testers") unless File.read(File.join(ROOT, "fastlane", "Fastfile")).include?("distribute_external: false")
+%w[
+  MAC_DISTRIBUTION_CERTIFICATE_BASE64
+  MAC_DISTRIBUTION_CERTIFICATE_PASSWORD
+  MAC_INSTALLER_CERTIFICATE_BASE64
+  MAC_INSTALLER_CERTIFICATE_PASSWORD
+  MAC_PROVISIONING_PROFILE_BASE64
+  MAC_PROVISIONING_PROFILE_NAME
+  ClickBridgeMac.pkg
+].each do |contract|
+  fail_contract("TestFlight workflow is missing #{contract}") unless testflight.include?(contract)
+end
+fail_contract("TestFlight workflow must invoke the Mac upload lane") unless testflight.include?("fastlane mac upload_testflight")
+
+mac_entitlements_path = File.join(ROOT, "mac", "ClickBridgeMac", "ClickBridgeMac-AppStore.entitlements")
+fail_contract("Mac TestFlight entitlements file is missing") unless File.file?(mac_entitlements_path)
+mac_entitlements = File.read(mac_entitlements_path)
+%w[com.apple.security.app-sandbox com.apple.security.network.client].each do |entitlement|
+  fail_contract("Mac TestFlight entitlements are missing #{entitlement}") unless mac_entitlements.include?(entitlement)
+end
 
 %w[testflight.yml macos-notarized-release.yml].each do |filename|
   workflow = File.read(File.join(WORKFLOW_DIR, filename))
@@ -154,6 +173,9 @@ fail_contract("TestFlight must not distribute to testers") unless File.read(File
 end
 
 fastfile = File.read(File.join(ROOT, "fastlane", "Fastfile"))
+fail_contract("Fastfile is missing the macOS TestFlight platform") unless fastfile.include?("platform :mac do")
+fail_contract("Mac TestFlight upload must select macOS") unless fastfile.include?('app_platform: "osx"')
+fail_contract("Mac TestFlight upload must use a pkg") unless fastfile.include?("pkg: output_path")
 %w[skip_binary_upload submit_for_review automatic_release].each do |setting|
   fail_contract("Fastfile is missing #{setting}") unless fastfile.include?(setting)
 end
