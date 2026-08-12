@@ -1,5 +1,9 @@
 # Xcode Cloud Readiness Implementation Plan
 
+**Archive status:** Historical implementation plan; not an active task queue.
+Checklist state is preserved as written. Live Xcode Cloud execution remains an
+external service gate and is not inferred here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the Click Bridge iOS project deterministic and safe to build in Xcode Cloud while preserving GitHub Actions as the cross-platform CI owner.

@@ -1,5 +1,9 @@
 # Dual-Platform TestFlight Implementation Plan
 
+**Archive status:** Historical implementation plan; not an active task queue.
+Checklist state is preserved as written. External release gates below remain
+evidence requirements, not inferred passes.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend the protected TestFlight release so one immutable tag and build number produce and upload both Click Bridge iOS and macOS builds.

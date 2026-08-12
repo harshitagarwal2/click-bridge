@@ -20,7 +20,6 @@ This AGENTS.md scopes guidance to `docs`. Parent AGENTS guidance still applies u
 - `physical-smoke-test.md`
 - `preflight.md`
 - `release-automation.md`
-- `smoke-test.md`
 
 ### Subdirectories
 - `superpowers/`
