@@ -50,7 +50,7 @@ protocol PhoneWebSocket: AnyObject {
     var onBinary: (@MainActor (Data) -> Void)? { get set }
     var onClose: (@MainActor (PhoneWebSocketClosure) -> Void)? { get set }
     func open(url: URL)
-    func send(text: String) throws
+    func send(text: String, completion: @escaping @MainActor @Sendable (Error?) -> Void) throws
     func close(code: URLSessionWebSocketTask.CloseCode, reason: String)
 }
 
