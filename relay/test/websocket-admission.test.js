@@ -1021,6 +1021,104 @@ test('pending callback failure admits one contender, rejects one, and repeatedly
   }
 });
 
+test('asynchronous callback property failure is contained and releases admission capacity', async () => {
+  const callbacks = [];
+  const logs = [];
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    log: { info(value) { logs.push(value); }, error() {} },
+    performWebSocketUpgrade(_req, _socket, _head, done) { callbacks.push(done); },
+  });
+  const original = fakeUpgradeSocket();
+  const candidate = {
+    terminated: false,
+    get once() { throw new Error(`once getter leaked ${PHONE_TOKEN}`); },
+    terminate() { this.terminated = true; },
+  };
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    assert.equal(callbacks.length, 1);
+
+    assert.doesNotThrow(() => callbacks[0](candidate));
+    assert.equal(original.destroyed, true, 'failed callback destroys its raw socket');
+    assert.equal(candidate.terminated, true, 'failed callback best-effort terminates its candidate');
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /connection_callback_failure/);
+    assert.doesNotMatch(logs[0], /once getter leaked/);
+    assert.doesNotMatch(logs[0], new RegExp(PHONE_TOKEN));
+
+    const recovered = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+    assert.equal(callbacks.length, 2, 'one subsequent contender is admitted');
+    const excess = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, excess, Buffer.alloc(0));
+    assert.match(excess.response, /503 Service Unavailable/, 'the recovered slot remains bounded');
+    recovered.destroy();
+  } finally {
+    original.destroy();
+    await server.close();
+  }
+});
+
+test('hostile callback cleanup cannot rethrow or leak its admission reservation', async () => {
+  const callbacks = [];
+  const logs = [];
+  let offCalls = 0;
+  let terminateReads = 0;
+  const { server } = await boot({
+    maxTotalWebSocketConnections: 1,
+    maxUnauthenticatedWebSocketConnections: 1,
+    log: { info(value) { logs.push(value); }, error() {} },
+    performWebSocketUpgrade(_req, _socket, _head, done) { callbacks.push(done); },
+  });
+  const original = fakeUpgradeSocket();
+  const candidate = {
+    OPEN: WebSocket.OPEN,
+    readyState: WebSocket.OPEN,
+    once(event) {
+      if (event === 'error') throw new Error(`listener failure ${MAC_TOKEN}`);
+    },
+    off() {
+      offCalls += 1;
+      throw new Error('off failure');
+    },
+    get terminate() {
+      terminateReads += 1;
+      throw new Error('terminate access failure');
+    },
+  };
+  Object.defineProperty(candidate, '__clickBridgeTerminal', {
+    configurable: true,
+    get() { return false; },
+    set() { throw new Error('terminal access failure'); },
+  });
+  try {
+    server.httpServer.emit('upgrade', { url: '/ws' }, original, Buffer.alloc(0));
+    assert.equal(callbacks.length, 1);
+
+    assert.doesNotThrow(() => callbacks[0](candidate));
+    assert.equal(original.destroyed, true, 'raw cleanup completes despite hostile candidate cleanup');
+    assert.equal(offCalls, 2, 'both candidate listener removals are attempted independently');
+    assert.equal(terminateReads, 1, 'candidate termination is attempted after hostile access');
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /connection_callback_failure/);
+    assert.doesNotMatch(logs[0], /listener failure|off failure|terminate access|terminal access/);
+    assert.doesNotMatch(logs[0], new RegExp(MAC_TOKEN));
+
+    const recovered = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, recovered, Buffer.alloc(0));
+    assert.equal(callbacks.length, 2, 'cleanup releases exactly one slot for reuse');
+    const excess = fakeUpgradeSocket();
+    server.httpServer.emit('upgrade', { url: '/ws' }, excess, Buffer.alloc(0));
+    assert.match(excess.response, /503 Service Unavailable/);
+    recovered.destroy();
+  } finally {
+    original.destroy();
+    await server.close();
+  }
+});
+
 test('unsafe admission limit configuration is refused instead of disabling the bound', () => {
   const valid = {
     phoneToken: PHONE_TOKEN,
