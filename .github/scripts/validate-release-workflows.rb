@@ -59,14 +59,17 @@ def validate_mac_testflight_notes(notes_path)
   title = "Please test the complete iPhone-to-Mac click path:"
   contracts = {
     "Setup and action paths:" => [
-      /\A1\. Manually configure both clients with the same relay URL: use PHONE_TOKEN on the iPhone and MAC_TOKEN on the Mac\.\z/,
-      /\A2\. Set Mac Remote control ON\. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled\.\z/,
-      /\A3\. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready\.\z/,
-      /\A4\. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control\.\z/,
-      /\A5\. Physical iPhone acceptance: NOT RUN unless actually performed\. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes\. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source\.\z/,
-      /\A6\. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised\. Apply the same source-agnostic output-volume observation rule\.\z/,
-      /\A7\. Trigger an action with the App Shortcut\.\z/,
-      /\A8\. For each accepted success from steps 4-7, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic\. Octo \+3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed\.\z/
+      /\A1\. Use an operator-bootstrapped Mac that is already connected to the relay\. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN\.\z/,
+      /\A2\. In Mac Settings, choose Pair Phone\. If a phone is enrolled, choose Replace Phone and confirm\.\z/,
+      /\A3\. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet\. Without the native app, use the \/pair\/web PWA fallback and preserve the invitation fragment\.\z/,
+      /\A4\. Confirm that both devices show the same six-digit code, then approve on the Mac\. Do not approve a mismatch\.\z/,
+      /\A5\. Set Mac Remote control ON\. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled\.\z/,
+      /\A6\. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready\.\z/,
+      /\A7\. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control\.\z/,
+      /\A8\. Physical iPhone acceptance: NOT RUN unless actually performed\. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes\. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source\.\z/,
+      /\A9\. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised\. Apply the same source-agnostic output-volume observation rule\.\z/,
+      /\A10\. Trigger an action with the App Shortcut\.\z/,
+      /\A11\. For each accepted success from steps 7-10, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic\. Octo \+3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed\.\z/
     ],
     "Outcome contract:" => [
       /\A- Relay forwarding acknowledgement: This is not a terminal result and produces no haptic\.\z/,

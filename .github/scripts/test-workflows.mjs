@@ -1077,6 +1077,11 @@ const testFlightNotes = readRequired("ios/TestFlight/WhatToTest.en-US.txt");
 assertIncludes(testFlightNotes, "Trigger 3 Clicks");
 assertIncludes(testFlightNotes, "exactly three independent clicks");
 assertIncludes(testFlightNotes, "Accessibility");
+assertIncludes(testFlightNotes, "Pair Phone");
+assertIncludes(testFlightNotes, "shared HTTPS invitation");
+assertIncludes(testFlightNotes, "same six-digit code");
+assertIncludes(testFlightNotes, "/pair/web PWA fallback");
+assertIncludes(testFlightNotes, "Advanced Legacy");
 
 const macTestFlightNotes = readRequired("mac/TestFlight/WhatToTest.en-US.txt");
 
@@ -1166,14 +1171,17 @@ const runMacNotesValidation = (notes) => {
 const validMacNotes = `Please test the complete iPhone-to-Mac click path:
 
 Setup and action paths:
-1. Manually configure both clients with the same relay URL: use PHONE_TOKEN on the iPhone and MAC_TOKEN on the Mac.
-2. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
-3. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.
-4. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control.
-5. Physical iPhone acceptance: NOT RUN unless actually performed. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source.
-6. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised. Apply the same source-agnostic output-volume observation rule.
-7. Trigger an action with the App Shortcut.
-8. For each accepted success from steps 4-7, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic. Octo +3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed.
+1. Use an operator-bootstrapped Mac that is already connected to the relay. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN.
+2. In Mac Settings, choose Pair Phone. If a phone is enrolled, choose Replace Phone and confirm.
+3. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet. Without the native app, use the /pair/web PWA fallback and preserve the invitation fragment.
+4. Confirm that both devices show the same six-digit code, then approve on the Mac. Do not approve a mismatch.
+5. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
+6. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.
+7. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control.
+8. Physical iPhone acceptance: NOT RUN unless actually performed. On a physical iPhone, make a real system output-volume change with the hardware volume button and confirm that normal system volume still changes. AVAudioSession observes the output-volume delta; it does not intercept the control and cannot identify the physical source.
+9. AirPods, headset controls, and Control Center acceptance: NOT RUN unless each source was actually exercised. Apply the same source-agnostic output-volume observation rule.
+10. Trigger an action with the App Shortcut.
+11. For each accepted success from steps 7-10, verify exactly three clicks at the current pointer location plus a terminal Succeeded result and success haptic. Octo +3 authoritative target evidence: NOT RUN unless that exact counter or receiver check was actually executed.
 
 Outcome contract:
 - Relay forwarding acknowledgement: This is not a terminal result and produces no haptic.
@@ -1195,8 +1203,11 @@ const noteCases = [
     false,
   ],
   [
-    "missing manual phone token",
-    validMacNotes.replace("PHONE_TOKEN", "phone credential"),
+    "manual token flow required",
+    validMacNotes.replace(
+      "Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN.",
+      "Manually configure the relay URL and tokens.",
+    ),
     false,
   ],
   [

@@ -4,9 +4,23 @@ All four release workflows are manual (`workflow_dispatch`) and check out only t
 
 ## Current external blocker
 
-Do **not** dispatch these workflows yet. As verified on 2026-08-11, this private repository has none of the four release environments below. GitHub Free, Pro, and Team do not support required reviewers for private-repository environments. A missing environment can otherwise be created automatically without protection, so each workflow first runs a separate read-only job with no `environment:` declaration. That preflight uses the documented Get Environment API and fails closed unless the environment already has at least one required reviewer and prevents self-review. The mutating job depends on that preflight, declares the environment only afterward, and repeats the exact guard as its first step so a job-specific rerun cannot reuse stale approval configuration.
+Do **not** dispatch the release workflows yet. As verified on 2026-08-12, this
+repository is public and has a `production` environment, but none of the four
+release environments below exists. A missing environment can otherwise be
+created automatically without protection, so each workflow first runs a
+separate read-only job with no `environment:` declaration. That preflight uses
+the documented Get Environment API and fails closed unless the environment
+already has at least one required reviewer and prevents self-review. The
+mutating job depends on that preflight, declares the environment only
+afterward, and repeats the exact guard as its first step so a job-specific rerun
+cannot reuse stale approval configuration.
 
-Enable releases only after moving to a GitHub plan or repository topology that supports required reviewers for a private repository, or after replacing GitHub-native environments with an independently reviewed external credential broker. The rendered REST reference does not currently list `can_admins_bypass`, but GitHub's live authenticated Get Environment response includes it. The preflight therefore requires an exact `false` and deliberately fails if the field is true, null, or absent; still verify the setting in GitHub's environment UI during setup. Until then, all four workflows are intentionally non-runnable.
+Create and protect all four release environments before enabling releases. The
+rendered REST reference does not currently list `can_admins_bypass`, but
+GitHub's live authenticated Get Environment response includes it. The preflight
+therefore requires an exact `false` and deliberately fails if the field is true,
+null, or absent; still verify the setting in GitHub's environment UI during
+setup. Until then, all four release workflows are intentionally non-runnable.
 
 Configure these GitHub environments with required reviewers, require prevention of self-review, disable administrator bypass, and restrict deployment tags to `v*`:
 
@@ -17,7 +31,11 @@ Configure these GitHub environments with required reviewers, require prevention 
 | `macos-release` | Developer ID sign, notarize, staple, verify, and create a draft GitHub release | App Store Connect API-key secrets above; secrets `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`, `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`; variable `APPLE_TEAM_ID` |
 | `ghcr-private` | Build and push version plus SHA tags to GHCR | No custom secret; the job-scoped `GITHUB_TOKEN` receives `actions: read`, `contents: read`, and `packages: write`. Before first approval, create or inspect `click-bridge-relay` and verify its visibility is **Private**. |
 
-After the protected environments are supported and configured, set the `APPLE_TEAM_ID` environment variable for `testflight` and `macos-release` to `EC3R6XQ226`. This Team ID is not a credential. Do not store the Apple account email, Developer ID record, certificates, profiles, or API private key as variables or repository files.
+After the protected environments are created and configured, set the
+`APPLE_TEAM_ID` environment variable for `testflight` and `macos-release` to
+`EC3R6XQ226`. This Team ID is not a credential. Do not store the Apple account
+email, Developer ID record, certificates, profiles, or API private key as
+variables or repository files.
 
 Store each `.p8`, `.p12`, `.mobileprovision`, and `.provisionprofile` file as a single-line Base64 value in its environment secret. The workflows decode them into the ephemeral runner only and remove them in an `always()` cleanup step. Do not commit or upload credentials to the repository.
 
