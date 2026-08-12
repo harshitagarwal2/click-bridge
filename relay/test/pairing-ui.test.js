@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { CredentialLifecycleController } from '../public/credential-lifecycle-controller.js';
+import { PairingController } from '../public/pairing-controller.js';
 import { createPairingUI } from '../public/pairing-ui.js';
+import { FakeScheduler, FakeSocket } from './pwa-test-helpers.js';
 
 const REFERENCE = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const LINK = `https://click.example/pair#v=1&r=${REFERENCE}`;
@@ -85,6 +88,15 @@ test('disabled pairing composition stays absent and does not claim an invitation
   assert.equal(h.elements.panel.hidden, true);
   assert.equal(h.starts.length, 0);
 });
+
+for (const paired of [false, true]) {
+  test(`disabled pairing hides pairing-owned controls when ${paired ? 'paired' : 'unpaired'}`, () => {
+    const h = harness({ enabled: false, paired });
+
+    assert.equal(h.elements.pairAgain.hidden, true);
+    assert.equal(h.elements.forget.hidden, true);
+  });
+}
 
 test('an invitation starts without putting its reference or URL in the DOM', () => {
   const h = harness();
@@ -259,6 +271,96 @@ test('Forget waits for durable removal before showing the unpaired state', async
   assert.equal(h.elements.heading.textContent, 'Pair this browser');
   ui.destroy();
 });
+
+for (const [name, clearResult] of [['success', true], ['failure', false]]) {
+  test(`real claimant and UI keep Forget paired until durable clear ${name}`, async () => {
+    const cleared = deferred();
+    let durableActive = { credential: 'a'.repeat(64), version: 1 };
+    const settings = {
+      getSnapshot: () => ({
+        active: durableActive, pending: null, generation: '00000000-0000-4000-8000-000000000001',
+        provenance: 'authoritative',
+      }),
+      clearToken: async () => {
+        await cleared.promise;
+        if (clearResult) durableActive = null;
+        return clearResult;
+      },
+    };
+    let activeToken = durableActive.credential;
+    const lifecycle = new CredentialLifecycleController({
+      settings,
+      isVisible: () => true,
+      currentToken: () => activeToken,
+      transportReady: () => false,
+      applyToken: (token) => { activeToken = token; },
+      clearToken: () => { activeToken = null; },
+      connect() {},
+      reportError() {},
+    });
+    const sockets = [];
+    let ui;
+    const controller = new PairingController({
+      location: new URL('https://click.example/pair/web'),
+      settings,
+      createSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      idGenerator: () => '018f63f5-6f3d-7d21-88bc-9ef561f030e2',
+      randomBytes: () => new Uint8Array(32),
+      onState: (state) => ui?.handleState(state),
+      scheduler: new FakeScheduler(),
+    });
+    const h = harness({ paired: true });
+    h.ui.destroy();
+    ui = createPairingUI({
+      elements: h.elements,
+      enabled: true,
+      paired: true,
+      expectedHost: 'click.example',
+      startPairing: (reference) => controller.start(reference),
+      cancelPairing: () => controller.cancel(),
+      forgetPairing: () => {
+        assert.equal(typeof controller.retire, 'function');
+        controller.retire();
+        return lifecycle.clear();
+      },
+      lifecycleTarget: h.lifecycleTarget,
+    });
+    ui.start({ pairingVersion: 1, reference: REFERENCE });
+    const claimant = sockets[0];
+    claimant.open();
+
+    h.elements.forget.dispatchEvent(event('click'));
+    claimant.message(JSON.stringify({
+      type: 'pair.claimed.phone', v: 1,
+      claimId: '018f63f5-6f3d-7d21-88bc-9ef561f030e2',
+      confirmationCode: '123 456', expiresAtUnixMs: Date.now() + 60_000,
+    }));
+    assert.equal(h.elements.remote.hidden, false);
+    assert.equal(h.elements.panel.hidden, true);
+    assert.equal(h.elements.forget.disabled, true);
+    assert.match(h.elements.pairedState.textContent, /forgetting/i);
+
+    cleared.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    if (clearResult) {
+      assert.equal(h.elements.remote.hidden, true);
+      assert.equal(h.elements.panel.hidden, false);
+      assert.equal(activeToken, null);
+    } else {
+      assert.equal(h.elements.remote.hidden, false);
+      assert.equal(h.elements.panel.hidden, true);
+      assert.equal(h.elements.forget.disabled, false);
+      assert.match(h.elements.pairedState.textContent, /could not forget/i);
+      assert.equal(activeToken, 'a'.repeat(64));
+    }
+    ui.destroy();
+  });
+}
 
 for (const [name, result] of [['success', true], ['failure', false]]) {
   test(`a stale Forget ${name} cannot overwrite a newer pairing attempt`, async () => {

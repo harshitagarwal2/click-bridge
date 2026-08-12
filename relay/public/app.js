@@ -1,5 +1,7 @@
 import { ClockHealthController } from './clock-health-controller.js';
-import { CredentialLifecycleController } from './credential-lifecycle-controller.js';
+import {
+  authenticateCredentialProbe, CredentialLifecycleController, PairingRecoveryGate,
+} from './credential-lifecycle-controller.js';
 import {
   BenchmarkRequestRouter, BenchmarkRunSequence, BenchmarkSession,
   CounterSnapshotRequester, createIdleSchedule,
@@ -164,33 +166,10 @@ const oci = createRelayTransport({
 });
 
 function authenticateCredential(slot, signal) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (result, error = null) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeout);
-      probe.close('pairing_probe_complete');
-      signal?.removeEventListener('abort', abort);
-      if (error) reject(error);
-      else resolve(result);
-    };
-    const abort = () => finish(null, new Error('pairing_probe_cancelled'));
-    const probe = createRelayTransport({
-      location: window.location,
-      token: slot.credential,
-      onStatus: ({ state: transportState }) => {
-        if (transportState === 'ready') finish(true);
-        else if (transportState === 'taken_over') finish(false);
-        else if (transportState === 'backoff') finish(null, new Error('pairing_probe_unavailable'));
-      },
-    });
-    const timeout = window.setTimeout(
-      () => finish(null, new Error('pairing_probe_timeout')), 10_000,
-    );
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) { abort(); return; }
-    probe.connect();
+  return authenticateCredentialProbe(slot, signal, {
+    createTransport: createRelayTransport,
+    location: window.location,
+    scheduler,
   });
 }
 
@@ -215,7 +194,7 @@ pairingUI = createPairingUI({
   startPairing: (reference) => pairingController.start(reference),
   cancelPairing: () => pairingController.cancel(),
   forgetPairing: () => {
-    pairingController.cancel();
+    pairingController.retire();
     return credentialLifecycle.clear();
   },
 });
@@ -484,25 +463,11 @@ function goHidden() {
   wakeLockController.suspend();
 }
 
-let pairingRecoveryNeeded = Boolean(pairingEnabled && credentialSnapshot?.pending);
-let pairingRecoveryInFlight = false;
-
-async function recoverPairingIfNeeded() {
-  if (!pairingRecoveryNeeded || pairingRecoveryInFlight
-    || document.visibilityState !== 'visible') return pairingRecoveryNeeded;
-  pairingRecoveryInFlight = true;
-  pairingUI.startRecovery();
-  const recovered = await pairingController.recover();
-  pairingRecoveryInFlight = false;
-  if (recovered) pairingRecoveryNeeded = false;
-  return pairingRecoveryNeeded;
-}
+let pairingRecovery;
 
 function goVisible() {
   dispatch({ type: 'visibility', visible: true });
-  if (pairingRecoveryNeeded) {
-    void recoverPairingIfNeeded();
-  } else credentialLifecycle.visible();
+  pairingRecovery.visible();
   wakeLockController.acquire();
 }
 
@@ -516,7 +481,7 @@ window.addEventListener('pageshow', () => {
 });
 window.addEventListener('online', () => {
   benchmarkController.transportLost('network changed');
-  credentialLifecycle.online();
+  pairingRecovery.online();
 });
 navigator.connection?.addEventListener?.('change', () => {
   if (!benchmarkController.active) return;
@@ -549,13 +514,19 @@ const credentialLifecycle = new CredentialLifecycleController({
   connect: () => oci.connect(),
   reportError: (message) => { element.tokenState.textContent = message; },
 });
+pairingRecovery = new PairingRecoveryGate({
+  needed: pairingEnabled && Boolean(credentialSnapshot?.pending),
+  isVisible: () => document.visibilityState === 'visible',
+  startRecovery: () => pairingUI.startRecovery(),
+  recover: () => pairingController.recover(),
+  visible: () => credentialLifecycle.visible(),
+  online: () => credentialLifecycle.online(),
+});
 
 const savedToken = credentialSnapshot?.active?.credential ?? null;
 if (savedToken) state = reduce(state, { type: 'token.set', token: savedToken });
 element.keepWarm.checked = settings.getKeepWarm();
 oci.setKeepWarm(element.keepWarm.checked);
 render();
-if (pairingRecoveryNeeded && document.visibilityState === 'visible') {
-  void recoverPairingIfNeeded();
-} else if (document.visibilityState === 'visible') goVisible();
+if (document.visibilityState === 'visible') goVisible();
 else goHidden();

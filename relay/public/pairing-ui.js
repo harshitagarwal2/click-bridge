@@ -40,8 +40,8 @@ export function createPairingUI({
 
   elements.panel.hidden = !enabled || paired;
   elements.remote.hidden = enabled && !paired;
-  elements.pairAgain.hidden = !paired;
-  elements.forget.hidden = !paired;
+  elements.pairAgain.hidden = !enabled || !paired;
+  elements.forget.hidden = !enabled || !paired;
   elements.message.setAttribute('aria-live', 'polite');
   elements.alert.setAttribute('role', 'alert');
   elements.code.setAttribute('aria-label', 'Confirmation code');
@@ -65,6 +65,17 @@ export function createPairingUI({
     elements.cancel.hidden = true;
     elements.forget.disabled = false;
     elements.heading.focus();
+  }
+
+  function showRetainedPairing(message) {
+    activePhase = 'forgetting';
+    clearSensitiveUI();
+    elements.panel.hidden = true;
+    elements.remote.hidden = false;
+    elements.alert.hidden = true;
+    elements.pairedState.textContent = message;
+    elements.pairAgain.hidden = !enabled;
+    elements.forget.hidden = !enabled;
   }
 
   function beginOwned(parsed) {
@@ -117,6 +128,7 @@ export function createPairingUI({
 
   function handleState(next) {
     if (!enabled || !listenersActive) return;
+    if (activePhase === 'forgetting') return;
     activePhase = next.phase;
     elements.alert.hidden = true;
     if (next.phase !== 'awaiting_approval') clearSensitiveUI();
@@ -198,14 +210,26 @@ export function createPairingUI({
 
   async function forget() {
     const generation = ++operationGeneration;
+    showRetainedPairing('Forgetting this browser…');
+    elements.pairAgain.disabled = true;
     elements.forget.disabled = true;
     let removed = false;
-    try { removed = await forgetPairing(); } finally {
-      if (listenersActive && generation === operationGeneration) elements.forget.disabled = false;
+    try { removed = await forgetPairing(); } catch { removed = false; } finally {
+      if (listenersActive && generation === operationGeneration) {
+        elements.pairAgain.disabled = false;
+        elements.forget.disabled = false;
+      }
     }
     if (!listenersActive || generation !== operationGeneration) return;
-    if (removed) showPairingHome();
-    else showFailure('storage_failed');
+    if (removed) {
+      elements.pairAgain.hidden = true;
+      elements.forget.hidden = true;
+      showPairingHome();
+    } else {
+      showRetainedPairing('Could not forget this browser. Try again.');
+      elements.pairAgain.disabled = false;
+      elements.forget.disabled = false;
+    }
   }
 
   const onKeyDown = (event) => {

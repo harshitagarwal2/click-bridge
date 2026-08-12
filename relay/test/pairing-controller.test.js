@@ -598,6 +598,25 @@ test('cancel during activation remains terminal after the old activation resolve
   assert.equal(h.states.some((state) => state.phase === 'active'), false);
 });
 
+test('silent claimant retirement makes late frames inert without publishing an unpaired state', () => {
+  const h = harness();
+  h.controller.start(REFERENCE);
+  const socket = h.sockets[0];
+  socket.open();
+  const publishedBeforeRetirement = h.states.length;
+
+  assert.equal(typeof h.controller.retire, 'function');
+  h.controller.retire();
+  socket.message(JSON.stringify({
+    type: 'pair.claimed.phone', v: 1, claimId: CLAIM_ID,
+    confirmationCode: '123 456', expiresAtUnixMs: Date.now() + 60_000,
+  }));
+
+  assert.equal(h.states.length, publishedBeforeRetirement);
+  assert.equal(h.states.some(({ phase }) => phase === 'cancelled'), false);
+  assert.equal(socket.closed.length, 1);
+});
+
 test('cancel aborts delayed transport startup before its external side effect', async () => {
   const activationStarted = deferred();
   const activationReleased = deferred();

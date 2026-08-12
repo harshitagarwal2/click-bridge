@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CredentialLifecycleController } from '../public/credential-lifecycle-controller.js';
+import * as credentialLifecycleModule from '../public/credential-lifecycle-controller.js';
+
+const { CredentialLifecycleController } = credentialLifecycleModule;
 
 import {
   clearTokenChange,
@@ -15,6 +17,16 @@ import {
 const immediateLocks = { request: (_name, _options, callback) => callback() };
 const generation = (store) => store.getSnapshot().generation;
 const fixedEpoch = '00000000-0000-4000-8000-000000000001';
+
+class QueuedWebLocks {
+  constructor() { this.tail = Promise.resolve(); }
+
+  request(_name, _options, callback) {
+    const result = this.tail.then(callback);
+    this.tail = result.catch(() => {});
+    return result;
+  }
+}
 
 test('memory settings store defaults to no token and keep-warm off', () => {
   const store = new MemorySettingsStore();
@@ -758,6 +770,122 @@ test('delayed discard cannot clear a newer pending credential from another store
 
   assert.equal(await stale.discardPending(older, staleGeneration), false);
   assert.deepEqual(current.getPending(), newer);
+});
+
+test('two stores under one Web Lock require the exact pending identity even at the current generation', async () => {
+  const locks = new QueuedWebLocks();
+  let serialized = null;
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const older = { credential: 'b'.repeat(64), version: 2 };
+  const newer = { credential: 'c'.repeat(64), version: 2 };
+  await current.setActive(active, generation(current));
+  await current.stage(older, generation(current));
+  await current.discardPending(older, generation(current));
+  await current.stage(newer, generation(current));
+
+  assert.equal(await stale.discardPending(older, generation(stale)), false);
+  assert.deepEqual(current.getPending(), newer);
+});
+
+test('two stores under one Web Lock require the captured generation even when pending identity returns', async () => {
+  const locks = new QueuedWebLocks();
+  let serialized = null;
+  const storage = {
+    getItem: () => serialized,
+    setItem: (_key, value) => { serialized = String(value); },
+  };
+  const stale = new PhoneSettingsStore(storage, locks);
+  const current = new PhoneSettingsStore(storage, locks);
+  const active = { credential: 'a'.repeat(64), version: 1 };
+  const pending = { credential: 'b'.repeat(64), version: 2 };
+  await current.setActive(active, generation(current));
+  await current.stage(pending, generation(current));
+  const capturedGeneration = generation(stale);
+  await current.discardPending(pending, generation(current));
+  await current.stage(pending, generation(current));
+
+  assert.equal(await stale.discardPending(pending, capturedGeneration), false);
+  assert.deepEqual(current.getPending(), pending);
+});
+
+test('initially hidden recovery fences visible and online resume until deferred authentication clears', async () => {
+  const RecoveryGate = credentialLifecycleModule.PairingRecoveryGate;
+  assert.equal(typeof RecoveryGate, 'function');
+  const authentication = (() => {
+    let resolve;
+    const promise = new Promise((next) => { resolve = next; });
+    return { promise, resolve };
+  })();
+  let visible = false;
+  const ordinary = [];
+  const starts = [];
+  const gate = new RecoveryGate({
+    needed: true,
+    isVisible: () => visible,
+    startRecovery: () => starts.push('recovery'),
+    recover: () => authentication.promise,
+    visible: () => ordinary.push('visible'),
+    online: () => ordinary.push('online'),
+  });
+
+  gate.visible();
+  visible = true;
+  gate.visible();
+  gate.online();
+  assert.deepEqual(starts, ['recovery']);
+  assert.deepEqual(ordinary, []);
+
+  authentication.resolve(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  gate.online();
+  assert.deepEqual(ordinary, ['online']);
+});
+
+test('credential probe clears its deadline after transport authentication settles', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  assert.equal(typeof authenticate, 'function');
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  let status;
+  const probe = { close() {}, connect() {} };
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, new AbortController().signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: (options) => { status = options.onStatus; return probe; },
+    },
+  );
+
+  status({ state: 'ready' });
+  assert.equal(await result, true);
+  assert.equal(scheduler.tasks.size, 0);
+});
+
+test('page hide abort closes the real credential probe transport', async () => {
+  const authenticate = credentialLifecycleModule.authenticateCredentialProbe;
+  assert.equal(typeof authenticate, 'function');
+  const scheduler = new (await import('./pwa-test-helpers.js')).FakeScheduler();
+  const lifecycleTarget = new EventTarget();
+  const abort = new AbortController();
+  const closes = [];
+  const probe = { close: (reason) => closes.push(reason), connect() {} };
+  const result = authenticate(
+    { credential: 'a'.repeat(64), version: 1 }, abort.signal,
+    {
+      location: new URL('https://click.example/'), scheduler,
+      createTransport: () => probe,
+    },
+  );
+  lifecycleTarget.addEventListener('pagehide', () => abort.abort());
+
+  lifecycleTarget.dispatchEvent(new Event('pagehide'));
+  await assert.rejects(result, /pairing_probe_cancelled/);
+  assert.deepEqual(closes, ['pairing_probe_complete']);
 });
 
 test('versioned mutations reject lower and equal versions without changing stored slots', async () => {

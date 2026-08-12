@@ -163,7 +163,7 @@ test('startup pending recovery enters a cancelable UI phase before authenticatio
   const app = readFileSync(join(PUBLIC, 'app.js'), 'utf8');
   assert.match(
     app,
-    /pairingUI\.startRecovery\(\);\s*const recovered = await pairingController\.recover\(\);/,
+    /startRecovery: \(\) => pairingUI\.startRecovery\(\),\s*recover: \(\) => pairingController\.recover\(\)/,
   );
 });
 

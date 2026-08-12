@@ -163,6 +163,14 @@ export class PairingController {
   }
 
   cancel() {
+    this.#retireClaimant(true);
+  }
+
+  retire() {
+    this.#retireClaimant(false);
+  }
+
+  #retireClaimant(publishCancellation) {
     const socket = this.socket;
     try {
       if (socket?.readyState === 1 && this.claimId) {
@@ -179,7 +187,9 @@ export class PairingController {
       this.#retireSocket(socket);
       this.#abortActivation(activation);
       this.#abortAuthentication(authentication);
-      if (this.generation === cancellationGeneration) this.#publish('cancelled');
+      if (publishCancellation && this.generation === cancellationGeneration) {
+        this.#publish('cancelled');
+      }
     }
   }
 

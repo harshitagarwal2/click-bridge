@@ -1,3 +1,81 @@
+export function authenticateCredentialProbe(slot, signal, {
+  createTransport, location, scheduler = globalThis,
+}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout = null;
+    const finish = (result, error = null) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== null) scheduler.clearTimeout(timeout);
+      probe.close('pairing_probe_complete');
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const abort = () => finish(null, new Error('pairing_probe_cancelled'));
+    const probe = createTransport({
+      location,
+      token: slot.credential,
+      onStatus: ({ state }) => {
+        if (state === 'ready') finish(true);
+        else if (state === 'taken_over') finish(false);
+        else if (state === 'backoff') finish(null, new Error('pairing_probe_unavailable'));
+      },
+    });
+    timeout = scheduler.setTimeout(
+      () => finish(null, new Error('pairing_probe_timeout')), 10_000,
+    );
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) { abort(); return; }
+    probe.connect();
+  });
+}
+
+export class PairingRecoveryGate {
+  constructor({ needed, isVisible, startRecovery, recover, visible, online }) {
+    this.needed = Boolean(needed);
+    this.isVisible = isVisible;
+    this.startRecovery = startRecovery;
+    this.recover = recover;
+    this.visibleLifecycle = visible;
+    this.onlineLifecycle = online;
+    this.inFlight = null;
+  }
+
+  visible() {
+    if (this.needed || this.inFlight) {
+      void this.#recoverIfNeeded();
+      return true;
+    }
+    this.visibleLifecycle();
+    return false;
+  }
+
+  online() {
+    if (this.needed || this.inFlight) {
+      void this.#recoverIfNeeded();
+      return true;
+    }
+    this.onlineLifecycle();
+    return false;
+  }
+
+  #recoverIfNeeded() {
+    if (!this.needed || !this.isVisible()) return this.inFlight ?? Promise.resolve(this.needed);
+    if (this.inFlight) return this.inFlight;
+    this.startRecovery();
+    this.inFlight = Promise.resolve(this.recover())
+      .then((recovered) => {
+        if (recovered) this.needed = false;
+        return this.needed;
+      })
+      .catch(() => true)
+      .finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
+}
+
 export class CredentialLifecycleController {
   constructor({ settings, isVisible, currentToken, transportReady,
     applyToken, clearToken, connect, reportError }) {
