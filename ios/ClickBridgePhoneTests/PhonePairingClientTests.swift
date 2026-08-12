@@ -6,7 +6,7 @@ import XCTest
 final class PhonePairingClientTests: XCTestCase {
     private let reference = String(repeating: "A", count: 43)
     private let credential = String(repeating: "b", count: 64)
-    private let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030")!
+    private let claimID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030de")!
     private let nonce = Data(repeating: 0xcc, count: 32)
 
     private func makeStore() throws -> PhoneSettingsStore {
@@ -74,8 +74,8 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
         XCTAssertEqual(try store.pendingPairingCredential(), .init(token: credential, version: 1))
         XCTAssertNil(try store.phoneToken())
@@ -89,7 +89,7 @@ final class PhonePairingClientTests: XCTestCase {
         ).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(ack["proof"] as? String, expectedProof)
 
-        socket.emitText(#"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","activePhoneCredentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","activePhoneCredentialVersion":1}"#)
 
         XCTAssertEqual(try store.phoneToken(), credential)
         XCTAssertNil(try store.pendingPairingCredential())
@@ -123,13 +123,13 @@ final class PhonePairingClientTests: XCTestCase {
         )
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
         XCTAssertEqual(try store.phoneToken(), oldToken)
         XCTAssertEqual(try store.pendingPairingCredential(), .init(token: credential, version: 1))
 
-        socket.emitText(#"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","activePhoneCredentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.active","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","activePhoneCredentialVersion":1}"#)
         XCTAssertEqual(try store.phoneToken(), credential)
         XCTAssertEqual(normal.configurations.map(\.token), [credential])
     }
@@ -172,10 +172,10 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
         secrets.writeError = FakePhoneWebSocketError.sendFailed
 
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
         XCTAssertEqual(socket.sentTexts.filter { $0.contains("pair.credential.ack") }.count, 0)
         XCTAssertNil(try store.pendingPairingCredential())
@@ -212,11 +212,11 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
         XCTAssertNotNil(try store.pendingPairingCredential())
 
-        socket.emitText(#"{"type":"pair.failed","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","reason":"activation_failed"}"#)
+        socket.emitText(#"{"type":"pair.failed","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","reason":"activation_failed"}"#)
 
         XCTAssertNil(try store.pendingPairingCredential())
         XCTAssertEqual(subject.state.failure, "activation_failed")
@@ -233,8 +233,8 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
         socket.emitClose(code: PhoneProtocolV1.credentialReplacedCloseCode)
 
@@ -254,8 +254,8 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
-        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
         socket.emitClose(code: 1006)
 
@@ -299,7 +299,7 @@ final class PhonePairingClientTests: XCTestCase {
         subject.start(link)
         let socket = factory.sockets[0]
         socket.emitOpen()
-        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030","confirmationCode":"123 456","expiresAtUnixMs":1786579200500}"#)
+        socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579200500}"#)
 
         scheduler.runFirst(after: 0.5)
 
