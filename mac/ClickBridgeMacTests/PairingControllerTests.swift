@@ -20,7 +20,8 @@ final class PairingControllerTests: XCTestCase {
         await controller.beginPairing()
 
         XCTAssertEqual(controller.state, .unavailable)
-        XCTAssertTrue(await transport.messages().isEmpty)
+        let messages = await transport.messages()
+        XCTAssertTrue(messages.isEmpty)
     }
 
     func testConfirmReplacementCannotBypassCapabilityAndEnrollmentStatus() async {
@@ -30,7 +31,8 @@ final class PairingControllerTests: XCTestCase {
         await controller.confirmReplacement()
 
         XCTAssertEqual(controller.state, .unavailable)
-        XCTAssertTrue(await transport.messages().isEmpty)
+        let messages = await transport.messages()
+        XCTAssertTrue(messages.isEmpty)
     }
 
     func testRegenerateAfterStatusFailureRetriesStatusInsteadOfCreating() async {
@@ -62,7 +64,8 @@ final class PairingControllerTests: XCTestCase {
         await controller.beginPairing()
 
         XCTAssertEqual(controller.state, .failed)
-        XCTAssertEqual(await transport.messages().count, 2)
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 2)
     }
 
     func testLegacyEnrollmentRequiresReplacementConfirmationBeforeCreate() async throws {
@@ -77,7 +80,8 @@ final class PairingControllerTests: XCTestCase {
 
         await controller.beginPairing()
         XCTAssertEqual(controller.state, .replacementConfirmation)
-        XCTAssertEqual(await transport.messages().count, 1)
+        let messagesBeforeConfirmation = await transport.messages()
+        XCTAssertEqual(messagesBeforeConfirmation.count, 1)
 
         await controller.confirmReplacement()
         let messages = await transport.messages()
@@ -225,7 +229,8 @@ final class PairingControllerTests: XCTestCase {
         await controller.regenerate()
 
         XCTAssertEqual(controller.state, .failed)
-        XCTAssertEqual(await transport.messages().count, countAfterFailure)
+        let messagesAfterRegenerate = await transport.messages()
+        XCTAssertEqual(messagesAfterRegenerate.count, countAfterFailure)
     }
 
     func testSuspendedStatusFailureCannotOverwriteCapabilityRevocation() async throws {
@@ -308,7 +313,8 @@ final class PairingControllerTests: XCTestCase {
         try await transport.waitUntilSendCount(3)
         await controller.approve()
 
-        XCTAssertEqual(await transport.messages().count, 3)
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 3)
         await transport.completeSend(at: 2, with: .success(()))
         await deny.value
         XCTAssertEqual(controller.state, .denied)
@@ -323,7 +329,8 @@ final class PairingControllerTests: XCTestCase {
         try await transport.waitUntilSendCount(3)
         await controller.approve()
 
-        XCTAssertEqual(await transport.messages().count, 3)
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 3)
         await transport.completeSend(at: 2, with: .success(()))
         await cancel.value
         XCTAssertEqual(controller.state, .ready)
@@ -338,7 +345,8 @@ final class PairingControllerTests: XCTestCase {
         try await transport.waitUntilSendCount(3)
         await controller.cancel()
 
-        XCTAssertEqual(await transport.messages().count, 3)
+        let messages = await transport.messages()
+        XCTAssertEqual(messages.count, 3)
         await transport.completeSend(at: 2, with: .success(()))
         await approve.value
         XCTAssertEqual(controller.state, .approving)
@@ -357,7 +365,8 @@ final class PairingControllerTests: XCTestCase {
         await controller.beginPairing()
         await controller.confirmReplacement()
         await controller.approve()
-        XCTAssertEqual(await transport.messages().count, 3)
+        let messagesBeforeRegenerate = await transport.messages()
+        XCTAssertEqual(messagesBeforeRegenerate.count, 3)
 
         await controller.regenerate()
         let messages = await transport.messages()
