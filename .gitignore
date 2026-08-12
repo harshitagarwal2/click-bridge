@@ -1,6 +1,7 @@
 node_modules/
 build/
 DerivedData/
+.derived-data*/
 .env
 .env.*
 !.env.example
