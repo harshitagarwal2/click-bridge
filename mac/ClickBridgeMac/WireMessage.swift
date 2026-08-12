@@ -11,6 +11,7 @@ enum Constants {
     static let completedActionTTL: TimeInterval = 300
     static let completedActionCap = 4_096
     static let clickGapMs = 0
+    static let clickRepetitions = 3
 }
 
 enum PermissionState: String, Codable, Sendable { case ready, required, unknown }

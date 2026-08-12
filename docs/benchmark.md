@@ -34,8 +34,14 @@ take Mac counter snapshots outside the timed sequence, retain rows in memory,
 and export only after an explicit user action. The locked randomized idle
 schedule is enforced by disabling activation until each gap elapses. Diagnostic
 requests belong to one socket generation and are canceled on disconnect or
-visibility loss. A run cannot finish unless the before/after Mac down/up deltas
-and operator-observed Octo delta exactly equal the run's Posted row count.
+visibility loss. A run cannot finish unless each before/after Mac down/up delta
+and the operator-observed Octo delta exactly equal three times the run's Posted
+logical row count. Thus 100 Posted actions require `300/300` Mac post attempts
+and 300 Octo increments; latency rows and `logicalActionCount` remain logical.
+
+Mac diagnostic counters count attempted `CGEvent.post` calls. Because
+`CGEvent.post(tap:)` returns no success result, a matching operator-observed
+Octo delta is the authoritative physical-target evidence.
 
 ## Schedule
 

@@ -1,9 +1,9 @@
 # Click Bridge
 
 Click Bridge lets one foreground phone client send one action over the internet
-so a macOS menu-bar app can post one real left mouse click at the Mac's current
+so a macOS menu-bar app can post exactly three independent ordinary left mouse clicks at the Mac's current
 pointer location. The native iOS client supports system output-volume changes,
-an on-screen **Trigger Click** button, and a **Trigger Click** App Shortcut. The
+an on-screen **Trigger 3 Clicks** button, and a **Trigger 3 Clicks** App Shortcut. The
 tap-based PWA remains available as the fallback phone client.
 
 The relay/PWA, macOS, and native iOS implementations are present with automated
@@ -18,7 +18,7 @@ the automated evidence does not stand in for those gates.
 - The foreground native iOS client reuses the existing phone role and protocol.
   Its XcodeGen source is `ios/project.yml`, and its shared scheme is
   `ClickBridgePhone`.
-- Native volume changes, the on-screen **Trigger Click** button, and the App
+- Native volume changes, the on-screen **Trigger 3 Clicks** button, and the App
   Shortcut all feed the same readiness and one-action-in-flight boundary.
 - The existing installable PWA is preserved as the tap-based fallback.
 - Tailscale (Task 11) and hedged delivery (Task 12) are latency experiments and
@@ -54,8 +54,8 @@ Task 10 is required before final handoff.
 Phone foreground client
   +-- native iOS client
   |     +-- output-volume changes
-  |     +-- on-screen Trigger Click
-  |     +-- Trigger Click App Shortcut
+  |     +-- on-screen Trigger 3 Clicks
+  |     +-- Trigger 3 Clicks App Shortcut
   +-- preserved PWA fallback
         |
         | HTTPS/WSS + existing phone protocol
@@ -67,7 +67,7 @@ OCI SJC: Caddy -> Node relay
               macOS menu-bar app
                        |
                        v
-                 CGEvent click
+          three ordinary CGEvent clicks
 ```
 
 The relay keeps only live connection and routing state; the Mac process owns
@@ -78,6 +78,11 @@ At 0% or 100%, one direction cannot create another observable volume delta.
 Control Center, wired/Bluetooth headsets, and AirPods can also trigger because
 iOS reports volume changes rather than the physical source. Haptics wait for the
 Mac terminal result.
+
+One accepted phone input still creates one logical action ID, one terminal
+result, and at most one terminal-result haptic. The Mac expands that logical
+action into exactly three independent ordinary click pairs; the wire action
+remains `click`.
 
 ## Repository layout
 

@@ -12,6 +12,8 @@ export const RUN_EVIDENCE_COLUMNS = Object.freeze([
   'endMouseUpPostCount', 'octoCounterStart', 'octoCounterEnd', 'logicalActionCount',
 ]);
 
+export const PHYSICAL_CLICKS_PER_POSTED_ACTION = 3;
+
 export function createIdleSchedule({ random = Math.random } = {}) {
   const values = [...Array(70).fill(2), ...Array(20).fill(15), ...Array(10).fill(60)];
   for (let index = values.length - 1; index > 0; index -= 1) {
@@ -84,13 +86,14 @@ export class CounterSnapshotRequester {
     return Object.freeze({ mouseDownPostCount: snapshot.mouseDownPostCount,
       mouseUpPostCount: snapshot.mouseUpPostCount });
   }
-  validateExactRun({ start, end, expectedPostCount, octoCounterStart, octoCounterEnd }) {
+  validateExactRun({ start, end, expectedPhysicalClickCount, octoCounterStart, octoCounterEnd }) {
     const delta = counterDelta(start, end);
     const octoDelta = octoCounterEnd - octoCounterStart;
-    if (!Number.isSafeInteger(expectedPostCount) || expectedPostCount < 0
+    if (!Number.isSafeInteger(expectedPhysicalClickCount) || expectedPhysicalClickCount < 0
       || !Number.isSafeInteger(octoCounterStart) || !Number.isSafeInteger(octoCounterEnd)
-      || delta.mouseDownPostCount !== expectedPostCount
-      || delta.mouseUpPostCount !== expectedPostCount || octoDelta !== expectedPostCount) {
+      || delta.mouseDownPostCount !== expectedPhysicalClickCount
+      || delta.mouseUpPostCount !== expectedPhysicalClickCount
+      || octoDelta !== expectedPhysicalClickCount) {
       throw new Error('exact post evidence does not match logical actions');
     }
     return delta;
@@ -266,10 +269,12 @@ export class BenchmarkSession {
     if (logicalActionCount !== runRows.length + this.excludedActions) {
       throw new Error('logical action evidence mismatch');
     }
-    const expectedPostCount = this.excludedPosted
+    const postedLogicalActionCount = this.excludedPosted
       + runRows.filter((row) => row.status === 'Posted').length;
-    this.counterSnapshots.validateExactRun({ start: this.run.start, end, expectedPostCount,
-      octoCounterStart, octoCounterEnd });
+    const expectedPhysicalClickCount = postedLogicalActionCount
+      * PHYSICAL_CLICKS_PER_POSTED_ACTION;
+    this.counterSnapshots.validateExactRun({ start: this.run.start, end,
+      expectedPhysicalClickCount, octoCounterStart, octoCounterEnd });
     this.evidence.push({
       runId: this.run.runId,
       startMouseDownPostCount: this.run.start.mouseDownPostCount,

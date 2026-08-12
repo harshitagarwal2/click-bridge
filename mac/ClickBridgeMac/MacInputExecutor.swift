@@ -5,18 +5,26 @@ enum ClickEventPhase: String, Sendable { case down, up }
 
 struct ClickEvent: @unchecked Sendable {
     let phase: ClickEventPhase
+    let pairID: Int
     fileprivate let native: CGEvent?
-    init(phase: ClickEventPhase, native: CGEvent? = nil) { self.phase = phase; self.native = native }
+    init(phase: ClickEventPhase, pairID: Int, native: CGEvent? = nil) {
+        self.phase = phase
+        self.pairID = pairID
+        self.native = native
+    }
 }
 
 struct ClickEventPair: @unchecked Sendable {
     let down: ClickEvent
     let up: ClickEvent
-    static let testing = ClickEventPair(down: ClickEvent(phase: .down), up: ClickEvent(phase: .up))
+    static func testing(pairID: Int) -> ClickEventPair {
+        ClickEventPair(down: ClickEvent(phase: .down, pairID: pairID),
+                       up: ClickEvent(phase: .up, pairID: pairID))
+    }
 }
 
 final class MacInputExecutor: InputPosting, @unchecked Sendable {
-    typealias EventConstruction = @Sendable () -> ClickEventPair?
+    typealias EventConstruction = @Sendable () -> [ClickEventPair]?
     typealias EventPosting = @Sendable (ClickEvent) -> Void
     typealias GapSleeping = @Sendable (UInt32) -> Void
     typealias WallClockMilliseconds = @Sendable () -> Double
@@ -46,36 +54,51 @@ final class MacInputExecutor: InputPosting, @unchecked Sendable {
     }
 
     func postLeftClickAtCurrentCursor() -> InputPostOutcome {
-        guard let events = constructEvents() else { return .creationFailed }
-        let mouseDownUnixMs = wallClockMilliseconds()
-        postEvent(events.down)
-        lock.withLock {
-            counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount + 1,
-                                     mouseUpPostCount: counts.mouseUpPostCount)
+        guard let eventPairs = constructEvents(),
+              eventPairs.count == Constants.clickRepetitions else {
+            return .creationFailed
         }
-        if clickGapMs > 0 { sleepMicroseconds(clickGapMs * 1_000) }
-        postEvent(events.up)
-        lock.withLock {
-            counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount,
-                                     mouseUpPostCount: counts.mouseUpPostCount + 1)
+        let mouseDownUnixMs = wallClockMilliseconds()
+        for events in eventPairs {
+            postEvent(events.down)
+            lock.withLock {
+                counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount + 1,
+                                         mouseUpPostCount: counts.mouseUpPostCount)
+            }
+            if clickGapMs > 0 { sleepMicroseconds(clickGapMs * 1_000) }
+            postEvent(events.up)
+            lock.withLock {
+                counts = InputPostCounts(mouseDownPostCount: counts.mouseDownPostCount,
+                                         mouseUpPostCount: counts.mouseUpPostCount + 1)
+            }
         }
         return .posted(mouseDownUnixMs: mouseDownUnixMs)
     }
 
     func diagnosticPostCounts() -> InputPostCounts { lock.withLock { counts } }
 
-    private static func makeNativeEvents() -> ClickEventPair? {
+    private static func makeNativeEvents() -> [ClickEventPair]? {
         guard let probe = CGEvent(source: nil) else { return nil }
         let point = probe.location
         let source = CGEventSource(stateID: .hidSystemState)
-        guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
-                                 mouseCursorPosition: point, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
-                               mouseCursorPosition: point, mouseButton: .left) else { return nil }
-        down.setIntegerValueField(.mouseEventClickState, value: 1)
-        up.setIntegerValueField(.mouseEventClickState, value: 1)
-        return ClickEventPair(down: ClickEvent(phase: .down, native: down),
-                              up: ClickEvent(phase: .up, native: up))
+        var pairs: [ClickEventPair] = []
+        pairs.reserveCapacity(Constants.clickRepetitions)
+
+        for pairID in 1...Constants.clickRepetitions {
+            guard let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                                     mouseCursorPosition: point, mouseButton: .left),
+                  let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                                   mouseCursorPosition: point, mouseButton: .left) else {
+                return nil
+            }
+            down.setIntegerValueField(.mouseEventClickState, value: 1)
+            up.setIntegerValueField(.mouseEventClickState, value: 1)
+            pairs.append(ClickEventPair(
+                down: ClickEvent(phase: .down, pairID: pairID, native: down),
+                up: ClickEvent(phase: .up, pairID: pairID, native: up)
+            ))
+        }
+        return pairs
     }
 
     private static func postNativeEvent(_ event: ClickEvent) {

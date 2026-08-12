@@ -7,6 +7,9 @@ acceptance are **NOT RUN**. Never add synthetic rows to these canonical evidence
 `measurements.csv` contains one logical action per row. It must not contain tokens, IP
 addresses, cursor coordinates, browsing/page content, or Octo profile data.
 `run-evidence.csv` records before/after Mac post counters and operator-observed Octo counters.
+Each Posted logical action requires Mac `mouseDown +3`, `mouseUp +3`, and Octo
+`+3`; 100 Posted actions require `300/300` attempted Mac posts and 300 observed
+Octo increments. Logical row counts remain one row per action.
 
 ## Collection
 
@@ -19,8 +22,8 @@ addresses, cursor coordinates, browsing/page content, or Octo profile data.
    10×60s gaps in a pre-generated randomized order. The action control remains disabled until
    each scheduled gap has elapsed, and records the actual idle time.
 4. Choose **Finish benchmark**, enter the observed Octo counters, then explicitly export both
-   CSV files. Finish rejects the run unless Mac down/up counter deltas and the Octo delta exactly
-   match all actual Posted actions, including excluded warm-ups; `logicalActionCount` includes
+   CSV files. Finish rejects the run unless each Mac down/up counter delta and the Octo delta equal
+   three times all actual Posted actions, including excluded warm-ups; `logicalActionCount` includes
    warm-ups while measurement rows do not. Copy reviewed rows into the canonical files.
 5. Summarize without outlier removal:
 
@@ -37,14 +40,18 @@ without shell history exposure, run:
 ```sh
 export CLICK_BRIDGE_URL=wss://your-host/ws
 read -rs PHONE_TOKEN; export PHONE_TOKEN
-export NEGATIVE_MATRIX_OCTO_OBSERVATIONS='{"exact_duplicate":{"before":10,"after":11},"id_conflict":{"before":11,"after":11},"expired":{"before":11,"after":11},"result_drop":{"before":12,"after":13}}'
+export NEGATIVE_MATRIX_OCTO_OBSERVATIONS='{"exact_duplicate":{"before":10,"after":13},"id_conflict":{"before":13,"after":13},"expired":{"before":13,"after":13},"result_drop":{"before":13,"after":16}}'
 node relay/scripts/run-negative-matrix.mjs
 ```
 
 The harness covers exact duplicate, changed-payload ID conflict, expired request, and result
 route drop. It checks both Mac mouse-down and mouse-up counter deltas. For result drop it takes
 the baseline before the original request and the final snapshot after reconnect, requiring exactly
-one original down/up post, no result delivery to the replacement socket, and an observed Octo
-delta of one. Replace every Octo example value with the operator-observed counters for that exact
+one original logical action with a `+3/+3` attempted-post burst, no result delivery to the
+replacement socket, and an observed Octo delta of three. Replace every Octo example value with the operator-observed counters for that exact
 scenario; a missing or mismatched observation makes the row fail. Capacity remains a
 deterministic injected Swift `ActionProcessor` test and must not be induced publicly.
+
+Mac diagnostic counters count attempted `CGEvent.post` calls. Core Graphics
+returns no success result from `CGEvent.post(tap:)`, so the matching Octo delta
+is the authoritative physical-target observation.

@@ -9,21 +9,34 @@ private final class TraceRecorder: @unchecked Sendable {
 }
 
 final class MacInputExecutorTests: XCTestCase {
-    func testBothEventsAreConstructedBeforeDownUpPostsWithOneGap() {
+    func testOneLogicalPostConstructsThreePairsBeforeOrderedAttemptedPosts() {
         let trace = TraceRecorder()
         let executor = MacInputExecutor(
             clickGapMs: 7,
-            constructEvents: { trace.append("construct-both"); return ClickEventPair.testing },
-            postEvent: { trace.append("post-\($0.phase.rawValue)") },
+            constructEvents: {
+                (1...3).map { pairID in
+                    trace.append("construct\(pairID)")
+                    return ClickEventPair.testing(pairID: pairID)
+                }
+            },
+            postEvent: { trace.append("\($0.phase.rawValue)\($0.pairID)") },
             sleepMicroseconds: { trace.append("sleep-\($0)") },
-            wallClockMilliseconds: { 1_234.5 }
+            wallClockMilliseconds: { trace.append("timestamp"); return 1_234.5 }
         )
+
         guard case .posted(let timestamp) = executor.postLeftClickAtCurrentCursor() else {
             return XCTFail("expected posted")
         }
+
         XCTAssertEqual(timestamp, 1_234.5)
-        XCTAssertEqual(trace.snapshot(), ["construct-both", "post-down", "sleep-7000", "post-up"])
-        XCTAssertEqual(executor.diagnosticPostCounts(), InputPostCounts(mouseDownPostCount: 1, mouseUpPostCount: 1))
+        XCTAssertEqual(trace.snapshot(), [
+            "construct1", "construct2", "construct3", "timestamp",
+            "down1", "sleep-7000", "up1",
+            "down2", "sleep-7000", "up2",
+            "down3", "sleep-7000", "up3",
+        ])
+        XCTAssertEqual(executor.diagnosticPostCounts(),
+                       InputPostCounts(mouseDownPostCount: 3, mouseUpPostCount: 3))
     }
 
     func testConstructionFailurePostsNothingAndKeepsCountersZero() {
@@ -33,6 +46,20 @@ final class MacInputExecutorTests: XCTestCase {
             postEvent: { _ in trace.append("posted") },
             sleepMicroseconds: { _ in }
         )
+        XCTAssertEqual(executor.postLeftClickAtCurrentCursor(), .creationFailed)
+        XCTAssertTrue(trace.snapshot().isEmpty)
+        XCTAssertEqual(executor.diagnosticPostCounts(), .zero)
+    }
+
+    func testIncompleteBurstPostsNothingAndKeepsCountersZero() {
+        let trace = TraceRecorder()
+        let executor = MacInputExecutor(
+            constructEvents: { [ClickEventPair.testing(pairID: 1),
+                                ClickEventPair.testing(pairID: 2)] },
+            postEvent: { _ in trace.append("posted") },
+            sleepMicroseconds: { _ in }
+        )
+
         XCTAssertEqual(executor.postLeftClickAtCurrentCursor(), .creationFailed)
         XCTAssertTrue(trace.snapshot().isEmpty)
         XCTAssertEqual(executor.diagnosticPostCounts(), .zero)

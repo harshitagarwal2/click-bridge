@@ -1,6 +1,8 @@
 import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 
+import { PHYSICAL_CLICKS_PER_POSTED_ACTION } from '../public/benchmark-session.js';
+
 const lifetime = 2_000;
 
 function request(actionId, issuedAtUnixMs) {
@@ -23,15 +25,16 @@ export async function runNegativeMatrix({ harness, octoObservations = {},
   const conflict = await harness.conflict(conflictOriginal, request(conflictOriginal.actionId, now + 1));
   const expired = await harness.expired(request(idGenerator(), now - lifetime - 1_001));
   const dropped = await harness.resultDrop(request(idGenerator(), now));
+  const clicks = PHYSICAL_CLICKS_PER_POSTED_ACTION;
   const cases = [
-    ['exact_duplicate', duplicate, 1, duplicate.exactCached
-      && duplicate.mouseDownIncrement === 1 && duplicate.mouseUpIncrement === 1],
+    ['exact_duplicate', duplicate, clicks, duplicate.exactCached
+      && duplicate.mouseDownIncrement === clicks && duplicate.mouseUpIncrement === clicks],
     ['id_conflict', conflict, 0, conflict.reason === 'id_conflict'
       && conflict.mouseDownIncrement === 0 && conflict.mouseUpIncrement === 0],
     ['expired', expired, 0, expired.reason === 'expired'
       && expired.mouseDownIncrement === 0 && expired.mouseUpIncrement === 0],
-    ['result_drop', dropped, 1, !dropped.lateDelivery
-      && dropped.totalDownIncrement === 1 && dropped.totalUpIncrement === 1],
+    ['result_drop', dropped, clicks, !dropped.lateDelivery
+      && dropped.totalDownIncrement === clicks && dropped.totalUpIncrement === clicks],
   ];
   return cases.map(([scenario, detail, expectedOctoIncrement, protocolPassed]) => {
     const octoIncrement = observedIncrement(octoObservations[scenario]);

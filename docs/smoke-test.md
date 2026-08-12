@@ -8,8 +8,8 @@ build. A row that cannot be produced is a failure, not a skip.
 | Mac app closed | Button disabled; no queued click |
 | Remote control off | No input; phone reports remote disabled |
 | Permission absent or revoked | No input; `permission_required` |
-| Ready, Octo frontmost | One tap, exactly one counter increment |
-| Duplicate action ID | One total increment; identical cached result |
+| Ready, Octo frontmost | One tap; one logical action/result and exactly three Octo counter increments |
+| Duplicate action ID | One total three-click burst (`+3/+3` attempted Mac posts and Octo `+3`); identical cached result |
 | Same ID, changed payload | `id_conflict`; no second increment |
 | Expired buffered request | `expired`; no input |
 | Phone hidden with an action pending | `Unknown`; no replay |
@@ -26,7 +26,7 @@ build. A row that cannot be produced is a failure, not a skip.
 ## Octo down/up gap calibration
 
 `CLICK_GAP_MS` starts at 0. Test in this order and stop at the FIRST value that
-gives 100 increments from 100 distinct actions:
+gives 300 increments from 100 distinct Posted actions:
 
 ```
 0 ms → 5 ms → 10 ms → 20 ms → 30 ms
@@ -41,6 +41,9 @@ the cursor — it does not target Octo specifically.
 
 ## Reading the results
 
-Use the Mac's diagnostic post counters, not just Octo's on-screen number. The
-counters prove how many `CGEvent.post` calls actually happened; the UI count
-only proves how many the app noticed.
+The Mac's diagnostic counters record attempted `CGEvent.post` calls. For 100
+Posted actions, require `mouseDown +300` and `mouseUp +300`, while Octo must
+show 300 increments. Because `CGEvent.post(tap:)` returns no success result,
+the matching Octo delta is the authoritative physical-target observation.
+`CLICK_GAP_MS` applies within each of the three down/up pairs; there is no
+separate inter-click delay.

@@ -89,7 +89,7 @@ The records use English (U.S.) as the primary language and their existing explic
 Repository verification must prove:
 
 - release validators require both platform lanes and all cleanup paths;
-- iOS tests pass (current baseline: 66 tests);
-- macOS tests pass (current baseline: 39 tests);
+- iOS tests pass (current baseline: 71 tests);
+- macOS tests pass (current baseline: 40 tests);
 - the macOS App Store archive contains the sandbox and network-client entitlements;
 - both uploaded builds appear in App Store Connect with the requested version/build and a processing or valid state.

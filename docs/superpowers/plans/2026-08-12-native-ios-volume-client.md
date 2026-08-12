@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use xcodebuildmcp-cli for every Xcode build, test, simulator, device, and diagnostic command. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a foreground native SwiftUI iPhone client that converts each distinct accepted `AVAudioSession.outputVolume` delta into exactly one existing protocol-v1 click action while preserving the PWA unchanged.
+**Goal:** Add a foreground native SwiftUI iPhone client that converts each distinct accepted `AVAudioSession.outputVolume` delta into exactly one existing protocol-v1 click action, which the Mac expands into exactly three independent ordinary left clicks, while preserving PWA behavior and protocol compatibility.
 
 **Architecture:** A KVO adapter feeds a deterministic delta controller; `PhoneAppModel` owns the active-to-background foreground session and applies relay, Mac, clock, and one-in-flight gates before `PhoneActionCoordinator` sends. One generation-aware WSS client reuses the exact phone protocol, heartbeat, reconnect, clock-health, expiry, acknowledgement, result, and at-most-once rules already used by the PWA.
 
@@ -26,7 +26,7 @@
 - Emit haptic feedback exactly once after a matching current-generation Mac `action.result`, never after `relay.ack`, timeout, disconnect, background, or stale/duplicate result.
 - Clearly render `Ready`, `Not connected`, `Mac offline`, `Clock mismatch`, and `At volume boundary`, plus the exact one-direction limitation at `0%` and `100%`.
 - State that Control Center, wired/Bluetooth headset, and AirPods changes can also trigger because the API observes output volume, not button source.
-- Preserve `relay/public/**` and the PWA tests unchanged. The native app and PWA are sequential fallbacks because the relay supports one live phone role.
+- Preserve `relay/public/**` behavior and the PWA protocol contract. The native app and PWA are sequential fallbacks because the relay supports one live phone role; later copy-only changes may truthfully describe the three-click physical outcome.
 - Do not edit `.github/**`. The separate CI/CD lane owns that surface and will consume `ios/project.yml` and scheme `ClickBridgePhone`.
 - Use deterministic fakes for every injected port. Write each behavioral test before its production implementation and observe the intended failure.
 - Do not claim hardware-volume acceptance from Simulator. A signed physical iPhone run is a required final acceptance gate.
@@ -1129,8 +1129,8 @@ git commit -m "feat(ios): add SwiftUI volume client experience"
 - Do not modify: `relay/public/**`, `.github/**`
 
 **Interfaces:**
-- Consumes: Generated iOS scheme and the unchanged relay/PWA test suites.
-- Produces: Fresh full-test evidence and a zero-diff proof for the PWA source surface.
+- Consumes: Generated iOS scheme and the existing relay/PWA test suites.
+- Produces: Fresh full-test evidence and proof that the PWA behavior/protocol remain compatible.
 
 - [ ] **Step 1: Regenerate and inspect generated project consistency**
 
@@ -1151,7 +1151,7 @@ Run the full Task 9 simulator test command.
 
 Expected: all tests pass, including up/down, duplicate KVO, rapid separate changes, foreground/background race, stale socket generation, expiry, boundary, and exact action-ID cases.
 
-- [ ] **Step 3: Run the existing relay/PWA suite unchanged**
+- [ ] **Step 3: Run the existing relay/PWA suite**
 
 Run:
 
@@ -1224,7 +1224,7 @@ Create a checklist at the top of the work notes and require every item to map to
 [ ] external volume-source disclosure
 [ ] haptic only after matching Mac action.result
 [ ] Simulator limitation and physical iPhone gate
-[ ] PWA unchanged sequential fallback
+[ ] PWA behavior preserved as the sequential fallback
 ```
 
 - [ ] **Step 2: Update `FINAL-PLAN.md` without creating a second canonical plan**
@@ -1304,7 +1304,7 @@ Expected: signed app installs and launches. If signing or device availability fa
 
 - [ ] **Step 3: Verify one up delta and one down delta end to end**
 
-At a nonboundary volume, wait for `Ready`. Press Volume Up once, wait for the matching Mac terminal result and haptic, and verify the Octo counter increments exactly once. Repeat with Volume Down after the first action settles. Record each action ID and terminal status; never record the token.
+At a nonboundary volume, wait for `Ready`. Press Volume Up once, wait for the matching Mac terminal result and haptic, and verify Mac `mouseDown +3`/`mouseUp +3` plus an Octo counter increase of three. Repeat with Volume Down after the first action settles. Mac counters are attempted `CGEvent.post` calls; because posting returns no success result, Octo is the authoritative physical observation. Record each action ID and terminal status; never record the token.
 
 - [ ] **Step 4: Verify deduplication, rapid changes, lifecycle, sources, and boundaries**
 
@@ -1324,7 +1324,7 @@ Run these physical scenarios and record observations:
 
 - [ ] **Step 5: Verify unchanged protocol against live OCI and PWA fallback**
 
-Confirm native authentication, heartbeat, five time-sync responses, relay state, unchanged `action.request`, `relay.ack`, and `action.result` on the existing deployment. Background or disconnect native, launch the existing PWA, authenticate as the phone role, and complete one normal PWA click. Do not run both as simultaneous phone clients.
+Confirm native authentication, heartbeat, five time-sync responses, relay state, unchanged `action.request`, `relay.ack`, and `action.result` on the existing deployment. Background or disconnect native, launch the existing PWA, authenticate as the phone role, and complete one normal PWA logical action with Mac `+3/+3` attempted posts and Octo `+3`. Do not run both as simultaneous phone clients.
 
 - [ ] **Step 6: Commit evidence**
 
@@ -1369,7 +1369,7 @@ gh pr create \
   --base main \
   --head codex/click-bridge-ios \
   --title "feat: add native iOS volume client" \
-  --body "Adds the foreground SwiftUI iPhone client at ios/project.yml with shared scheme ClickBridgePhone. Reuses protocol v1, keeps one action in flight with no queue, preserves the PWA unchanged, and records Simulator plus physical-iPhone acceptance evidence."
+  --body "Adds the foreground SwiftUI iPhone client at ios/project.yml with shared scheme ClickBridgePhone. Reuses protocol v1, keeps one action in flight with no queue, preserves PWA behavior, and records Simulator plus physical-iPhone acceptance evidence."
 ```
 
 - [ ] **Step 4: Wait for and inspect every required check**
@@ -1395,7 +1395,7 @@ Expected: PR merges to `main`. Do not merge while the physical iPhone gate is un
 
 - [ ] **Step 6: Verify merged main and live compatibility without deployment changes**
 
-From a clean main checkout, regenerate and rerun the full iOS and relay/PWA test commands. Build the merged native app, authenticate it to the existing OCI relay, complete one up or down delta with a matching Mac result and Octo increment, disconnect it, and complete one PWA fallback click. Record the post-merge commit SHA and results in `docs/ios-acceptance.md`.
+From a clean main checkout, regenerate and rerun the full iOS and relay/PWA test commands. Build the merged native app, authenticate it to the existing OCI relay, complete one up or down delta with one matching Mac result/haptic, Mac `+3/+3` attempted-post counters, and Octo `+3`; disconnect it, then complete one PWA fallback action with the same three-click physical evidence. Record the post-merge commit SHA and results in `docs/ios-acceptance.md`.
 
 - [ ] **Step 7: Commit any post-merge evidence through a follow-up PR**
 
@@ -1409,7 +1409,7 @@ Implementation is complete only when all of the following are true:
 - All deterministic iOS tests pass on Simulator.
 - Existing relay and PWA tests pass with no PWA source change.
 - Exact duplicate callbacks, up/down, rapid separate deltas, pending-drop/no-queue, lifecycle race, stale socket generation, expiry, boundary behavior, and one action ID per accepted delta have explicit passing tests.
-- Physical iPhone Volume Up and Volume Down each produce exactly one matching Mac terminal result, haptic, and Octo click from a ready nonboundary state.
+- Physical iPhone Volume Up and Volume Down each produce exactly one matching Mac terminal result and haptic plus exactly three Octo clicks from a ready nonboundary state.
 - Background sends nothing; reactivation stays gated until fresh authentication, Mac state, and five-sample clock health complete.
 - The live existing OCI relay accepts the unchanged protocol and the PWA reconnects as fallback after native disconnect.
 - Documentation records the delta-based API limit, possible Control Center/headset/AirPods sources, boundary limit, Simulator limitation, and physical acceptance evidence.
