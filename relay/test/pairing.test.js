@@ -62,6 +62,7 @@ function harness({
   activationGate = null,
   closeError = null,
   deauthorizationFailure = null,
+  activePhoneCredentialVersion = 7,
 } = {}) {
   const clock = { value: 1_700_000_000_000 };
   const scheduler = createScheduler(clock);
@@ -72,7 +73,7 @@ function harness({
   const randomIntCalls = [];
   let record = Object.freeze({
     schemaVersion: 1,
-    activePhoneCredentialVersion: 7,
+    activePhoneCredentialVersion,
     activePhoneVerifier: INITIAL_VERIFIER,
   });
   let activateCalls = 0;
@@ -146,6 +147,18 @@ function createMessage(requestId = REQUEST_ID) {
   return { type: 'pair.create', v: 1, requestId, pairingVersion: 1 };
 }
 
+function statusMessage(requestId = REQUEST_ID) {
+  return { type: 'pair.status.request', v: 1, requestId, pairingVersion: 1 };
+}
+
+function connectMac(h, connection = MAC, generation = 3) {
+  assert.equal(h.coordinator.macConnected(connection, generation), 'ok');
+  assert.equal(h.events.length, 0, 'authentication alone must emit no pairing frame');
+  assert.equal(h.coordinator.requestStatus(
+    connection, generation, statusMessage(),
+  ), 'ok');
+}
+
 function claimMessage(reference = INVITATION) {
   return {
     type: 'pair.claim', v: 1, reference, claimId: CLAIM_ID,
@@ -154,7 +167,7 @@ function claimMessage(reference = INVITATION) {
 }
 
 function connectAndCreate(h) {
-  h.coordinator.macConnected(MAC, 3);
+  connectMac(h);
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'ok');
   return h.events.at(-1).message;
 }
@@ -182,6 +195,48 @@ function acknowledge(h, overrides = {}) {
   });
 }
 
+test('pairing status is request-correlated and explicitly opts in one Mac generation', () => {
+  const h = harness();
+  const replacement = Object.freeze({ id: 'replacement-mac' });
+
+  assert.equal(h.coordinator.macConnected(MAC, 3), 'ok');
+  assert.equal(h.events.length, 0);
+  assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'capability_required');
+  assert.equal(h.coordinator.requestStatus(MAC, 2, statusMessage()), 'ignored');
+  assert.equal(h.coordinator.requestStatus(MAC, 3, statusMessage()), 'ok');
+  assert.deepEqual(h.events, [{
+    connection: MAC,
+    message: {
+      type: 'pair.status', v: 1, requestId: REQUEST_ID,
+      enrollmentState: 'paired', activePhoneCredentialVersion: 7,
+    },
+  }]);
+  assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'ok');
+
+  assert.equal(h.coordinator.macConnected(replacement, 4), 'ok');
+  assert.equal(h.coordinator.create(replacement, 4, createMessage(
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  )), 'capability_required');
+  assert.equal(h.events.some(({ connection, message }) => (
+    connection === replacement && message.type.startsWith('pair.')
+  )), false);
+});
+
+test('legacy credential version zero is reported as existing enrollment', () => {
+  const h = harness({ activePhoneCredentialVersion: 0 });
+  assert.equal(h.coordinator.macConnected(MAC, 3), 'ok');
+
+  assert.equal(h.coordinator.requestStatus(MAC, 3, statusMessage()), 'ok');
+
+  assert.deepEqual(h.events.at(-1), {
+    connection: MAC,
+    message: {
+      type: 'pair.status', v: 1, requestId: REQUEST_ID,
+      enrollmentState: 'legacy', activePhoneCredentialVersion: 0,
+    },
+  });
+});
+
 test('create emits a 32-byte invitation synchronously, then retains only its verifier for 300 seconds', () => {
   const h = harness({
     emitResult: (_connection, message) => {
@@ -191,7 +246,7 @@ test('create emits a 32-byte invitation synchronously, then retains only its ver
       return true;
     },
   });
-  h.coordinator.macConnected(MAC, 3);
+  connectMac(h);
 
   const result = h.coordinator.create(MAC, 3, createMessage());
 
@@ -217,10 +272,11 @@ test('create emits a 32-byte invitation synchronously, then retains only its ver
 test('only the current authenticated Mac generation owns create and replacing an invite invalidates it once', () => {
   const h = harness();
   h.randomBuffers.push(Buffer.alloc(32, 0x61));
-  h.coordinator.macConnected(MAC, 3);
+  assert.equal(h.coordinator.macConnected(MAC, 3), 'ok');
   assert.equal(h.coordinator.create(MAC, 2, createMessage()), 'ignored');
-  assert.equal(h.events.length, 1);
-  h.coordinator.create(MAC, 3, createMessage());
+  assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'capability_required');
+  assert.equal(h.events.length, 0);
+  assert.equal(h.coordinator.requestStatus(MAC, 3, statusMessage()), 'ok');
 
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'ok');
   assert.equal(h.events.filter(({ message }) => message.type === 'pair.created').length, 1);
@@ -449,7 +505,7 @@ test('a forged auth-store error code without the typed error class remains a sto
 
 test('an emit callback with no explicit return value counts as successful delivery', () => {
   const h = harness({ emitResult: () => undefined });
-  h.coordinator.macConnected(MAC, 3);
+  connectMac(h);
 
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'ok');
   assert.equal(h.coordinator.observe().phase, 'invited');
@@ -467,7 +523,7 @@ test('failed invitation delivery retains no session and a retry creates a fresh 
     },
   });
   h.randomBuffers.push(Buffer.alloc(32, 0x61));
-  h.coordinator.macConnected(MAC, 3);
+  connectMac(h);
 
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'delivery_failed');
   assert.deepEqual(h.coordinator.observe(), {
@@ -535,7 +591,7 @@ test('activation linearizes before terminal races and cannot be replaced mid-com
   }
 });
 
-test('a replacement Mac that arrives during activation receives the durable completion', async () => {
+test('a replacement Mac must opt in before receiving durable pairing completion', async () => {
   const activationGate = deferred();
   const h = harness({ activationGate });
   const replacementMac = Object.freeze({ id: 'replacement-mac' });
@@ -545,6 +601,9 @@ test('a replacement Mac that arrives during activation receives the durable comp
 
   const activation = acknowledge(h);
   assert.equal(h.coordinator.macConnected(replacementMac, 4), 'activation_in_progress');
+  assert.equal(h.coordinator.requestStatus(
+    replacementMac, 4, statusMessage('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
+  ), 'ok');
   activationGate.resolve();
   assert.equal(await activation, 'ok');
 
@@ -952,6 +1011,7 @@ test('pairing-disabled public calls return unsupported without consuming randomn
   assert.equal(h.coordinator.allowsPhoneCredentialVersion(7), true);
   assert.equal(h.coordinator.allowsPhoneCredentialVersion(6), false);
   h.coordinator.macConnected(MAC, 3);
+  assert.equal(h.coordinator.requestStatus(MAC, 3, statusMessage()), 'unsupported');
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'unsupported');
   assert.equal(h.coordinator.claim(PHONE, 5, claimMessage()), 'unsupported');
   assert.equal(h.coordinator.approve(MAC, 3, {

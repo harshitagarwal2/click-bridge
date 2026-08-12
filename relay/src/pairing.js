@@ -119,16 +119,30 @@ export class PairingCoordinator {
     if (!this.#enabled) return 'unsupported';
     if (this.#mac && !this.#owns(this.#mac, connection, generation)) {
       if (this.#isActivating()) {
-        this.#mac = { connection, generation };
+        this.#mac = { connection, generation, pairingCapable: false };
         return 'activation_in_progress';
       }
       this.#terminate('replaced');
     }
-    this.#mac = { connection, generation };
+    this.#mac = { connection, generation, pairingCapable: false };
+    return 'ok';
+  }
+
+  requestStatus(connection, generation, message) {
+    if (!this.#enabled) return 'unsupported';
+    if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    const snapshot = this.#authStore.snapshot();
+    const credentialVersion = snapshot.activePhoneCredentialVersion;
+    if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) {
+      return 'invalid_state';
+    }
+    this.#mac.pairingCapable = true;
     this.#send(connection, {
       type: 'pair.status',
       v: PROTOCOL_VERSION,
-      activePhoneCredentialVersion: this.#authStore.snapshot().activePhoneCredentialVersion,
+      requestId: message.requestId,
+      enrollmentState: credentialVersion === 0 ? 'legacy' : 'paired',
+      activePhoneCredentialVersion: credentialVersion,
     });
     return 'ok';
   }
@@ -145,6 +159,7 @@ export class PairingCoordinator {
   create(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (!this.#mac.pairingCapable) return 'capability_required';
     if (this.#isActivating()) return 'activation_in_progress';
     if (this.#completed && !this.#completed.reconciled) return 'activation_in_progress';
     if (this.#session && this.#expired(this.#session)) {
@@ -249,6 +264,7 @@ export class PairingCoordinator {
   approve(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (!this.#mac.pairingCapable) return 'capability_required';
     const session = this.#session;
     if (!session || !this.#matchesClaim(session, message)) return 'invalid_request';
     if (this.#expired(session)) {
@@ -285,6 +301,7 @@ export class PairingCoordinator {
   deny(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (!this.#mac.pairingCapable) return 'capability_required';
     if (this.#isActivating()) return 'activation_in_progress';
     if (this.#matchesEndedMac(message, 'denied', true)) return 'ok';
     if (!this.#session || !this.#matchesClaim(this.#session, message)) return 'invalid_request';
@@ -295,6 +312,7 @@ export class PairingCoordinator {
   cancelByMac(connection, generation, message) {
     if (!this.#enabled) return 'unsupported';
     if (!this.#owns(this.#mac, connection, generation)) return 'ignored';
+    if (!this.#mac.pairingCapable) return 'capability_required';
     if (this.#isActivating()) return 'activation_in_progress';
     if (this.#matchesEndedMac(message, 'cancelled', false)) return 'ok';
     if (!this.#session || this.#session.requestId !== message.requestId) return 'invalid_request';
@@ -473,7 +491,7 @@ export class PairingCoordinator {
       claimId: completed.claimId,
       activePhoneCredentialVersion: completed.credentialVersion,
     });
-    if (this.#mac?.connection) {
+    if (this.#mac?.connection && this.#mac.pairingCapable) {
       this.#send(this.#mac.connection, {
         type: 'pair.completed',
         v: PROTOCOL_VERSION,
