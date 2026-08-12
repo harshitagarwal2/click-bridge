@@ -89,6 +89,9 @@ macos = File.read(File.join(WORKFLOW_DIR, "macos-notarized-release.yml"))
 %w[ENABLE_HARDENED_RUNTIME=YES --timestamp "notarytool submit" "stapler staple" "spctl --assess" "--draft" "retention-days: 7"].each do |contract|
   fail_contract("macOS workflow is missing #{contract}") unless macos.include?(contract.delete_prefix('"').delete_suffix('"'))
 end
+fail_contract("macOS release-existence guard must use an explicit conditional") if macos.include?('! gh release view "$RELEASE_TAG"')
+fail_contract("macOS release-existence guard is missing") unless macos.include?('if gh release view "$RELEASE_TAG"')
+fail_contract("macOS environment writes must be grouped") if macos.match?(/echo .* >> "\$GITHUB_ENV"\n\s+echo .* >> "\$GITHUB_ENV"/)
 fail_contract("macOS checksum must contain only the archive basename") unless macos.include?('shasum -a 256 "$archive_name" > "$archive_name.sha256"')
 fail_contract("macOS checksum must not contain the runner's absolute archive path") if macos.include?('shasum -a 256 "$archive"')
 
@@ -98,6 +101,9 @@ fail_contract("GHCR workflow must preserve the private-package approval gate") u
 fail_contract("GHCR workflow must suppress latest") unless ghcr.include?("latest=false")
 fail_contract("GHCR workflow must publish version and SHA tags") unless ghcr.include?("value=${{ env.RELEASE_VERSION }}") && ghcr.include?("value=sha-${{ github.sha }}")
 fail_contract("GHCR workflow must report the digest") unless ghcr.include?("steps.build.outputs.digest")
+fail_contract("GHCR owner must enter shell through the environment") unless ghcr.include?('REPOSITORY_OWNER: ${{ github.repository_owner }}') && ghcr.include?('"$REPOSITORY_OWNER"')
+fail_contract("GHCR shell must not single-quote a GitHub expression") if ghcr.include?(%q('${{ github.repository_owner }}'))
+fail_contract("GHCR summary writes must be grouped") if ghcr.match?(/^\s+echo .* >> "\$GITHUB_STEP_SUMMARY"$/)
 fail_contract("GHCR workflow must check both immutable tags before pushing") unless ghcr.include?('assert_tag_absent "$RELEASE_VERSION"') && ghcr.include?('assert_tag_absent "sha-$EVENT_SHA"')
 fail_contract("GHCR workflow must fail when either tag already exists") unless ghcr.include?('200)') && ghcr.include?("already exists; refusing to overwrite")
 fail_contract("GHCR workflow must distinguish an absent tag from registry errors") unless ghcr.include?('404)') && ghcr.include?("registry returned HTTP")
