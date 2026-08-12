@@ -1,16 +1,18 @@
 services:
   relay:
+    x-click-bridge-pairing-auth-contract: 1
     build:
       context: ../..
       dockerfile: deploy/oci/Dockerfile
     image: click-bridge-relay:${CLICK_BRIDGE_RELEASE}
     restart: unless-stopped
+    env_file:
+      - ${CLICK_BRIDGE_SECRETS_FILE:-/opt/click-bridge/shared/secrets.env}
     environment:
       PORT: "8080"
       HOST: "0.0.0.0"
-      PHONE_TOKEN: ${PHONE_TOKEN}
-      MAC_TOKEN: ${MAC_TOKEN}
-      CLICK_BRIDGE_DOMAIN: ${CLICK_BRIDGE_DOMAIN}
+    volumes:
+      - /opt/click-bridge/shared/auth:/var/lib/click-bridge/auth
     expose:
       - "8080"
     healthcheck:

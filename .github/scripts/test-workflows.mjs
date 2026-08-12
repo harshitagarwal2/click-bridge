@@ -31,11 +31,19 @@ const validCompose = `services:\n  caddy:\n    image: ${reviewedCaddy}\n`;
 function verifierDeployScript(healthImage, smokeImage) {
   return `#!/usr/bin/env bash
 docker compose config
+if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \\
+  -p "\${COMPOSE_PROJECT_NAME}-compat-check" \\
+  --env-file "$SHARED_ENV" \\
+  -f "$directory/deploy/oci/compose.yaml" \\
+  config relay 2>/dev/null)"; then
+  return 1
+fi
 docker rm candidate
 CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
   --name "$CANDIDATE_CONTAINER_NAME" \\
   --publish 127.0.0.1:18080:8080 \\
   --env-file "$SHARED_ENV" \\
+  --volume "$AUTH_DIRECTORY:/var/lib/click-bridge/auth" \\
   --env PORT=8080 \\
   --env HOST=0.0.0.0 \\
   "click-bridge-relay:$release" >/dev/null
@@ -508,6 +516,163 @@ assert.doesNotThrow(() =>
     deployScript: `# $DOCKER run --rm node:latest true\nprintf '%s\\n' 'docker run --rm node:latest true'\n${validDeployScript}`,
   }),
 );
+
+for (const [shape, mutation] of [
+  [
+    "PHONE_TOKEN printf",
+    `${validDeployScript}printf '%s\\n' "$PHONE_TOKEN"\n`,
+  ],
+  [
+    "MAC_TOKEN grep input",
+    `${validDeployScript}grep -F token <<< "$MAC_TOKEN"\n`,
+  ],
+  [
+    "PHONE_TOKEN sed input",
+    `${validDeployScript}sed -n p <<< "$PHONE_TOKEN"\n`,
+  ],
+  [
+    "missing Compose stderr suppression",
+    validDeployScript.replace("config relay 2>/dev/null", "config relay"),
+  ],
+  [
+    "removed Compose output capture",
+    validDeployScript.replace(
+      'if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose',
+      'if ! CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose',
+    ).replace('config relay 2>/dev/null)"; then', "config relay 2>/dev/null; then"),
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: mutation,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|Compose|capture|stderr|output|command sequence/,
+    `deployment validation must reject ${shape}`,
+  );
+}
+
+const shellLineContinuation = String.fromCharCode(92, 10);
+for (const [shape, expansion, redirection] of [
+  ["braced PHONE_TOKEN substring", "${PHONE_TOKEN:0}", ""],
+  ["braced MAC_TOKEN default", "${MAC_TOKEN:-fallback}", ">&2"],
+  ["braced PHONE_TOKEN default without colon", "${PHONE_TOKEN-fallback}", ""],
+  ["braced PHONE_TOKEN alternate", "${PHONE_TOKEN:+alternate}", ""],
+  ["braced MAC_TOKEN alternate without colon", "${MAC_TOKEN+alternate}", ">&2"],
+  ["braced MAC_TOKEN error", "${MAC_TOKEN:?missing}", ">&2"],
+  ["braced PHONE_TOKEN error without colon", "${PHONE_TOKEN?missing}", ""],
+  ["braced PHONE_TOKEN assignment", "${PHONE_TOKEN:=replacement}", ""],
+  ["braced MAC_TOKEN assignment without colon", "${MAC_TOKEN=replacement}", ">&2"],
+  ["braced MAC_TOKEN length", "${#MAC_TOKEN}", ">&2"],
+  ["braced PHONE_TOKEN indirect", "${!PHONE_TOKEN}", ""],
+  ["braced MAC_TOKEN replacement", "${MAC_TOKEN/token/replacement}", ">&2"],
+  ["braced PHONE_TOKEN transformation", "${PHONE_TOKEN@Q}", ""],
+  ["unbraced MAC_TOKEN stdout", "$MAC_TOKEN", ""],
+  ["exact braced PHONE_TOKEN stderr", "${PHONE_TOKEN}", ">&2"],
+  [
+    "PHONE_TOKEN split after dollar",
+    `$${shellLineContinuation}PHONE_TOKEN`,
+    "",
+  ],
+  [
+    "MAC_TOKEN split after dollar",
+    `$${shellLineContinuation}MAC_TOKEN`,
+    ">&2",
+  ],
+  [
+    "PHONE_TOKEN split inside unbraced name",
+    `$PHONE_${shellLineContinuation}TOKEN`,
+    ">&2",
+  ],
+  [
+    "MAC_TOKEN split inside unbraced name",
+    `$MAC_${shellLineContinuation}TOKEN`,
+    "",
+  ],
+  [
+    "PHONE_TOKEN split inside braced name",
+    `\${PHONE_${shellLineContinuation}TOKEN}`,
+    "",
+  ],
+  [
+    "MAC_TOKEN split inside braced name",
+    `\${MAC_${shellLineContinuation}TOKEN}`,
+    ">&2",
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}printf '%s\\n' "${expansion}" ${redirection}\n`,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|environment assignment/,
+    `deployment validation must reject ${shape}`,
+  );
+}
+assert.doesNotThrow(
+  () =>
+    validateDeploymentImages({
+      dockerfile: validDockerfile,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  "the two exact reviewed smoke-container assignments must remain valid",
+);
+
+const secretContinuationCommentCases = [
+  [
+    "single quote in comment before split unbraced PHONE_TOKEN stdout",
+    "# unmatched ' comment\n",
+    `$${shellLineContinuation}PHONE_TOKEN`,
+    "",
+  ],
+  [
+    "double quote in comment before split braced MAC_TOKEN stderr",
+    '# unmatched " comment\n',
+    `\${MAC_${shellLineContinuation}TOKEN}`,
+    ">&2",
+  ],
+  [
+    "single quote in CRLF comment before split braced PHONE_TOKEN stderr",
+    "# unmatched ' comment\r\n",
+    `\${PHONE_${String.fromCharCode(92, 13, 10)}TOKEN}`,
+    ">&2",
+  ],
+  [
+    "double quote in CRLF comment before split unbraced MAC_TOKEN stdout",
+    '# unmatched " comment\r\n',
+    `$MAC_${String.fromCharCode(92, 13, 10)}TOKEN`,
+    "",
+  ],
+  [
+    "escaped hash before split PHONE_TOKEN stdout",
+    "printf '%s\\n' \\#\n",
+    `$PHONE_${shellLineContinuation}TOKEN`,
+    "",
+  ],
+  [
+    "hash in word before split MAC_TOKEN stderr",
+    "printf '%s\\n' word#fragment\n",
+    `$${shellLineContinuation}MAC_TOKEN`,
+    ">&2",
+  ],
+];
+for (const [shape, prefix, expansion, redirection] of secretContinuationCommentCases) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}${prefix}printf '%s\\n' "${expansion}" ${redirection}\n`,
+      }),
+    /secret|PHONE_TOKEN|MAC_TOKEN|environment assignment/,
+    `deployment validation must reject ${shape}`,
+  );
+}
 
 function readRequired(relativePath) {
   const absolutePath = path.join(repositoryRoot, relativePath);

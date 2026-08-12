@@ -27,6 +27,114 @@ secret_file_mode() {
   stat -c %a "$SHARED_ENV" 2>/dev/null || stat -f %Lp "$SHARED_ENV" 2>/dev/null
 }
 
+path_mode() {
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
+}
+
+release_supports_phone_auth_record() {
+  local directory
+  local rendered
+  directory="$(release_directory "$1")"
+  if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
+    -p "${COMPOSE_PROJECT_NAME}-compat-check" \
+    --env-file "$SHARED_ENV" \
+    -f "$directory/deploy/oci/compose.yaml" \
+    config relay 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$(grep -Ec '^[[:space:]]+x-click-bridge-pairing-auth-contract: 1$' <<< "$rendered")" = 1 ]] &&
+    [[ "$(grep -Ec '^[[:space:]]+PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json$' <<< "$rendered")" = 1 ]] &&
+    awk -v expected_source="$AUTH_DIRECTORY" '
+      function reset_mount() {
+        source = ""; target = ""; type = ""; read_only = ""
+      }
+      function finish_mount() {
+        if (!in_mount) return
+        if (source == expected_source && target == "/var/lib/click-bridge/auth" &&
+            type == "bind" && (read_only == "" || read_only == "false")) {
+          exact_matches += 1
+        }
+        in_mount = 0
+        reset_mount()
+      }
+      /^[[:space:]]+volumes:$/ { in_volumes = 1; next }
+      in_volumes && /^[[:space:]]+-[[:space:]]/ {
+        finish_mount()
+        in_mount = 1
+      }
+      in_volumes && in_mount {
+        line = $0
+        sub(/^[[:space:]]+-?[[:space:]]*/, "", line)
+        separator = index(line, ":")
+        if (separator == 0) next
+        key = substr(line, 1, separator - 1)
+        value = substr(line, separator + 1)
+        sub(/^[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        if (key == "source") source = value
+        else if (key == "target") target = value
+        else if (key == "type") type = value
+        else if (key == "read_only") read_only = value
+      }
+      END {
+        finish_mount()
+        exit exact_matches == 1 ? 0 : 1
+      }
+    ' <<< "$rendered"
+}
+
+validate_secret_schema() {
+  local pairing_enabled=''
+  local key
+  local line
+  local line_number=0
+  local phone_token_count=0
+  local mac_token_count=0
+  local domain_count=0
+  local pairing_count=0
+  local record_count=0
+  local team_count=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ((line_number += 1))
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=([^[:space:]]*)$ ]] ||
+      die "$SHARED_ENV has an invalid line at $line_number"
+    key="${BASH_REMATCH[1]}"
+    case "$key" in
+      PHONE_TOKEN) ((phone_token_count += 1)); ((phone_token_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      MAC_TOKEN) ((mac_token_count += 1)); ((mac_token_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      CLICK_BRIDGE_DOMAIN) ((domain_count += 1)); ((domain_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      PAIRING_ENABLED) ((pairing_count += 1)); ((pairing_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      PHONE_AUTH_RECORD) ((record_count += 1)); ((record_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      APPLE_TEAM_ID) ((team_count += 1)); ((team_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      *) die "$SHARED_ENV contains an unexpected key" ;;
+    esac
+    [[ "$key" != PAIRING_ENABLED ]] || pairing_enabled="${BASH_REMATCH[2]}"
+  done < "$SHARED_ENV"
+  [[ "$phone_token_count" = 1 ]] || die "$SHARED_ENV must define PHONE_TOKEN exactly once"
+  [[ "$mac_token_count" = 1 ]] || die "$SHARED_ENV must define MAC_TOKEN exactly once"
+  [[ "$domain_count" = 1 ]] || die "$SHARED_ENV must define CLICK_BRIDGE_DOMAIN exactly once"
+  [[ "$pairing_count" = 1 ]] || die "$SHARED_ENV must define PAIRING_ENABLED exactly once"
+  [[ "$record_count" = 1 ]] || die "$SHARED_ENV must define PHONE_AUTH_RECORD exactly once"
+  [[ "$pairing_enabled" = 0 || "$pairing_enabled" = 1 ]] ||
+    die 'PAIRING_ENABLED must be exactly 0 or 1'
+  if [[ "$pairing_enabled" = 1 ]]; then
+    [[ "$team_count" = 1 ]] ||
+      die "$SHARED_ENV must define APPLE_TEAM_ID exactly once when pairing is enabled"
+  else
+    [[ "$team_count" = 0 ]] ||
+      die 'APPLE_TEAM_ID is only allowed when pairing is enabled'
+  fi
+}
+
+phone_auth_record_is_rotated_or_uncertain() {
+  [[ -e "$PHONE_AUTH_RECORD_HOST" ]] || return 1
+  grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":[1-9][0-9]*,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
+    "$PHONE_AUTH_RECORD_HOST" ||
+    ! grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":0,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
+      "$PHONE_AUTH_RECORD_HOST"
+}
+
 release_directory() {
   local release="$1"
   local expected="$RELEASES_ROOT/$release"
@@ -68,7 +176,7 @@ compose_release() {
   shift
   local directory
   directory="$(release_directory "$release")"
-  CLICK_BRIDGE_RELEASE="$release" docker compose \
+  CLICK_BRIDGE_RELEASE="$release" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
     -p "$COMPOSE_PROJECT_NAME" \
     --env-file "$SHARED_ENV" \
     -f "$directory/deploy/oci/compose.yaml" \
@@ -89,6 +197,7 @@ verify_candidate() {
     --name "$CANDIDATE_CONTAINER_NAME" \
     --publish 127.0.0.1:18080:8080 \
     --env-file "$SHARED_ENV" \
+    --volume "$AUTH_DIRECTORY:/var/lib/click-bridge/auth" \
     --env PORT=8080 \
     --env HOST=0.0.0.0 \
     "click-bridge-relay:$release" >/dev/null
@@ -157,20 +266,43 @@ validate_git_release "$CLICK_BRIDGE_RELEASE"
 CLICK_BRIDGE_ROOT="$(cd "$CLICK_BRIDGE_ROOT" && pwd -P)"
 RELEASES_ROOT="$CLICK_BRIDGE_ROOT/releases"
 SHARED_ENV="$CLICK_BRIDGE_ROOT/shared/secrets.env"
+AUTH_DIRECTORY="$CLICK_BRIDGE_ROOT/shared/auth"
+PHONE_AUTH_RECORD_HOST="$AUTH_DIRECTORY/phone-auth.json"
 
 [[ -f "$SHARED_ENV" ]] || die "missing $SHARED_ENV"
+[[ ! -L "$SHARED_ENV" ]] || die 'shared secrets file cannot be a symlink'
 [[ "$(secret_file_mode)" = 600 ]] || die "$SHARED_ENV must have mode 0600"
-for required_key in PHONE_TOKEN MAC_TOKEN CLICK_BRIDGE_DOMAIN; do
-  [[ "$(grep -c "^${required_key}=" "$SHARED_ENV")" = 1 ]] ||
-    die "$SHARED_ENV must define $required_key exactly once"
-done
+validate_secret_schema
 CLICK_BRIDGE_DOMAIN="$(sed -n 's/^CLICK_BRIDGE_DOMAIN=//p' "$SHARED_ENV")"
 PHONE_TOKEN="$(sed -n 's/^PHONE_TOKEN=//p' "$SHARED_ENV")"
 MAC_TOKEN="$(sed -n 's/^MAC_TOKEN=//p' "$SHARED_ENV")"
 export -n PHONE_TOKEN MAC_TOKEN
 [[ "$CLICK_BRIDGE_DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] ||
   die 'CLICK_BRIDGE_DOMAIN is not a valid hostname'
+PAIRING_ENABLED="$(sed -n 's/^PAIRING_ENABLED=//p' "$SHARED_ENV")"
+[[ "$PAIRING_ENABLED" = 0 || "$PAIRING_ENABLED" = 1 ]] ||
+  die 'PAIRING_ENABLED must be exactly 0 or 1'
+PHONE_AUTH_RECORD_CONTAINER="$(sed -n 's/^PHONE_AUTH_RECORD=//p' "$SHARED_ENV")"
+[[ "$PHONE_AUTH_RECORD_CONTAINER" = /var/lib/click-bridge/auth/phone-auth.json ]] ||
+  die 'PHONE_AUTH_RECORD must use the persistent container path'
+if [[ "$PAIRING_ENABLED" = 1 ]]; then
+  APPLE_TEAM_ID="$(sed -n 's/^APPLE_TEAM_ID=//p' "$SHARED_ENV")"
+  [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'APPLE_TEAM_ID is invalid'
+fi
+[[ -d "$AUTH_DIRECTORY" && ! -L "$AUTH_DIRECTORY" ]] ||
+  die "$AUTH_DIRECTORY must be a real directory"
+[[ "$(path_mode "$AUTH_DIRECTORY")" = 700 ]] || die "$AUTH_DIRECTORY must have mode 0700"
+if [[ -e "$PHONE_AUTH_RECORD_HOST" || -L "$PHONE_AUTH_RECORD_HOST" ]]; then
+  [[ -f "$PHONE_AUTH_RECORD_HOST" && ! -L "$PHONE_AUTH_RECORD_HOST" ]] ||
+    die 'phone auth record must be a regular file, not a symlink'
+  [[ "$(path_mode "$PHONE_AUTH_RECORD_HOST")" = 600 ]] ||
+    die 'phone auth record must have mode 0600'
+fi
 release_directory "$CLICK_BRIDGE_RELEASE" >/dev/null
+if phone_auth_record_is_rotated_or_uncertain &&
+   ! release_supports_phone_auth_record "$CLICK_BRIDGE_RELEASE"; then
+  die 'refusing a pairing-incompatible release after phone credential rotation'
+fi
 
 CURRENT_RELEASE=''
 if CURRENT_RELEASE="$(read_pointer current-release)"; then
@@ -197,6 +329,10 @@ trap - EXIT INT TERM
 
 if ! start_release "$CLICK_BRIDGE_RELEASE" || ! verify_public_release "$CLICK_BRIDGE_RELEASE"; then
   if [[ -n "$CURRENT_RELEASE" ]]; then
+    if phone_auth_record_is_rotated_or_uncertain &&
+       ! release_supports_phone_auth_record "$CURRENT_RELEASE"; then
+      die 'automatic rollback refused: prior release is pairing-incompatible'
+    fi
     printf 'Candidate failed after switch; restoring %s\n' "$CURRENT_RELEASE" >&2
     start_release "$CURRENT_RELEASE"
     verify_public_release "$CURRENT_RELEASE" ||

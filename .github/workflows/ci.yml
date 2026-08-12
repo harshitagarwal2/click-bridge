@@ -44,6 +44,7 @@ jobs:
           node .github/scripts/test-workflows.mjs
           node .github/scripts/verify-workflows.mjs
           bash .github/scripts/test-deploy-oci.sh
+          bash scripts/test-bootstrap-owner-mac.sh
 
       - name: Lint workflows and shell
         run: |
@@ -62,8 +63,11 @@ jobs:
             echo 'CLICK_BRIDGE_RELEASE=ci'
             echo 'PHONE_TOKEN=1111111111111111111111111111111111111111111111111111111111111111'
             echo 'MAC_TOKEN=2222222222222222222222222222222222222222222222222222222222222222'
+            echo 'PAIRING_ENABLED=0'
+            echo 'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json'
           } > deploy/oci/.env
-          docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --quiet
+          CLICK_BRIDGE_SECRETS_FILE="$PWD/deploy/oci/.env" \
+            docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --quiet
 
       - name: Build and health-check relay image
         run: |
@@ -76,6 +80,8 @@ jobs:
             --env PHONE_TOKEN=1111111111111111111111111111111111111111111111111111111111111111 \
             --env MAC_TOKEN=2222222222222222222222222222222222222222222222222222222222222222 \
             --env CLICK_BRIDGE_DOMAIN=example.test \
+            --env PAIRING_ENABLED=0 \
+            --env PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json \
             click-bridge-relay:ci
           ready=0
           for _ in $(seq 1 30); do

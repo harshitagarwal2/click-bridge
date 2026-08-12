@@ -210,13 +210,14 @@ cp deploy/oci/.env.example deploy/oci/.env
 ```
 
 Set `CLICK_BRIDGE_DOMAIN=example.test`, `CLICK_BRIDGE_RELEASE=local`, and the
-two Task 3 test tokens in the ignored file, then run:
+two Task 3 test tokens in the ignored file. Keep `PAIRING_ENABLED=0` and set
+`PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json`, then run:
 
 ```bash
 docker build -f deploy/oci/Dockerfile -t click-bridge-relay:local .
-docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --quiet
-docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --services
-docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --images
+CLICK_BRIDGE_SECRETS_FILE="$PWD/deploy/oci/.env" docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --quiet
+CLICK_BRIDGE_SECRETS_FILE="$PWD/deploy/oci/.env" docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --services
+CLICK_BRIDGE_SECRETS_FILE="$PWD/deploy/oci/.env" docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --images
 ```
 
 The model must contain exactly `relay` and `caddy`; relay has no `ports` key,
@@ -269,16 +270,23 @@ or deliberate two-role rotation, generate a temporary mode-0600 transfer file
 on the Mac without printing the tokens:
 
 ```bash
+# click-bridge-secrets-recipe:start
+set -Eeuo pipefail
 umask 077
 export CLICK_BRIDGE_DOMAIN='clickbridge-sjc.duckdns.org'
 PHONE_TOKEN="$(openssl rand -hex 32)"
 MAC_TOKEN="$(openssl rand -hex 32)"
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
 {
-  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
   printf 'PHONE_TOKEN=%s\n' "$PHONE_TOKEN"
   printf 'MAC_TOKEN=%s\n' "$MAC_TOKEN"
-} > /private/tmp/click-bridge-secrets.env
-test "$(wc -l < /private/tmp/click-bridge-secrets.env | tr -d ' ')" = 3
+  printf 'CLICK_BRIDGE_DOMAIN=%s\n' "$CLICK_BRIDGE_DOMAIN"
+  printf '%s\n' 'PAIRING_ENABLED=0'
+  printf '%s\n' 'PHONE_AUTH_RECORD=/var/lib/click-bridge/auth/phone-auth.json'
+} > "$CLICK_BRIDGE_SECRETS_FILE"
+chmod 600 "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(wc -l < "$CLICK_BRIDGE_SECRETS_FILE" | tr -d ' ')" = 5
+# click-bridge-secrets-recipe:end
 ```
 
 Install the new/rotated canonical VM copy outside every release:
@@ -291,6 +299,57 @@ ssh "$OCI_SSH_TARGET" 'sudo install -d -m 0700 -o "$USER" -g "$(id -gn)" /opt/cl
 
 Configure the phone with `PHONE_TOKEN` and the Mac Keychain with `MAC_TOKEN`.
 Do not generate `DIRECT_TOKEN` unless Task 11 begins.
+
+### Pairing persistence and owner-Mac bootstrap
+
+Pairing is deliberately off by default. Enable it only by editing the existing
+`PAIRING_ENABLED=0` line to `PAIRING_ENABLED=1` and adding `APPLE_TEAM_ID`
+exactly once. The canonical auth-record line remains unchanged:
+
+```bash
+# click-bridge-pairing-enable-recipe:start
+set -Eeuo pipefail
+CLICK_BRIDGE_SECRETS_FILE="${CLICK_BRIDGE_SECRETS_FILE:-/private/tmp/click-bridge-secrets.env}"
+test "$(grep -c '^PAIRING_ENABLED=0$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=' "$CLICK_BRIDGE_SECRETS_FILE" || true)" = 0
+sed -i.bak 's/^PAIRING_ENABLED=0$/PAIRING_ENABLED=1/' "$CLICK_BRIDGE_SECRETS_FILE"
+rm -f "$CLICK_BRIDGE_SECRETS_FILE.bak"
+printf '%s\n' 'APPLE_TEAM_ID=XXXXXXXXXX' >> "$CLICK_BRIDGE_SECRETS_FILE"
+test "$(grep -c '^PAIRING_ENABLED=1$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(grep -c '^APPLE_TEAM_ID=XXXXXXXXXX$' "$CLICK_BRIDGE_SECRETS_FILE")" = 1
+test "$(stat -f %Lp "$CLICK_BRIDGE_SECRETS_FILE" 2>/dev/null || stat -c %a "$CLICK_BRIDGE_SECRETS_FILE")" = 600
+# click-bridge-pairing-enable-recipe:end
+```
+
+The deployment script requires `/opt/click-bridge/shared/auth` to be a real
+mode-0700 directory. If `phone-auth.json` exists, it must be a regular,
+non-symlink mode-0600 file. The script never prints or sources that JSON. Once
+its active credential version is greater than zero (or the record is not
+strictly recognizable), deployment and automatic rollback refuse any release
+whose Compose model lacks the persistent auth bind mount. This prevents an old
+release from silently falling back to the legacy phone token.
+
+Configure the owner Mac without placing `MAC_TOKEN` in an argument, URL, log,
+or shell trace. The bootstrap accepts exactly one credential source:
+
+```bash
+scripts/bootstrap-owner-mac.sh \
+  --relay-url 'wss://clickbridge.example/ws' \
+  --secrets-file /private/tmp/click-bridge-secrets.env
+
+scripts/bootstrap-owner-mac.sh \
+  --relay-url 'wss://clickbridge.example/ws' \
+  --ssh-host 'opc@clickbridge.example'
+```
+
+The local source must be a real mode-0600 file. The SSH mode reads only the
+`MAC_TOKEN` line from the remote mode-0600 shared environment. In both modes a
+mode-0600 temporary file feeds the Swift Keychain helper over standard input;
+the helper's output is suppressed and the file is removed after success,
+failure, or a caught signal. The helper writes Keychain account `macToken`,
+persists the relay URL for `com.clickbridge.mac`, and posts the distributed
+configuration-change notification. Run `scripts/test-bootstrap-owner-mac.sh`
+to exercise the fake-only contract; it never touches SSH or Keychain.
 
 ## 8. Transfer one immutable release
 

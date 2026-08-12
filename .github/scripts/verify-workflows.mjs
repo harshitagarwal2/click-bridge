@@ -210,6 +210,12 @@ function shellCommandSegments(source) {
       escaped = false;
       continue;
     }
+    if (quote !== "'" && character === "$" && source[index + 1] === "(") {
+      word += "$";
+      wordDynamic = true;
+      index = shellCommandSubstitutionEnd(source, index + 2);
+      continue;
+    }
     if (quote === '"' && character === "\\") {
       escaped = true;
       continue;
@@ -351,6 +357,179 @@ function shellCommandSubstitutionBodies(source) {
   return bodies;
 }
 
+function shellWithoutLineContinuations(source) {
+  let normalized = "";
+  let quote = "";
+  let comment = false;
+  let wordStarted = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (comment) {
+      normalized += character;
+      if (character === "\n") {
+        comment = false;
+        wordStarted = false;
+      }
+      continue;
+    }
+    if (
+      quote !== "'" &&
+      character === "\\" &&
+      (source[index + 1] === "\n" ||
+        (source[index + 1] === "\r" && source[index + 2] === "\n"))
+    ) {
+      index += source[index + 1] === "\r" ? 2 : 1;
+      continue;
+    }
+    normalized += character;
+    if (quote === "'") {
+      if (character === "'") quote = "";
+      continue;
+    }
+    if (quote === '"') {
+      if (character === '"') quote = "";
+      else if (character === "\\" && index + 1 < source.length) {
+        normalized += source[index + 1];
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "#" && !wordStarted) {
+      comment = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      wordStarted = true;
+    } else if (character === "\\" && index + 1 < source.length) {
+      normalized += source[index + 1];
+      index += 1;
+      wordStarted = true;
+    } else if (/\s/.test(character) || ";&|()<>{}".includes(character)) {
+      wordStarted = false;
+    } else {
+      wordStarted = true;
+    }
+  }
+  return normalized;
+}
+
+function shellSecretParameterExpansions(source) {
+  const secretNames = new Set(["PHONE_TOKEN", "MAC_TOKEN"]);
+  const expansions = [];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "$") continue;
+
+    if (source[index + 1] === "{") {
+      let nameStart = index + 2;
+      if (source[nameStart] === "#" || source[nameStart] === "!") {
+        nameStart += 1;
+      }
+      const name = source.slice(nameStart).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+      if (secretNames.has(name)) {
+        expansions.push({ name, syntax: "braced" });
+      }
+      continue;
+    }
+
+    const name = source.slice(index + 1).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (secretNames.has(name)) {
+      expansions.push({ name, syntax: "unbraced" });
+    }
+  }
+  return expansions;
+}
+
+function validateDeploymentSecretFlow(source) {
+  const secretExpansions = shellSecretParameterExpansions(
+    shellWithoutLineContinuations(source),
+  );
+  for (const secretName of ["PHONE_TOKEN", "MAC_TOKEN"]) {
+    const references = secretExpansions.filter(({ name }) => name === secretName);
+    assert.equal(
+      references.length,
+      1,
+      `deploy script must use ${secretName} only in the reviewed smoke-container environment assignment`,
+    );
+    assert.equal(
+      references[0].syntax,
+      "unbraced",
+      `deploy script must use ${secretName} only as the exact reviewed unbraced parameter expansion`,
+    );
+  }
+  const credentialSegments = shellCommandSegments(source).filter((segment) => {
+    const values = segment.map(({ value }) => value);
+    return values.includes("PHONE_TOKEN=$PHONE_TOKEN") ||
+      values.includes("MAC_TOKEN=$MAC_TOKEN");
+  });
+  assert.equal(
+    credentialSegments.length,
+    1,
+    "deploy script must keep credential values in one reviewed command",
+  );
+  const credentialValues = credentialSegments[0].map(({ value }) => value);
+  const credentialCommandIndex = shellCommandInvocationIndex(credentialSegments[0]);
+  assert.deepEqual(
+    credentialValues.slice(0, credentialCommandIndex + 2),
+    [
+      "CLICK_BRIDGE_RELEASE=$release",
+      "PHONE_TOKEN=$PHONE_TOKEN",
+      "MAC_TOKEN=$MAC_TOKEN",
+      "docker",
+      "run",
+    ],
+    "deploy script must keep credential values confined to the reviewed smoke-container environment assignment",
+  );
+  assert.equal(
+    source.includes(".compose-compat."),
+    false,
+    "deploy script must not persist credential-resolved Compose output",
+  );
+
+  const composeSubstitutions = shellCommandSubstitutionBodies(source)
+    .map((body) => shellCommandSegments(body))
+    .flat()
+    .filter((segment) => {
+      const commandIndex = shellCommandInvocationIndex(segment);
+      return commandIndex >= 0 &&
+        segment[commandIndex].value === "docker" &&
+        segment[commandIndex + 1]?.value === "compose";
+    });
+  assert.equal(
+    composeSubstitutions.length,
+    1,
+    "deploy script must capture exactly one Compose compatibility render in memory",
+  );
+  assert.deepEqual(
+    composeSubstitutions[0].map(({ value }) => value),
+    [
+      "CLICK_BRIDGE_RELEASE=$1",
+      "CLICK_BRIDGE_SECRETS_FILE=$SHARED_ENV",
+      "docker",
+      "compose",
+      "-p",
+      "${COMPOSE_PROJECT_NAME}-compat-check",
+      "--env-file",
+      "$SHARED_ENV",
+      "-f",
+      "$directory/deploy/oci/compose.yaml",
+      "config",
+      "relay",
+      "2>/dev/null",
+    ],
+    "Compose compatibility render must use exact argv and suppress stderr while stdout is captured",
+  );
+  assert.equal(
+    source.match(/if ! rendered="\$\(/g)?.length,
+    1,
+    "Compose compatibility output must be captured directly into rendered",
+  );
+  assert.ok(
+    source.includes('config relay 2>/dev/null)"; then'),
+    "Compose compatibility capture must fail closed without emitting stderr",
+  );
+}
+
 const dockerRunOptionsWithValues = new Set([
   "--add-host",
   "--env",
@@ -439,11 +618,25 @@ const unsafeShellAssignments = new Set([
 ]);
 const reviewedShellExecutables = new Set([
   ":",
+  "-d",
+  "-e",
+  "-f",
+  "-L",
+  "=",
   "[[",
+  "APPLE_TEAM_ID",
+  "CLICK_BRIDGE_DOMAIN",
+  "MAC_TOKEN",
+  "PAIRING_ENABLED",
+  "PHONE_AUTH_RECORD",
+  "PHONE_TOKEN",
   "break",
+  "case",
   "cd",
+  "chmod",
   "cleanup_candidate",
   "compose_release",
+  "continue",
   "die",
   "docker",
   "done",
@@ -454,14 +647,25 @@ const reviewedShellExecutables = new Set([
   "fi",
   "for",
   "grep",
+  "domain_count",
+  "line_number",
   "local",
+  "mac_token_count",
+  "mkdir",
   "mv",
+  "path_mode",
+  "pairing_count",
+  "phone_auth_record_is_rotated_or_uncertain",
+  "phone_token_count",
   "printf",
   "pwd",
+  "read",
   "read_pointer",
   "release_directory",
+  "release_supports_phone_auth_record",
   "required_key",
   "return",
+  "record_count",
   "rm",
   "secret_file_mode",
   "sed",
@@ -471,12 +675,14 @@ const reviewedShellExecutables = new Set([
   "sleep",
   "start_release",
   "stat",
+  "team_count",
   "tr",
   "trap",
   "true",
   "umask",
   "validate_git_release",
   "validate_pointer_release",
+  "validate_secret_schema",
   "verify_candidate",
   "verify_public_release",
   "write_pointer",
@@ -486,8 +692,12 @@ function assertSafeShellAssignments(segment) {
   for (const { value } of segment) {
     const assignment = value.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\+?=)/);
     if (!assignment) continue;
+    const emptyIfsRead =
+      assignment[1] === "IFS" &&
+      segment.map(({ value: token }) => token).join(" ") ===
+        "while IFS= read -r line";
     assert.ok(
-      !unsafeShellAssignments.has(assignment[1]) &&
+      (!unsafeShellAssignments.has(assignment[1]) || emptyIfsRead) &&
         !assignment[1].startsWith("BASH_FUNC_"),
       `deploy script must not replace command-resolution environment: ${assignment[1]}`,
     );
@@ -500,11 +710,9 @@ function deployDockerRuns(source) {
   const subcommands = [];
   for (const substitution of shellCommandSubstitutionBodies(source)) {
     const nestedDocker = deployDockerRuns(substitution);
-    assert.deepEqual(
-      nestedDocker.subcommands,
-      [],
-      "deploy script must not invoke Docker from a command substitution",
-    );
+    runs.push(...nestedDocker.runs);
+    invocations.push(...nestedDocker.invocations);
+    subcommands.push(...nestedDocker.subcommands);
   }
   for (const segment of shellCommandSegments(source)) {
     assertSafeShellAssignments(segment);
@@ -523,12 +731,41 @@ function deployDockerRuns(source) {
     const subcommand = subcommandToken?.value;
     const executableName = executable.split("/").at(-1);
 
+    if (executableName === "awk") {
+      const awkInvocation = segment.map(({ value }) => value).join(" ");
+      assert.ok(
+        awkInvocation.includes("-v expected_source=$AUTH_DIRECTORY") &&
+          awkInvocation.includes("function reset_mount()") &&
+          awkInvocation.includes("exit exact_matches == 1 ? 0 : 1") &&
+          !awkInvocation.includes("system("),
+        "deploy script contains an unreviewed Awk executable command",
+      );
+      continue;
+    }
+
     if (executableToken.dynamic) {
+      if (
+        segment.length === 1 &&
+        ["*", "[A-Z][A-Z0-9_]*", "[^[:space:]]*"].includes(executable)
+      ) {
+        continue;
+      }
       const quotedConditionSubstitutionTail =
         (segment.length === 2 &&
           executable === "$" &&
           subcommand === "]]" &&
           subcommandToken.dynamic === false) ||
+        (segment.length === 4 &&
+          executable.startsWith("$") &&
+          subcommand === "=~" &&
+          subcommandToken.dynamic === false &&
+          segment[3].value === "]]" &&
+          segment[3].dynamic === false) ||
+        (segment.length === 4 &&
+          executable.startsWith("$") &&
+          ["=", "!="].includes(subcommand) &&
+          segment.slice(1).every(({ dynamic }) => dynamic === false) &&
+          segment[3].value === "]]" ) ||
         (segment.length === 4 &&
           /^= \$[A-Za-z_][A-Za-z0-9_]*\)$/.test(executable) &&
           subcommand === "=" &&
@@ -543,7 +780,7 @@ function deployDockerRuns(source) {
 
     assert.ok(
       reviewedShellExecutables.has(executableName),
-      `deploy script contains an unreviewed executable command: ${executableName}`,
+      `deploy script contains an unreviewed executable command: ${executableName}: ${JSON.stringify(segment)}`,
     );
     if (executableName === "docker") {
       assert.equal(
@@ -628,6 +865,8 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     "Caddy must use exactly the reviewed digest; tag-only references are forbidden",
   );
 
+  validateDeploymentSecretFlow(deployScript);
+
   const {
     invocations: dockerInvocations,
     runs: deployRuns,
@@ -636,7 +875,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     deployDockerRuns(deployScript);
   assert.deepEqual(
     dockerSubcommands,
-    ["compose", "rm", "run", "exec", "logs", "run", "run"],
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"],
     "deploy script must contain exactly the reviewed Docker command sequence",
   );
   assert.deepEqual(
@@ -644,7 +883,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
       executable,
       subcommand,
     })),
-    ["compose", "rm", "run", "exec", "logs", "run", "run"].map(
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"].map(
       (subcommand) => ({ executable: "docker", subcommand }),
     ),
     "every deployment Docker invocation must use the exact literal executable",
@@ -661,6 +900,8 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
           "127.0.0.1:18080:8080",
           "--env-file",
           "$SHARED_ENV",
+          "--volume",
+          "$AUTH_DIRECTORY:/var/lib/click-bridge/auth",
           "--env",
           "PORT=8080",
           "--env",
