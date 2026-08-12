@@ -129,7 +129,10 @@ test('startup rejects missing, malformed, identical tokens and invalid hostnames
 test('health and known static fixtures carry the single canonical CSP', async () => {
   const publicDir = await mkdtemp(join(tmpdir(), 'click-bridge-static-'));
   await mkdir(join(publicDir, 'icons'));
-  await writeFile(join(publicDir, 'index.html'), '<script src="/app.js"></script>');
+  await writeFile(join(publicDir, 'index.html'), [
+    '<meta name="clickbridge-pairing" content="off">',
+    '<script src="/app.js"></script>',
+  ].join('\n'));
   await writeFile(join(publicDir, 'app.js'), 'globalThis.loaded = true;');
   await writeFile(join(publicDir, 'secret.txt'), 'must not be served');
   const { server, base } = await boot({ publicDir });

@@ -221,12 +221,15 @@ const PAIRING_DISABLED_META = '<meta name="clickbridge-pairing" content="off">';
 const PAIRING_ENABLED_META = '<meta name="clickbridge-pairing" content="on">';
 
 function renderIndex(body, pairingEnabled) {
-  if (!pairingEnabled) return body;
   const html = body.toString('utf8');
-  if (html.split(PAIRING_DISABLED_META).length !== 2) {
-    throw new Error('index.html must contain exactly one disabled pairing capability marker');
+  const disabledMarkers = html.split(PAIRING_DISABLED_META).length - 1;
+  const enabledMarkers = html.split(PAIRING_ENABLED_META).length - 1;
+  if (disabledMarkers !== 1 || enabledMarkers !== 0) {
+    throw new Error('index.html has an invalid pairing capability marker');
   }
-  return Buffer.from(html.replace(PAIRING_DISABLED_META, PAIRING_ENABLED_META));
+  return pairingEnabled
+    ? Buffer.from(html.replace(PAIRING_DISABLED_META, PAIRING_ENABLED_META))
+    : body;
 }
 
 function isValidToken(token) {
@@ -358,7 +361,7 @@ export function createHttpHandler({
       writeResponse(res, status, {
         ...securityHeaders,
         'Content-Type': 'text/plain; charset=utf-8',
-      }, status === 404 ? 'not found' : 'internal error');
+      }, status === 404 && req.method !== 'HEAD' ? 'not found' : '');
     }
   };
 }
