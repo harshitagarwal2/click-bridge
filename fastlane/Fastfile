@@ -21,6 +21,7 @@ platform :ios do
     team_id = ENV.fetch("APPLE_TEAM_ID")
     profile_name = ENV.fetch("IOS_PROVISIONING_PROFILE_NAME")
     output_directory = ENV.fetch("RUNNER_TEMP")
+    archive_path = File.join(output_directory, "ClickBridgePhone.xcarchive")
     output_path = File.join(output_directory, "ClickBridgePhone.ipa")
 
     increment_version_number(
@@ -37,6 +38,7 @@ platform :ios do
       scheme: "ClickBridgePhone",
       configuration: "Release",
       clean: true,
+      archive_path: archive_path,
       output_directory: output_directory,
       output_name: File.basename(output_path),
       export_method: "app-store",
@@ -100,7 +102,7 @@ platform :mac do
     team_id = ENV.fetch("APPLE_TEAM_ID")
     profile_name = ENV.fetch("MAC_PROVISIONING_PROFILE_NAME")
     output_directory = ENV.fetch("RUNNER_TEMP")
-    output_path = File.join(output_directory, "ClickBridgeMac.pkg")
+    archive_path = File.join(output_directory, "ClickBridgeMac.xcarchive")
 
     increment_version_number(
       version_number: release_version,
@@ -111,13 +113,14 @@ platform :mac do
       xcodeproj: "mac/ClickBridgeMac.xcodeproj"
     )
 
-    build_mac_app(
+    output_path = build_mac_app(
       project: "mac/ClickBridgeMac.xcodeproj",
       scheme: "ClickBridgeMac",
       configuration: "Release",
       clean: true,
+      archive_path: archive_path,
       output_directory: output_directory,
-      output_name: File.basename(output_path),
+      output_name: "ClickBridgeMac",
       export_method: "app-store",
       skip_package_pkg: false,
       installer_cert_name: "Mac Installer Distribution",
