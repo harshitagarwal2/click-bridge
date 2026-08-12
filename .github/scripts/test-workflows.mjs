@@ -27,7 +27,28 @@ function assertIncludes(source, expected, message) {
   assert.ok(source.includes(expected), message ?? `missing ${expected}`);
 }
 
+function readYamlDocument(relativePath) {
+  const result = spawnSync(
+    "ruby",
+    [
+      "-ryaml",
+      "-rjson",
+      "-e",
+      "puts JSON.generate(YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true))",
+      relativePath,
+    ],
+    { cwd: repositoryRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    result.status,
+    0,
+    `${relativePath} YAML parsing failed:\n${result.stdout}${result.stderr}`,
+  );
+  return JSON.parse(result.stdout);
+}
+
 const ci = readRequired(".github/workflows/ci.yml");
+const ciDocument = readYamlDocument(".github/workflows/ci.yml");
 
 assertIncludes(ci, "name: CI");
 assertIncludes(ci, "pull_request:");
@@ -47,6 +68,68 @@ assertIncludes(ci, "ClickBridgeMac");
 assertIncludes(ci, "hashFiles('ios/project.yml')");
 assertIncludes(ci, "ClickBridgePhone");
 assert.ok(!ci.includes("brew install xcodegen"), "CI must not install mutable Homebrew XcodeGen");
+
+const relaySteps = ciDocument.jobs["relay-container"].steps;
+const workflowContractStep = relaySteps.find(
+  (step) => step.name === "Verify workflow contracts",
+);
+assert.ok(workflowContractStep, "CI must contain the workflow contract step");
+assertIncludes(
+  workflowContractStep.run,
+  "ruby .github/scripts/validate-release-workflows.rb",
+  "CI must directly run the release workflow validator",
+);
+
+const appleSteps = ciDocument.jobs["apple-clients"].steps;
+const appleStepNames = appleSteps.map((step) => step.name);
+for (const preservedStep of [
+  "Generate iOS project",
+  "Verify generated project parity",
+  "Select iPhone simulator",
+  "Test iOS client",
+  "Build iOS with strict Swift concurrency",
+  "Build iOS simulator Release",
+]) {
+  assert.ok(
+    appleStepNames.includes(preservedStep),
+    `CI must preserve the ${preservedStep} step`,
+  );
+}
+const genericDeviceStep = appleSteps.find(
+  (step) => step.name === "Build unsigned iOS generic-device Release",
+);
+assert.ok(genericDeviceStep, "CI must build an unsigned generic-device iOS Release");
+assert.equal(
+  genericDeviceStep.if,
+  "${{ hashFiles('ios/project.yml') != '' }}",
+  "generic-device build must use the same optional iOS project guard",
+);
+for (const requiredArgument of [
+  "-project ios/ClickBridgePhone.xcodeproj",
+  "-scheme ClickBridgePhone",
+  "-configuration Release",
+  "-destination 'generic/platform=iOS'",
+  '-derivedDataPath "$RUNNER_TEMP/click-bridge-ios-device-build"',
+  "CODE_SIGNING_ALLOWED=NO",
+  "CODE_SIGNING_REQUIRED=NO",
+  "build",
+]) {
+  assertIncludes(
+    genericDeviceStep.run,
+    requiredArgument,
+    `generic-device build is missing ${requiredArgument}`,
+  );
+}
+assert.ok(
+  appleStepNames.indexOf("Verify generated project parity")
+    < appleStepNames.indexOf("Build unsigned iOS generic-device Release"),
+  "generic-device build must consume the parity-checked generated project",
+);
+assert.ok(
+  appleStepNames.indexOf("Build unsigned iOS generic-device Release")
+    < appleStepNames.indexOf("Select iPhone simulator"),
+  "generic-device build must not depend on simulator discovery",
+);
 
 const xcodegenVersion = "2.46.0";
 const xcodegenSha256 = "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806";
