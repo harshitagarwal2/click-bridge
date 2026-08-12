@@ -100,6 +100,216 @@ final class WireMessageTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: Data(deny.utf8)) as? [String: Any])["type"] as? String, "pair.deny")
     }
 
+    func testEveryMacPairingRequestFailsClosedBeforeEncodingMalformedMetadata() {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e1"
+        let claimID = "018f63f5-6f3d-7d21-88bc-9ef561f030e2"
+
+        var create = PairCreate(requestId: requestID)
+        create.type = "pair.status.request"
+        XCTAssertThrowsError(try Wire.encode(create))
+        create = PairCreate(requestId: requestID)
+        create.v = 2
+        XCTAssertThrowsError(try Wire.encode(create))
+        create = PairCreate(requestId: requestID.uppercased())
+        XCTAssertThrowsError(try Wire.encode(create))
+        create = PairCreate(requestId: requestID)
+        create.pairingVersion = 2
+        XCTAssertThrowsError(try Wire.encode(create))
+
+        var status = PairStatusRequest(requestId: requestID)
+        status.type = "pair.create"
+        XCTAssertThrowsError(try Wire.encode(status))
+        status = PairStatusRequest(requestId: requestID)
+        status.v = 2
+        XCTAssertThrowsError(try Wire.encode(status))
+        status = PairStatusRequest(requestId: requestID.uppercased())
+        XCTAssertThrowsError(try Wire.encode(status))
+        status = PairStatusRequest(requestId: requestID)
+        status.pairingVersion = 2
+        XCTAssertThrowsError(try Wire.encode(status))
+
+        var cancel = PairCancel(requestId: requestID)
+        cancel.type = "pair.create"
+        XCTAssertThrowsError(try Wire.encode(cancel))
+        cancel = PairCancel(requestId: requestID)
+        cancel.v = 2
+        XCTAssertThrowsError(try Wire.encode(cancel))
+        cancel = PairCancel(requestId: requestID.uppercased())
+        XCTAssertThrowsError(try Wire.encode(cancel))
+
+        var approve = PairApprove(requestId: requestID, claimId: claimID)
+        approve.type = "pair.deny"
+        XCTAssertThrowsError(try Wire.encode(approve))
+        approve = PairApprove(requestId: requestID, claimId: claimID)
+        approve.v = 2
+        XCTAssertThrowsError(try Wire.encode(approve))
+        XCTAssertThrowsError(try Wire.encode(PairApprove(requestId: requestID.uppercased(), claimId: claimID)))
+        XCTAssertThrowsError(try Wire.encode(PairApprove(requestId: requestID, claimId: claimID.uppercased())))
+
+        var deny = PairDeny(requestId: requestID, claimId: claimID)
+        deny.type = "pair.approve"
+        XCTAssertThrowsError(try Wire.encode(deny))
+        deny = PairDeny(requestId: requestID, claimId: claimID)
+        deny.v = 2
+        XCTAssertThrowsError(try Wire.encode(deny))
+        XCTAssertThrowsError(try Wire.encode(PairDeny(requestId: requestID.uppercased(), claimId: claimID)))
+        XCTAssertThrowsError(try Wire.encode(PairDeny(requestId: requestID, claimId: claimID.uppercased())))
+    }
+
+    func testMacPairingServerModelsFailClosedBeforeReEncodingMalformedMetadata() {
+        let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e1"
+        let claimID = "018f63f5-6f3d-7d21-88bc-9ef561f030e2"
+
+        var created = PairCreated(
+            requestId: requestID,
+            reference: String(repeating: "A", count: 43),
+            expiresAtUnixMs: 1_786_500_000_000
+        )
+        created.type = "pair.status"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCreated(created)))
+        created = PairCreated(
+            requestId: requestID,
+            reference: String(repeating: "A", count: 43),
+            expiresAtUnixMs: 1_786_500_000_000
+        )
+        created.v = 2
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCreated(created)))
+        created = PairCreated(
+            requestId: requestID.uppercased(),
+            reference: String(repeating: "A", count: 43),
+            expiresAtUnixMs: 1_786_500_000_000
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCreated(created)))
+        created = PairCreated(
+            requestId: requestID,
+            reference: String(repeating: "A", count: 43),
+            expiresAtUnixMs: 1_786_500_000_000
+        )
+        created.reference = String(repeating: "A", count: 42) + "B"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCreated(created)))
+        created = PairCreated(requestId: requestID, reference: String(repeating: "A", count: 43), expiresAtUnixMs: 0)
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCreated(created)))
+
+        var legacy = PairStatus(
+            requestId: requestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 1
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+        legacy = PairStatus(requestId: requestID, enrollmentState: .paired, activePhoneCredentialVersion: 0)
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+        legacy = PairStatus(requestId: requestID, enrollmentState: .legacy, activePhoneCredentialVersion: 0)
+        legacy.type = "pair.completed"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+        legacy = PairStatus(requestId: requestID, enrollmentState: .legacy, activePhoneCredentialVersion: 0)
+        legacy.v = 2
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+        legacy = PairStatus(
+            requestId: requestID.uppercased(),
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+        legacy = PairStatus(
+            requestId: requestID,
+            enrollmentState: .paired,
+            activePhoneCredentialVersion: 9_007_199_254_740_992
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairStatus(legacy)))
+
+        var claimed = PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_786_500_000_000,
+            clientKind: .ios
+        )
+        claimed.type = "pair.claimed.phone"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+        claimed = PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_786_500_000_000,
+            clientKind: .ios
+        )
+        claimed.v = 2
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+        claimed = PairClaimedMac(
+            requestId: requestID.uppercased(),
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_786_500_000_000,
+            clientKind: .ios
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+        claimed = PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID.uppercased(),
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_786_500_000_000,
+            clientKind: .ios
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+        claimed = PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 1_786_500_000_000,
+            clientKind: .ios
+        )
+        claimed.confirmationCode = "482917"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+        claimed = PairClaimedMac(
+            requestId: requestID,
+            claimId: claimID,
+            confirmationCode: "482 917",
+            expiresAtUnixMs: 0,
+            clientKind: .ios
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairClaimedMac(claimed)))
+
+        var completed = PairCompleted(
+            requestId: requestID,
+            claimId: claimID,
+            activePhoneCredentialVersion: 0
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+        completed = PairCompleted(requestId: requestID, claimId: claimID, activePhoneCredentialVersion: 1)
+        completed.type = "pair.failed"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+        completed = PairCompleted(requestId: requestID, claimId: claimID, activePhoneCredentialVersion: 1)
+        completed.v = 2
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+        completed = PairCompleted(
+            requestId: requestID.uppercased(),
+            claimId: claimID,
+            activePhoneCredentialVersion: 1
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+        completed = PairCompleted(
+            requestId: requestID,
+            claimId: claimID.uppercased(),
+            activePhoneCredentialVersion: 1
+        )
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+        completed.activePhoneCredentialVersion = 9_007_199_254_740_992
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairCompleted(completed)))
+
+        var failed = PairFailed(requestId: nil, claimId: nil, reason: .expired)
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairFailed(failed)))
+        failed = PairFailed(requestId: requestID, claimId: nil, reason: .expired)
+        failed.type = "pair.completed"
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairFailed(failed)))
+        failed = PairFailed(requestId: requestID, claimId: nil, reason: .expired)
+        failed.v = 2
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairFailed(failed)))
+        failed = PairFailed(requestId: requestID.uppercased(), claimId: nil, reason: .expired)
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairFailed(failed)))
+        failed = PairFailed(requestId: nil, claimId: claimID.uppercased(), reason: .expired)
+        XCTAssertThrowsError(try Wire.encode(WireMessage.pairFailed(failed)))
+    }
+
     func testPairingSafeIntegerOverflowFailsClosedInsteadOfTrapping() {
         let requestID = "018f63f5-6f3d-7d21-88bc-9ef561f030e0"
         let oversized = #"{"type":"pair.status","v":1,"requestId":"\#(requestID)","enrollmentState":"paired","activePhoneCredentialVersion":9223372036854775808}"#
