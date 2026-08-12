@@ -125,6 +125,39 @@ assert.throws(
 assert.throws(
   () =>
     validateDeploymentImages({
+      dockerfile: `${validDockerfile}FROM node:latest \\\n  AS bypass\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /relay base image|reviewed digest/,
+  "a continued mutable Dockerfile FROM must not evade image validation",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile: `# escape=\u0060\n${validDockerfile}FROM node:latest \u0060\n  AS bypass\n`,
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /Dockerfile|relay base image|reviewed digest/,
+  "an alternate Dockerfile escape directive must fail closed",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
+      dockerfile:
+        "# escape=`\n" +
+        validDockerfile +
+        "RUN printf ignored \\\nFROM node:latest\n",
+      compose: validCompose,
+      deployScript: validDeployScript,
+    }),
+  /Dockerfile|escape directive/,
+  "an alternate escape directive must not hide a mutable FROM after a backslash",
+);
+assert.throws(
+  () =>
+    validateDeploymentImages({
       dockerfile: validDockerfile,
       compose: `x-reviewed: ${reviewedCaddy}\nservices:\n  caddy:\n    image: \${CADDY_IMAGE}\n`,
       deployScript: validDeployScript,
@@ -184,6 +217,10 @@ for (const [shape, compose] of [
   [
     "spaced image",
     `${validCompose}    image : caddy:latest\n`,
+  ],
+  [
+    "anchor-decorated image",
+    `${validCompose}    &dup image: caddy:latest\n`,
   ],
   [
     "explicit services",
@@ -328,6 +365,14 @@ for (const [shape, suffix] of [
   ["long Docker global option", "docker --host unix:///tmp/docker.sock run --rm node:latest true"],
   ["short Docker global option", "docker -H unix:///tmp/docker.sock run --rm node:latest true"],
   ["env split-string", 'env -S "docker run --rm node:latest true"'],
+  [
+    "quoted argument command substitution",
+    'printf %s "$(docker run --rm node:latest true)"',
+  ],
+  [
+    "assignment command substitution",
+    'RESULT="$(docker run --rm node:latest true)"',
+  ],
   [
     "Python launcher",
     "python3 -c 'import os; os.system(\"docker run --rm node:latest true\")'",

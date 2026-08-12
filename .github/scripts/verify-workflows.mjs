@@ -9,15 +9,40 @@ const reviewedNode =
   "node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43";
 
 function dockerfileBaseReferences(source) {
-  return source
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*#/.test(line))
-    .flatMap((line) => {
-      const match = line.match(
-        /^\s*FROM\s+(?:(?:--platform=\S+)\s+)?([^\s#]+)(?:\s+AS\s+[^\s#]+)?\s*$/i,
-      );
-      return match ? [match[1]] : [];
-    });
+  assert.equal(
+    source.split(/\r?\n/).some((line) => /^\s*#\s*escape\s*=/i.test(line)),
+    false,
+    "Dockerfile escape directives are unsupported",
+  );
+  const instructions = [];
+  let logicalInstruction = "";
+
+  for (const rawLine of source.split(/\r?\n/)) {
+    if (!logicalInstruction && (!rawLine.trim() || /^\s*#/.test(rawLine))) {
+      continue;
+    }
+    const line = rawLine.trimEnd();
+    const continued = line.endsWith("\\");
+    const fragment = continued ? line.slice(0, -1) : line;
+    logicalInstruction += `${logicalInstruction ? " " : ""}${fragment.trim()}`;
+    if (continued) continue;
+    if (logicalInstruction) instructions.push(logicalInstruction);
+    logicalInstruction = "";
+  }
+  assert.equal(
+    logicalInstruction,
+    "",
+    "Dockerfile must not end inside a continued instruction",
+  );
+
+  return instructions.flatMap((instruction) => {
+    if (!/^FROM\b/i.test(instruction)) return [];
+    const match = instruction.match(
+      /^FROM\s+(?:(?:--platform=\S+)\s+)?([^\s#]+)(?:\s+AS\s+[^\s#]+)?\s*$/i,
+    );
+    assert.ok(match, `Dockerfile contains an unsupported FROM instruction: ${instruction}`);
+    return [match[1]];
+  });
 }
 
 function stripYamlComment(line) {
@@ -59,6 +84,36 @@ function yamlScalar(value) {
   return trimmed;
 }
 
+function yamlUsesNodeProperties(line) {
+  let quote = "";
+  let escaped = false;
+  let plainSyntax = "";
+  for (const character of line) {
+    if (escaped) {
+      escaped = false;
+      plainSyntax += " ";
+      continue;
+    }
+    if (quote === '"' && character === "\\") {
+      escaped = true;
+      plainSyntax += " ";
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = "";
+      plainSyntax += " ";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      plainSyntax += " ";
+      continue;
+    }
+    plainSyntax += character;
+  }
+  return /(?:^|[\s[{,:?-])[&*!](?=\S)/.test(plainSyntax);
+}
+
 function yamlMapping(line) {
   const mapping = line.match(
     /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[A-Za-z0-9_.-]+)\s*:(?:\s*(.*))?$/,
@@ -76,6 +131,11 @@ function composeCaddyImageReferences(source) {
   for (const rawLine of source.split(/\r?\n/)) {
     const line = stripYamlComment(rawLine);
     if (!line.trim()) continue;
+    assert.equal(
+      yamlUsesNodeProperties(line),
+      false,
+      "Compose must not use YAML anchors, aliases, or tags",
+    );
     assert.ok(
       !/^\s*[?:](?:\s|$)/.test(line),
       "Compose must not use explicit YAML mapping keys",
@@ -200,6 +260,95 @@ function shellCommandSegments(source) {
   assert.equal(escaped, false, "deployment script ends inside an escape sequence");
   finishSegment();
   return segments;
+}
+
+function shellCommandSubstitutionEnd(source, startIndex) {
+  let depth = 1;
+  let quote = "";
+  let escaped = false;
+  let comment = false;
+  for (let index = startIndex; index < source.length; index += 1) {
+    const character = source[index];
+    if (comment) {
+      if (character === "\n") comment = false;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && (index === startIndex || /[\s;&|(){}]/.test(source[index - 1]))) {
+      comment = true;
+      continue;
+    }
+    if (character === "(") depth += 1;
+    if (character !== ")") continue;
+    depth -= 1;
+    if (depth === 0) return index;
+  }
+  assert.fail("deployment script contains an unterminated command substitution");
+}
+
+function shellCommandSubstitutionBodies(source) {
+  const bodies = [];
+  let quote = "";
+  let escaped = false;
+  let comment = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (comment) {
+      if (character === "\n") comment = false;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (character === "'") quote = "";
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === "$" && source[index + 1] === "(") {
+      const bodyStart = index + 2;
+      const bodyEnd = shellCommandSubstitutionEnd(source, bodyStart);
+      bodies.push(source.slice(bodyStart, bodyEnd));
+      index = bodyEnd;
+      continue;
+    }
+    assert.notEqual(
+      character,
+      "`",
+      "deployment script must not use backtick dynamic shell execution",
+    );
+    if (quote === '"') {
+      if (character === '"') quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#" && (index === 0 || /[\s;&|(){}]/.test(source[index - 1]))) {
+      comment = true;
+    }
+  }
+  return bodies;
 }
 
 const dockerRunOptionsWithValues = new Set([
@@ -338,6 +487,14 @@ function assertSafeShellAssignments(segment) {
 function deployDockerRuns(source) {
   const runs = [];
   const subcommands = [];
+  for (const substitution of shellCommandSubstitutionBodies(source)) {
+    const nestedDocker = deployDockerRuns(substitution);
+    assert.deepEqual(
+      nestedDocker.subcommands,
+      [],
+      "deploy script must not invoke Docker from a command substitution",
+    );
+  }
   for (const segment of shellCommandSegments(source)) {
     assertSafeShellAssignments(segment);
     if (
