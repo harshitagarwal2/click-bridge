@@ -20,6 +20,7 @@ readonly EXPECTED_PHONE_TOKEN='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 readonly EXPECTED_MAC_TOKEN='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 readonly EXPECTED_DOMAIN='clickbridge.example.test'
 readonly EXPECTED_NODE='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43'
+readonly CANDIDATE_HEALTH_SCRIPT='fetch("http://127.0.0.1:8080/healthz").then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 readonly HEALTH_SCRIPT='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 readonly SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 
@@ -46,6 +47,15 @@ assert_exact_args() {
   for index in "${!expected[@]}"; do
     test "${DOCKER_ARGS[$index]}" = "${expected[$index]}" ||
       fail_fake "$description argument $index"
+  done
+}
+
+args_match() {
+  local -a expected=("$@")
+  local index
+  test "${#DOCKER_ARGS[@]}" -eq "${#expected[@]}" || return 1
+  for index in "${!expected[@]}"; do
+    test "${DOCKER_ARGS[$index]}" = "${expected[$index]}" || return 1
   done
 }
 
@@ -176,8 +186,57 @@ if test "${1:-}" = run; then
       --volume "$expected_relay_mount" \
       --workdir /tmp/smoke \
       "$EXPECTED_NODE" sh -euc "$SMOKE_SCRIPT"
+  elif test "${#RUN_COMMAND[@]}" -eq 0; then
+    RUN_KIND=candidate
+    require_env_absent PHONE_TOKEN
+    require_env_absent MAC_TOKEN
+    assert_exact_args candidate \
+      run --detach \
+      --name click-bridge-relay-candidate \
+      --publish 127.0.0.1:18080:8080 \
+      --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+      --env PORT=8080 \
+      --env HOST=0.0.0.0 \
+      "click-bridge-relay:$CLICK_BRIDGE_RELEASE"
+  else
+    fail_fake 'unrecognized docker run command'
   fi
 fi
+
+case "${1:-}" in
+  run)
+    ;;
+  compose)
+    compose_file="$CLICK_BRIDGE_ROOT/releases/$CLICK_BRIDGE_RELEASE/deploy/oci/compose.yaml"
+    if args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" config --quiet ||
+      args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" build --pull relay ||
+      args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" up -d --no-build --force-recreate ||
+      args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" down ||
+      args_match compose -p oci --env-file "$CLICK_BRIDGE_ROOT/shared/secrets.env" \
+        -f "$compose_file" ps; then
+      :
+    else
+      fail_fake 'compose argument contract'
+    fi
+    ;;
+  rm)
+    assert_exact_args rm rm -f click-bridge-relay-candidate
+    ;;
+  exec)
+    assert_exact_args exec \
+      exec click-bridge-relay-candidate node -e "$CANDIDATE_HEALTH_SCRIPT"
+    ;;
+  logs)
+    assert_exact_args logs logs --tail=100 click-bridge-relay-candidate
+    ;;
+  *)
+    fail_fake "unsupported top-level Docker invocation: ${1:-missing}"
+    ;;
+esac
 
 log_argv "$@"
 
@@ -188,7 +247,7 @@ if test "${1:-}" = run && test "$RUN_KIND" = smoke; then
   test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}"
   exit
 fi
-if test "${1:-}" = run && test "$RUN_IMAGE" != '' && test "${RUN_COMMAND[0]:-}" = ''; then
+if test "${1:-}" = run && test "$RUN_KIND" = candidate; then
   printf '%s\n' fake-candidate-id
   exit 0
 fi
@@ -272,6 +331,8 @@ NODE_VERIFIER='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd3
 # This must match the literal script passed to Node.
 # shellcheck disable=SC2016
 HEALTH_COMMAND='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+# This must match the literal candidate health script passed to Node.
+CANDIDATE_HEALTH_COMMAND='fetch("http://127.0.0.1:8080/healthz").then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 # This must match the literal script run in the container.
 # shellcheck disable=SC2016
 SMOKE_COMMAND='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
@@ -317,6 +378,16 @@ assert_fake_rejects_smoke_extra() {
   shift
   if run_fake_smoke "$@" 2>/dev/null; then
     fail "fake docker accepted $description on the smoke verifier"
+  fi
+}
+
+assert_fake_rejects_invocation() {
+  local description="$1"
+  shift
+  if FAKE_DOCKER_LOG="$FAKE_DOCKER_LOG" CLICK_BRIDGE_ROOT="$root" \
+    CLICK_BRIDGE_RELEASE="$SHA_A" PHONE_TOKEN='' MAC_TOKEN='' \
+    "$FAKE_BIN/docker" "$@" 2>/dev/null; then
+    fail "fake docker accepted $description"
   fi
 }
 
@@ -373,6 +444,34 @@ assert_fake_rejects_smoke_extra \
 assert_fake_rejects_smoke_extra \
   'an unknown privilege option' \
   --cap-add SYS_ADMIN
+assert_fake_rejects_invocation \
+  'a Docker global host option before run' \
+  --host unix:///tmp/docker.sock run --rm "$NODE_VERIFIER" true
+assert_fake_rejects_invocation \
+  'an extra candidate secret volume' \
+  run --detach \
+  --name click-bridge-relay-candidate \
+  --publish 127.0.0.1:18080:8080 \
+  --env-file "$root/shared/secrets.env" \
+  --env PORT=8080 \
+  --env HOST=0.0.0.0 \
+  --volume "$root/shared/secrets.env:/tmp/secrets:ro" \
+  "click-bridge-relay:$SHA_A"
+assert_fake_rejects_invocation \
+  'an extra Compose argument' \
+  compose -p oci \
+  --env-file "$root/shared/secrets.env" \
+  -f "$root/releases/$SHA_A/deploy/oci/compose.yaml" \
+  config --quiet --profile hostile
+assert_fake_rejects_invocation \
+  'an extra rm target' \
+  rm -f click-bridge-relay-candidate hostile-container
+assert_fake_rejects_invocation \
+  'an extra exec command' \
+  exec click-bridge-relay-candidate node -e "$CANDIDATE_HEALTH_COMMAND" true
+assert_fake_rejects_invocation \
+  'an extra logs option' \
+  logs --tail=100 click-bridge-relay-candidate --follow
 assert_log_not_contains 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 assert_log_not_contains 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 

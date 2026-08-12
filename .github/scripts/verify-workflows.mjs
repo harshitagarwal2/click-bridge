@@ -513,18 +513,41 @@ function deployDockerRuns(source) {
     const executableName = executable.split("/").at(-1);
 
     if (executableToken.dynamic) {
-      assert.equal(
-        segment.at(-1)?.value,
-        "]]",
+      const quotedConditionSubstitutionTail =
+        (segment.length === 2 &&
+          executable === "$" &&
+          subcommand === "]]" &&
+          subcommandToken.dynamic === false) ||
+        (segment.length === 4 &&
+          /^= \$[A-Za-z_][A-Za-z0-9_]*\)$/.test(executable) &&
+          subcommand === "=" &&
+          segment[2].value === "1" &&
+          segment[3].value === "]]" &&
+          segment.slice(1).every(({ dynamic }) => dynamic === false));
+      if (quotedConditionSubstitutionTail) continue;
+      assert.fail(
         `deploy script must not compute an executable command: ${JSON.stringify(segment)}`,
       );
-      continue;
     }
 
     assert.ok(
       reviewedShellExecutables.has(executableName),
       `deploy script contains an unreviewed executable command: ${executableName}`,
     );
+
+    if (executableName === "trap") {
+      const trapCommand = segment.map(({ value }) => value);
+      assert.ok(
+        [
+          ["trap", "cleanup_candidate", "EXIT", "INT", "TERM"],
+          ["trap", "-", "EXIT", "INT", "TERM"],
+        ].some((expected) =>
+          expected.length === trapCommand.length &&
+          expected.every((value, index) => value === trapCommand[index])
+        ),
+        `deploy script contains an unreviewed trap command: ${JSON.stringify(trapCommand)}`,
+      );
+    }
 
     for (let index = 0; index < segment.length - 1; index += 1) {
       if (

@@ -310,6 +310,10 @@ for (const [shape, deployScript] of [
     `${validDeployScript}bash -c '$DOCKER run --rm node:latest true'\n`,
   ],
   [
+    "eval command string",
+    `${validDeployScript}eval 'docker run --rm node:latest true'\n`,
+  ],
+  [
     "PATH-prefixed executable",
     validDeployScript.replace(
       "docker run --detach",
@@ -391,6 +395,27 @@ for (const [shape, suffix] of [
       }),
     /computed|docker|Docker|dynamic|executable|subcommand|sequence/,
     `a Docker invocation synthesized through ${shape} must be rejected`,
+  );
+}
+for (const [shape, suffix] of [
+  [
+    "literal trap payload",
+    "trap 'docker run --rm node:latest true' ']]'",
+  ],
+  [
+    "dynamic executable ending in a condition token",
+    "$DOCKER run --rm node:latest true ']]'",
+  ],
+]) {
+  assert.throws(
+    () =>
+      validateDeploymentImages({
+        dockerfile: validDockerfile,
+        compose: validCompose,
+        deployScript: `${validDeployScript}${suffix}\n`,
+      }),
+    /docker|Docker|trap|executable|command/,
+    `a ${shape} must not hide an executable Docker invocation`,
   );
 }
 assert.doesNotThrow(() =>
