@@ -6,11 +6,20 @@ import {
 } from './benchmark-session.js';
 import { BenchmarkController } from './benchmark-controller.js';
 import { PhoneSettingsStore } from './phone-settings-store.js';
+import { PairingController } from './pairing-controller.js';
+import { parseAndClearPairingFragment } from './pairing-link.js';
+import { createPairingUI } from './pairing-ui.js';
 import { createRelayTransport } from './relay-transport.js';
 import { createRuntimeScheduler } from './runtime-scheduler.js';
 import { activationDecision, initialState, PHASE, reduce, view } from './state.js';
 import { TransportCoordinator } from './transport-coordinator.js';
 import { WakeLockController } from './wake-lock-controller.js';
+
+// Pairing references are URL fragments. Scrub synchronously, before any DOM
+// composition, transport, error reporting, or analytics can observe them.
+let initialPairingInvitation = parseAndClearPairingFragment(
+  window.location, window.history, window.location.host,
+);
 
 const byId = (id) => document.getElementById(id);
 const element = {
@@ -28,6 +37,19 @@ const element = {
   keepWarm: byId('keepwarm'),
   diagnostics: byId('diag'),
   wakeStatus: byId('wake-status'),
+  pairing: {
+    panel: byId('pairing-panel'),
+    remote: byId('remote-stage'),
+    heading: byId('pairing-title'),
+    message: byId('pairing-message'),
+    alert: byId('pairing-alert'),
+    code: byId('pairing-code'),
+    paste: byId('pairing-paste'),
+    cancel: byId('pairing-cancel'),
+    pairedState: byId('pairing-paired-state'),
+    pairAgain: byId('pair-again'),
+    forget: byId('pairing-forget'),
+  },
 };
 
 const settings = new PhoneSettingsStore(window.localStorage, navigator.locks);
@@ -41,6 +63,7 @@ let benchmarkSchedule = [];
 let benchmarkBlockIndex = 0;
 let benchmarkRequests;
 let benchmarkTransportGeneration = null;
+let pairingUI;
 
 function dispatch(event) {
   state = reduce(state, event);
@@ -129,6 +152,7 @@ function handleTransportStatus(status) {
   coordinator.abandon(status.reason);
   clockHealth?.macNotReady();
   dispatch({ type: status.state === 'taken_over' ? 'transport.taken_over' : 'transport.closed' });
+  if (status.state === 'taken_over') pairingUI?.handleState({ phase: 'replaced' });
 }
 
 const oci = createRelayTransport({
@@ -137,6 +161,74 @@ const oci = createRelayTransport({
   onMessage: handleInbound,
   onStatus: handleTransportStatus,
 });
+
+function authenticateCredential(slot) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (accepted) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      probe.close('pairing_probe_complete');
+      resolve(accepted);
+    };
+    const probe = createRelayTransport({
+      location: window.location,
+      token: slot.credential,
+      onStatus: ({ state: transportState }) => {
+        if (transportState === 'ready') finish(true);
+        else if (transportState === 'taken_over' || transportState === 'backoff') finish(false);
+      },
+    });
+    const timeout = window.setTimeout(() => finish(false), 10_000);
+    probe.connect();
+  });
+}
+
+async function startPairedTransport(slot, signal) {
+  if (signal.aborted) return false;
+  const stop = () => oci.close('pairing_cancelled');
+  signal.addEventListener('abort', stop, { once: true });
+  if (signal.aborted) return false;
+  benchmarkRequests?.cancelAll('phone paired');
+  oci.close('phone_paired');
+  dispatch({ type: 'token.set', token: slot.credential });
+  oci.resume();
+  return !signal.aborted;
+}
+
+const pairingEnabled = document.querySelector('meta[name="clickbridge-pairing"]')?.content === 'on';
+const pairingController = new PairingController({
+  location: window.location,
+  settings,
+  authenticateCredential,
+  startTransport: startPairedTransport,
+  onState: (pairingState) => pairingUI?.handleState(pairingState),
+});
+
+pairingUI = createPairingUI({
+  elements: element.pairing,
+  enabled: pairingEnabled,
+  paired: Boolean(settings.getToken()),
+  expectedHost: window.location.host,
+  startPairing: (reference) => pairingController.start(reference),
+  cancelPairing: () => pairingController.cancel(),
+  forgetPairing: async () => {
+    if (!await settings.clearToken()) return false;
+    pairingController.cancel();
+    coordinator.abandon('token_cleared');
+    clockHealth?.macNotReady();
+    benchmarkRequests?.cancelAll('token cleared');
+    oci.close('token_cleared');
+    dispatch({ type: 'token.cleared' });
+    return true;
+  },
+});
+
+if (initialPairingInvitation) {
+  pairingUI.start(initialPairingInvitation);
+  initialPairingInvitation = null;
+}
 
 benchmarkRequests = new BenchmarkRequestRouter({
   send: (message) => oci.send(message),
@@ -451,5 +543,8 @@ if (savedToken) state = reduce(state, { type: 'token.set', token: savedToken });
 element.keepWarm.checked = settings.getKeepWarm();
 oci.setKeepWarm(element.keepWarm.checked);
 render();
-if (document.visibilityState === 'visible') goVisible();
+const pendingRecovery = pairingEnabled && settings.getPending();
+if (pendingRecovery && document.visibilityState === 'visible') {
+  void pairingController.recover();
+} else if (document.visibilityState === 'visible') goVisible();
 else goHidden();

@@ -1,0 +1,206 @@
+import { parseAndClearPairingFragment } from './pairing-link.js';
+
+const IN_PROGRESS = new Set(['connecting', 'claiming', 'awaiting_approval', 'activating']);
+
+const ERROR_COPY = Object.freeze({
+  expired: 'This pairing link expired.',
+  used: 'This pairing link was already used.',
+  denied: 'Pairing was denied on the Mac.',
+  replaced: 'This browser was replaced.',
+  disconnected: 'The network connection was interrupted.',
+  connection_failed: 'The network connection was interrupted.',
+  connection_timeout: 'The relay did not answer. Try the pairing link again.',
+  claim_timeout: 'The relay did not answer. Try the pairing link again.',
+  storage_failed: 'This browser could not save pairing securely.',
+  authentication_failed: 'The saved pairing could not be verified.',
+  activation_failed: 'This browser could not finish pairing.',
+  invalid_response: 'The relay returned an invalid pairing response.',
+});
+
+function parsePastedLink(raw, expectedHost) {
+  let parsed;
+  try { parsed = new URL(raw); } catch { return null; }
+  return parseAndClearPairingFragment(parsed, { state: null, replaceState() {} }, expectedHost);
+}
+
+export function createPairingUI({
+  elements,
+  enabled,
+  paired,
+  expectedHost,
+  readClipboard = () => navigator.clipboard.readText(),
+  startPairing,
+  cancelPairing,
+  forgetPairing,
+  lifecycleTarget = window,
+}) {
+  let activePhase = 'idle';
+  let listenersActive = true;
+
+  elements.panel.hidden = !enabled || paired;
+  elements.remote.hidden = enabled && !paired;
+  elements.pairAgain.hidden = !paired;
+  elements.forget.hidden = !paired;
+  elements.message.setAttribute('aria-live', 'polite');
+  elements.alert.setAttribute('role', 'alert');
+  elements.code.setAttribute('aria-label', 'Confirmation code');
+
+  function clearSensitiveUI() {
+    elements.code.textContent = '';
+    elements.code.hidden = true;
+  }
+
+  function showPairingHome() {
+    if (!enabled) return;
+    activePhase = 'idle';
+    clearSensitiveUI();
+    elements.panel.hidden = false;
+    elements.remote.hidden = true;
+    elements.alert.hidden = true;
+    elements.heading.textContent = 'Pair this browser';
+    elements.message.textContent = 'Open a pairing link from your Mac, or paste it here.';
+    elements.paste.hidden = false;
+    elements.cancel.hidden = true;
+    elements.heading.focus();
+  }
+
+  function begin(parsed) {
+    if (!enabled || parsed?.pairingVersion !== 1 || typeof parsed.reference !== 'string') return false;
+    clearSensitiveUI();
+    elements.panel.hidden = false;
+    elements.remote.hidden = true;
+    elements.alert.hidden = true;
+    elements.paste.hidden = true;
+    elements.cancel.hidden = false;
+    elements.heading.textContent = 'Pair this browser';
+    elements.message.textContent = 'Claiming the pairing link…';
+    elements.heading.focus();
+    activePhase = 'connecting';
+    startPairing(parsed.reference);
+    return true;
+  }
+
+  function showFailure(reason) {
+    clearSensitiveUI();
+    elements.alert.hidden = false;
+    elements.alert.textContent = ERROR_COPY[reason] ?? 'Pairing could not be completed. Try again.';
+    elements.message.textContent = '';
+    elements.paste.hidden = false;
+    elements.cancel.hidden = true;
+  }
+
+  function handleState(next) {
+    if (!enabled) return;
+    activePhase = next.phase;
+    elements.alert.hidden = true;
+    if (next.phase !== 'awaiting_approval') clearSensitiveUI();
+
+    switch (next.phase) {
+      case 'connecting':
+      case 'claiming':
+        elements.heading.textContent = 'Pair this browser';
+        elements.message.textContent = 'Claiming the pairing link…';
+        break;
+      case 'awaiting_approval':
+        elements.heading.textContent = 'Check the code on your Mac';
+        elements.message.textContent = 'If both screens show this code, approve on the Mac.';
+        elements.code.textContent = next.confirmationCode;
+        elements.code.hidden = false;
+        break;
+      case 'activating':
+        elements.heading.textContent = 'Finishing pairing';
+        elements.message.textContent = 'Activating this browser…';
+        break;
+      case 'active':
+        elements.panel.hidden = true;
+        elements.remote.hidden = false;
+        elements.pairedState.textContent = 'Paired with your Mac.';
+        elements.pairAgain.hidden = false;
+        elements.forget.hidden = false;
+        break;
+      case 'replaced':
+        elements.panel.hidden = false;
+        elements.remote.hidden = true;
+        showFailure('replaced');
+        break;
+      case 'failed':
+        elements.panel.hidden = false;
+        elements.remote.hidden = true;
+        showFailure(next.reason);
+        break;
+      case 'cancelled':
+      case 'idle':
+        showPairingHome();
+        break;
+      default:
+        showFailure('unknown');
+    }
+  }
+
+  async function consumeClipboard() {
+    let raw;
+    try { raw = await readClipboard(); } catch { showFailure('invalid_link'); return; }
+    const parsed = parsePastedLink(raw, expectedHost);
+    if (!parsed) { showFailure('invalid_link'); return; }
+    begin(parsed);
+  }
+
+  function onPaste(event) {
+    event.preventDefault();
+    const parsed = parsePastedLink(event.clipboardData?.getData('text') ?? '', expectedHost);
+    if (!parsed) { showFailure('invalid_link'); return; }
+    begin(parsed);
+  }
+
+  function cancelInProgress() {
+    if (!IN_PROGRESS.has(activePhase)) return;
+    cancelPairing();
+    clearSensitiveUI();
+    activePhase = 'cancelled';
+  }
+
+  async function forget() {
+    elements.forget.disabled = true;
+    let removed = false;
+    try { removed = await forgetPairing(); } finally { elements.forget.disabled = false; }
+    if (removed) showPairingHome();
+    else showFailure('storage_failed');
+  }
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') cancelInProgress();
+  };
+  const onPageHide = () => cancelInProgress();
+  const onPairAgain = () => showPairingHome();
+  const onCancel = () => { cancelInProgress(); showPairingHome(); };
+  const onForget = () => { void forget(); };
+  const onPasteButton = () => { void consumeClipboard(); };
+
+  elements.paste.addEventListener('click', onPasteButton);
+  elements.paste.addEventListener('paste', onPaste);
+  elements.cancel.addEventListener('click', onCancel);
+  elements.pairAgain.addEventListener('click', onPairAgain);
+  elements.forget.addEventListener('click', onForget);
+  lifecycleTarget.addEventListener('keydown', onKeyDown);
+  lifecycleTarget.addEventListener('pagehide', onPageHide);
+
+  if (enabled && !paired) showPairingHome();
+
+  return Object.freeze({
+    start: begin,
+    handleState,
+    showPairingHome,
+    destroy() {
+      if (!listenersActive) return;
+      listenersActive = false;
+      cancelInProgress();
+      elements.paste.removeEventListener('click', onPasteButton);
+      elements.paste.removeEventListener('paste', onPaste);
+      elements.cancel.removeEventListener('click', onCancel);
+      elements.pairAgain.removeEventListener('click', onPairAgain);
+      elements.forget.removeEventListener('click', onForget);
+      lifecycleTarget.removeEventListener('keydown', onKeyDown);
+      lifecycleTarget.removeEventListener('pagehide', onPageHide);
+    },
+  });
+}

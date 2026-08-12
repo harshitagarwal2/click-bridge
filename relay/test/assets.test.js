@@ -68,6 +68,13 @@ test('every asset referenced by index.html exists', () => {
   }
 });
 
+test('the PWA pairing composition modules are served as JavaScript', async () => {
+  for (const name of ['pairing-link.js', 'pairing-controller.js', 'pairing-ui.js']) {
+    const response = await requestStatic(`/${name}`);
+    assert.equal(response.status, 200, `${name} must be available to app.js imports`);
+  }
+});
+
 async function requestStatic(pathname) {
   return new Promise((resolve) => {
     const response = {
@@ -133,6 +140,23 @@ test('platform installation guidance does not depend on beforeinstallprompt', ()
 test('clock failure and wake-lock support have actionable status controls', () => {
   assert.match(html, /id="clock-retry"/);
   assert.match(html, /id="wake-status"/);
+});
+
+test('pairing is a first-class accessible flow while legacy credentials stay Advanced', () => {
+  assert.match(html, /id="pairing-panel"[\s\S]*aria-labelledby="pairing-title"/);
+  assert.match(html, /id="pairing-message"[\s\S]*aria-live="polite"/);
+  assert.match(html, /id="pairing-alert"[\s\S]*role="alert"/);
+  assert.match(html, /id="pairing-code"[\s\S]*aria-label="Confirmation code"/);
+  assert.match(html, /<details[\s\S]*<summary>Advanced<\/summary>[\s\S]*id="token-input"/);
+  assert.match(html, /id="pair-again"[^>]*>Pair Again<\/button>/);
+  assert.match(html, /id="pairing-forget"[^>]*>Forget this browser<\/button>/);
+  assert.equal(/pairing-reference|pairing-url|reference-input/i.test(html), false);
+});
+
+test('pairing controls meet the minimum touch target and reduced-motion contract', () => {
+  const css = readFileSync(join(PUBLIC, 'styles.css'), 'utf8');
+  assert.match(css, /\.pairing-action[\s\S]*min-height\s*:\s*44px/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)[\s\S]*\.pairing-mark/);
 });
 
 test('click target preserves the low-latency accessible dimensions', () => {
