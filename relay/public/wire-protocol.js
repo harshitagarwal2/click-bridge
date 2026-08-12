@@ -484,6 +484,7 @@ const CLIENT_TYPES = Object.freeze({
 });
 
 const PAIRING_STATE_TYPES = Object.freeze({
+  'pairing.initial': new Set(['hello', 'pair.claim']),
   'pairing.claim': new Set(['pair.claim']),
   'pairing.claimed': new Set(['pair.credential.ack', 'pair.cancel.claim']),
 });

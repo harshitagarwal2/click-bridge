@@ -26,6 +26,7 @@ export class RelayState {
     log = () => {},
     pendingTtlMs = RELAY_PENDING_TTL_MS,
     skewToleranceMs = CLOCK_SKEW_TOLERANCE_MS,
+    authorizePhone = () => true,
   } = {}) {
     this.now = now;
     this.monotonicNowUs = monotonicNowUs;
@@ -35,6 +36,7 @@ export class RelayState {
     this.log = log;
     this.pendingTtlMs = pendingTtlMs;
     this.skewToleranceMs = skewToleranceMs;
+    this.authorizePhone = authorizePhone;
 
     this.phone = null;
     this.mac = null;
@@ -87,6 +89,10 @@ export class RelayState {
   handlePhoneMessage(connection, message) {
     if (connection !== this.phone) {
       this.log('stale_socket_message', { role: 'phone', type: message.type });
+      return 'ignored';
+    }
+    if (!this.authorizePhone(connection)) {
+      this.log('stale_phone_credential', { type: message.type });
       return 'ignored';
     }
     switch (message.type) {

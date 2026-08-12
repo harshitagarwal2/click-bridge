@@ -144,6 +144,17 @@ test('pairing claims require an explicit unauthenticated pairing state', () => {
   assert.equal(parseClientMessage(cancel, 'pairing.claimed').type, 'pair.cancel.claim');
 });
 
+test('pairing initial state parses exactly one hello or one dedicated claim', () => {
+  const hello = load('hello.phone.json');
+  const claim = load('pair.claim.json');
+  assert.equal(parseClientMessage(hello, 'pairing.initial').type, 'hello');
+  assert.equal(parseClientMessage(claim, 'pairing.initial').type, 'pair.claim');
+  throwsCode(
+    () => parseClientMessage(load('action.request.json'), 'pairing.initial'),
+    'message_not_allowed_for_state',
+  );
+});
+
 test('prototype names cannot masquerade as pairing states', () => {
   const claim = load('pair.claim.json');
   for (const state of ['toString', 'constructor', '__proto__']) {
