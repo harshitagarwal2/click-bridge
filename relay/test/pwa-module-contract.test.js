@@ -49,3 +49,17 @@ test('every production reconnect entry delegates through credential lifecycle ow
   assert.match(source, /window\.addEventListener\('pagehide', goHidden\)/);
   assert.match(source, /function goHidden\(\)[\s\S]*oci\.close\('hidden'\)/);
 });
+
+test('pairing activation and Forget are credential lifecycle intents in production composition', () => {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(source,
+    /async function startPairedTransport\(slot, signal\)[\s\S]*credentialLifecycle\.activatePairing\(slot, signal\)/);
+  assert.match(source, /forgetPairing:\s*\(\)\s*=>\s*credentialLifecycle\.clear\(\)/);
+  assert.doesNotMatch(source, /forgetPairing:[\s\S]{0,300}settings\.clearToken\(/);
+});
+
+test('startup recovery derives active and pending state from one current credential snapshot', () => {
+  const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(source, /const credentialSnapshot = settings\.getSnapshot\(\)/);
+  assert.match(source, /const pendingRecovery = pairingEnabled && credentialSnapshot\?\.pending/);
+});

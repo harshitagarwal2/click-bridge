@@ -53,6 +53,7 @@ const element = {
 };
 
 const settings = new PhoneSettingsStore(window.localStorage, navigator.locks);
+const credentialSnapshot = settings.getSnapshot();
 const scheduler = createRuntimeScheduler(window);
 let state = initialState();
 let lastMacReadyGeneration = null;
@@ -186,15 +187,7 @@ function authenticateCredential(slot) {
 }
 
 async function startPairedTransport(slot, signal) {
-  if (signal.aborted) return false;
-  const stop = () => oci.close('pairing_cancelled');
-  signal.addEventListener('abort', stop, { once: true });
-  if (signal.aborted) return false;
-  benchmarkRequests?.cancelAll('phone paired');
-  oci.close('phone_paired');
-  dispatch({ type: 'token.set', token: slot.credential });
-  oci.resume();
-  return !signal.aborted;
+  return credentialLifecycle.activatePairing(slot, signal);
 }
 
 const pairingEnabled = document.querySelector('meta[name="clickbridge-pairing"]')?.content === 'on';
@@ -209,20 +202,11 @@ const pairingController = new PairingController({
 pairingUI = createPairingUI({
   elements: element.pairing,
   enabled: pairingEnabled,
-  paired: Boolean(settings.getToken()),
+  paired: Boolean(credentialSnapshot?.active),
   expectedHost: window.location.host,
   startPairing: (reference) => pairingController.start(reference),
   cancelPairing: () => pairingController.cancel(),
-  forgetPairing: async () => {
-    if (!await settings.clearToken()) return false;
-    pairingController.cancel();
-    coordinator.abandon('token_cleared');
-    clockHealth?.macNotReady();
-    benchmarkRequests?.cancelAll('token cleared');
-    oci.close('token_cleared');
-    dispatch({ type: 'token.cleared' });
-    return true;
-  },
+  forgetPairing: () => credentialLifecycle.clear(),
 });
 
 if (initialPairingInvitation) {
@@ -515,7 +499,7 @@ navigator.connection?.addEventListener?.('change', () => {
 
 function applySavedToken(token) {
   element.tokenInput.value = '';
-  benchmarkRequests.cancelAll('token replaced');
+  benchmarkRequests?.cancelAll('token replaced');
   oci.close('token_replaced');
   dispatch({ type: 'token.set', token });
   oci.resume();
@@ -538,12 +522,12 @@ const credentialLifecycle = new CredentialLifecycleController({
   reportError: (message) => { element.tokenState.textContent = message; },
 });
 
-const savedToken = settings.getToken();
+const savedToken = credentialSnapshot?.active?.credential ?? null;
 if (savedToken) state = reduce(state, { type: 'token.set', token: savedToken });
 element.keepWarm.checked = settings.getKeepWarm();
 oci.setKeepWarm(element.keepWarm.checked);
 render();
-const pendingRecovery = pairingEnabled && settings.getPending();
+const pendingRecovery = pairingEnabled && credentialSnapshot?.pending;
 if (pendingRecovery && document.visibilityState === 'visible') {
   pairingUI.startRecovery();
   void pairingController.recover();

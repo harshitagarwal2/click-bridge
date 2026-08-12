@@ -16,9 +16,11 @@ export class CredentialLifecycleController {
     this.reconciliationPending = false;
     this.reconciliationBlocked = false;
     this.reconciliationExpected = null;
+    this.pairingActivation = null;
   }
 
   async save(token) {
+    this.#finishPairingActivation(false);
     const operation = ++this.operation;
     this.inFlight.add(operation);
     this.latestIntent = { kind: 'save', token };
@@ -46,6 +48,7 @@ export class CredentialLifecycleController {
   }
 
   async clear() {
+    this.#finishPairingActivation(false);
     const operation = ++this.operation;
     this.inFlight.add(operation);
     this.latestIntent = { kind: 'clear' };
@@ -70,6 +73,24 @@ export class CredentialLifecycleController {
     }
     this.#settleDurableState();
     return true;
+  }
+
+  activatePairing(slot, signal) {
+    this.#finishPairingActivation(false);
+    const operation = ++this.operation;
+    this.latestIntent = { kind: 'pairing', slot };
+    this.latestSucceeded = true;
+    this.reconciliationPending = true;
+    this.reconciliationBlocked = false;
+    this.reconciliationExpected = this.latestIntent;
+    if (signal?.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const activation = { operation, signal, resolve, onAbort: null };
+      activation.onAbort = () => this.#finishPairingActivation(false, activation);
+      signal?.addEventListener('abort', activation.onAbort, { once: true });
+      this.pairingActivation = activation;
+      this.#settleDurableState();
+    });
   }
 
   visible() {
@@ -99,15 +120,29 @@ export class CredentialLifecycleController {
     const token = snapshot?.active?.credential ?? null;
     if (!snapshot
       || (expected?.kind === 'save' && token !== expected.token)
-      || (expected?.kind === 'clear' && token !== null)) {
+      || (expected?.kind === 'clear' && token !== null)
+      || (expected?.kind === 'pairing' && (!snapshot.active
+        || snapshot.pending !== null
+        || snapshot.active.credential !== expected.slot?.credential
+        || snapshot.active.version !== expected.slot?.version))) {
       this.reconciliationBlocked = true;
+      if (expected?.kind === 'pairing') this.#finishPairingActivation(false);
       return false;
     }
     this.reconciliationPending = false;
     this.reconciliationExpected = null;
     if (token) this.applyToken(token);
     else this.clearToken();
+    if (expected?.kind === 'pairing') this.#finishPairingActivation(true);
     return true;
+  }
+
+  #finishPairingActivation(result, expected = this.pairingActivation) {
+    const activation = this.pairingActivation;
+    if (!activation || activation !== expected) return;
+    this.pairingActivation = null;
+    activation.signal?.removeEventListener('abort', activation.onAbort);
+    activation.resolve(result);
   }
 
   #maybeResume() {

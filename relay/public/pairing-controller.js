@@ -5,7 +5,7 @@ import {
   PAIRING_VERSION,
   PROTOCOL_VERSION,
   encodeMessage,
-  parseServerMessage,
+  parsePairingServerMessage,
 } from './wire-protocol.js';
 
 const HEX = /^[a-f0-9]{64}$/;
@@ -22,6 +22,11 @@ const ALLOWED_MESSAGES = Object.freeze({
 const PAIRING_SERVER_MESSAGES = new Set([
   'pair.claimed.phone', 'pair.credential', 'pair.active', 'pair.failed',
 ]);
+const PARSER_STATE = Object.freeze({
+  claiming: 'claiming',
+  awaiting_approval: 'awaiting_credential',
+  activating: 'awaiting_activation',
+});
 
 function toHex(bytes) {
   return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
@@ -36,6 +41,10 @@ function sameSlot(left, right) {
   return Boolean(left && right
     && left.credential === right.credential
     && left.version === right.version);
+}
+
+function sameOptionalSlot(left, right) {
+  return (left === null && right === null) || sameSlot(left, right);
 }
 
 async function activationProof(cryptoProvider, credential, claimId, credentialVersion) {
@@ -79,6 +88,8 @@ export class PairingController {
     this.reference = null;
     this.claimId = null;
     this.acknowledgedSlot = null;
+    this.acknowledgedGeneration = null;
+    this.acknowledgedStorage = null;
     this.generation = 0;
     this.phase = 'idle';
     this.deadlineTimer = null;
@@ -98,6 +109,8 @@ export class PairingController {
     this.reference = reference;
     this.claimId = this.idGenerator();
     this.acknowledgedSlot = null;
+    this.acknowledgedGeneration = null;
+    this.acknowledgedStorage = null;
     const sessionNonce = toHex(this.randomBytes());
     const socket = this.createSocket(deriveRelayWebSocketUrl(this.location));
     this.socket = socket;
@@ -175,7 +188,12 @@ export class PairingController {
     if (!this.#owns(ownership)) return false;
     while (true) {
       if (!this.#owns(ownership)) return false;
-      const pending = this.settings.getPending();
+      const snapshot = this.#snapshot();
+      if (!snapshot) {
+        this.#publish('failed', 'storage_failed');
+        return false;
+      }
+      const pending = snapshot.pending;
       if (pending) {
         const authentication = await this.#authenticate(pending);
         if (!this.#owns(ownership)) return false;
@@ -183,24 +201,52 @@ export class PairingController {
           this.#publish('failed', 'authentication_failed');
           return false;
         }
-        if (!sameSlot(this.settings.getPending(), pending)) continue;
+        if (!this.#sameSnapshot(snapshot)) continue;
         if (authentication === 'accepted') {
-          if (!this.settings.promotePending(pending)) {
-            if (!sameSlot(this.settings.getPending(), pending)) continue;
+          let promoted = false;
+          try {
+            promoted = await this.settings.promotePending(pending, snapshot.generation);
+          } catch {
+            promoted = false;
+          }
+          if (!this.#owns(ownership)) return false;
+          const afterPromotion = this.#snapshot();
+          if (!promoted) {
+            if (!this.#sameSnapshot(snapshot)) continue;
+            this.#publish('failed', 'storage_failed');
+            return false;
+          }
+          if (!afterPromotion || !sameSlot(afterPromotion.active, pending)
+            || afterPromotion.pending !== null
+            || afterPromotion.generation === snapshot.generation) {
             this.#publish('failed', 'storage_failed');
             return false;
           }
           return this.#activateTransport(pending, ownership);
         }
-        if (!sameSlot(this.settings.getPending(), pending)) continue;
-        if (!this.settings.discardPending(pending)) {
-          if (!sameSlot(this.settings.getPending(), pending)) continue;
+        if (!this.#sameSnapshot(snapshot)) continue;
+        let discarded = false;
+        try {
+          discarded = await this.settings.discardPending(snapshot.generation);
+        } catch {
+          discarded = false;
+        }
+        if (!this.#owns(ownership)) return false;
+        if (!discarded) {
+          if (!this.#sameSnapshot(snapshot)) continue;
           this.#publish('failed', 'storage_failed');
           return false;
         }
+        const afterDiscard = this.#snapshot();
+        if (!afterDiscard || afterDiscard.pending !== null
+          || afterDiscard.generation === snapshot.generation) {
+          this.#publish('failed', 'storage_failed');
+          return false;
+        }
+        continue;
       }
 
-      const active = this.settings.getActive();
+      const active = snapshot.active;
       if (!active) {
         this.#publish('idle');
         return false;
@@ -211,7 +257,7 @@ export class PairingController {
         this.#publish('failed', 'authentication_failed');
         return false;
       }
-      if (!sameSlot(this.settings.getActive(), active)) continue;
+      if (!this.#sameSnapshot(snapshot)) continue;
       if (authentication === 'accepted') {
         return this.#activateTransport(active, ownership);
       }
@@ -223,7 +269,12 @@ export class PairingController {
   async #receive(raw, socket, generation) {
     let message;
     try {
-      message = parseServerMessage(raw, 'phone');
+      message = parsePairingServerMessage(raw, {
+        state: PARSER_STATE[this.phase],
+        claimId: this.claimId,
+        generation,
+        activeGeneration: this.generation,
+      });
     } catch {
       if (this.#current(socket, generation)) {
         this.#terminate('failed', 'invalid_response', socket);
@@ -265,7 +316,28 @@ export class PairingController {
     }
     if (message.type === 'pair.credential') {
       const pending = { credential: message.credential, version: message.credentialVersion };
-      if (!this.settings.stage(pending)) {
+      const beforeStage = this.#snapshot();
+      if (!beforeStage) {
+        this.#terminate('failed', 'storage_failed', socket);
+        return;
+      }
+      let staged = false;
+      const storageMode = beforeStage.active && beforeStage.provenance === 'authoritative'
+        ? 'pending' : 'active';
+      try {
+        staged = storageMode === 'pending'
+          ? await this.settings.stage(pending, beforeStage.generation)
+          : await this.settings.setActive(pending, beforeStage.generation);
+      } catch {
+        staged = false;
+      }
+      if (!this.#current(socket, generation) || this.phase !== 'awaiting_approval') return;
+      const stagedSnapshot = this.#snapshot();
+      const durableSlot = storageMode === 'pending'
+        ? stagedSnapshot?.pending : stagedSnapshot?.active;
+      if (!staged || !stagedSnapshot || !sameSlot(durableSlot, pending)
+        || (storageMode === 'active' && stagedSnapshot.pending !== null)
+        || stagedSnapshot.generation === beforeStage.generation) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
       }
@@ -280,12 +352,18 @@ export class PairingController {
         }
         return;
       }
-      if (!this.#current(socket, generation)) return;
-      if (!sameSlot(this.settings.getPending(), pending)) {
+      if (!this.#current(socket, generation) || this.phase !== 'awaiting_approval') return;
+      const proofSnapshot = this.#snapshot();
+      const proofSlot = storageMode === 'pending'
+        ? proofSnapshot?.pending : proofSnapshot?.active;
+      if (!proofSnapshot || proofSnapshot.generation !== stagedSnapshot.generation
+        || !sameSlot(proofSlot, pending)) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       this.acknowledgedSlot = pending;
+      this.acknowledgedGeneration = stagedSnapshot.generation;
+      this.acknowledgedStorage = storageMode;
       try {
         this.#send(socket, {
           type: 'pair.credential.ack',
@@ -308,12 +386,35 @@ export class PairingController {
     }
     if (message.type === 'pair.active') {
       const acknowledged = this.acknowledgedSlot;
+      const acknowledgedGeneration = this.acknowledgedGeneration;
+      const acknowledgedStorage = this.acknowledgedStorage;
       if (!acknowledged || acknowledged.version !== message.activePhoneCredentialVersion
-        || !this.settings.promotePending(acknowledged)) {
+        || acknowledgedGeneration === null) {
+        this.#terminate('failed', 'storage_failed', socket);
+        return;
+      }
+      let promoted = acknowledgedStorage === 'active';
+      if (acknowledgedStorage === 'pending') {
+        try {
+          promoted = await this.settings.promotePending(acknowledged, acknowledgedGeneration);
+        } catch {
+          promoted = false;
+        }
+      }
+      if (!this.#current(socket, generation) || this.phase !== 'activating') return;
+      const promotedSnapshot = this.#snapshot();
+      if (!promoted || !promotedSnapshot || !sameSlot(promotedSnapshot.active, acknowledged)
+        || promotedSnapshot.pending !== null
+        || (acknowledgedStorage === 'pending'
+          && promotedSnapshot.generation === acknowledgedGeneration)
+        || (acknowledgedStorage === 'active'
+          && promotedSnapshot.generation !== acknowledgedGeneration)) {
         this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       this.acknowledgedSlot = null;
+      this.acknowledgedGeneration = null;
+      this.acknowledgedStorage = null;
       this.reference = null;
       if (await this.#activateTransport(acknowledged, { socket, generation })) {
         this.#retireSocket(socket, 1000, 'pairing_complete');
@@ -357,6 +458,18 @@ export class PairingController {
     this.#clearSensitive();
     this.#publish('active');
     return true;
+  }
+
+  #snapshot() {
+    try { return this.settings.getSnapshot(); } catch { return null; }
+  }
+
+  #sameSnapshot(expected) {
+    const current = this.#snapshot();
+    return Boolean(current && expected
+      && current.generation === expected.generation
+      && sameOptionalSlot(current.active, expected.active)
+      && sameOptionalSlot(current.pending, expected.pending));
   }
 
   #failActivation(reason, ownership) {
@@ -405,6 +518,8 @@ export class PairingController {
     this.reference = null;
     this.claimId = null;
     this.acknowledgedSlot = null;
+    this.acknowledgedGeneration = null;
+    this.acknowledgedStorage = null;
     this.pairingExpiresAtUnixMs = null;
   }
 

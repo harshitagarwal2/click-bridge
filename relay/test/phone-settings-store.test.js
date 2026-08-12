@@ -314,7 +314,8 @@ function lifecycleHarness(initialToken = 'f'.repeat(64)) {
   const settings = {
     getToken: () => durable.token,
     getSnapshot: () => durable.readable
-      ? { active: durable.token ? { credential: durable.token, version: 0 } : null }
+      ? { active: durable.active ?? (durable.token
+        ? { credential: durable.token, version: 0 } : null), pending: null, generation: 'test' }
       : null,
     setToken(next) {
       return new Promise((resolve) => saves.push((success = true) => {
@@ -342,6 +343,46 @@ function lifecycleHarness(initialToken = 'f'.repeat(64)) {
   return { controller, durable, saves, clears, applied, cleared, connected, errors,
     token: () => token, visible: (next) => { visible = next; }, ready: (next) => { ready = next; } };
 }
+
+test('pairing activation publishes only after the promoted durable snapshot is verified', async () => {
+  const harness = lifecycleHarness();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+
+  assert.equal(await harness.controller.activatePairing(paired, new AbortController().signal), true);
+  assert.deepEqual(harness.applied, [paired.credential]);
+  assert.equal(harness.token(), paired.credential);
+});
+
+test('a newer claimant waits out an older Forget intent and exclusively owns publication', async () => {
+  const harness = lifecycleHarness();
+  const clearing = harness.controller.clear();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+  const activating = harness.controller.activatePairing(paired, new AbortController().signal);
+
+  assert.deepEqual(harness.applied, []);
+  harness.clears.shift()(true);
+  assert.equal(await clearing, true);
+  assert.equal(await activating, true);
+  assert.deepEqual(harness.cleared, []);
+  assert.deepEqual(harness.applied, [paired.credential]);
+});
+
+test('an aborted pairing activation cannot publish or resume the ordinary transport', async () => {
+  const harness = lifecycleHarness();
+  const paired = { credential: 'a'.repeat(64), version: 1 };
+  harness.durable.token = paired.credential;
+  harness.durable.active = paired;
+  const abort = new AbortController();
+  abort.abort();
+
+  assert.equal(await harness.controller.activatePairing(paired, abort.signal), false);
+  assert.deepEqual(harness.applied, []);
+  assert.deepEqual(harness.connected, []);
+});
 
 test('production lifecycle blocks old-token visible and online reconnect until gated save applies', async () => {
   const harness = lifecycleHarness();

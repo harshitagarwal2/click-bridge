@@ -39,11 +39,23 @@ function acceptClaim(socket, claimId = CLAIM_ID) {
   }));
 }
 
+function seedAuthoritative(store, version = 6) {
+  for (let next = 1; next <= version; next += 1) {
+    void store.setActive(
+      { credential: 'a'.repeat(64), version: next }, store.getSnapshot().generation,
+    );
+  }
+}
+
 function harness(overrides = {}) {
   const sockets = [];
   const states = [];
   const started = [];
   const settings = overrides.settings ?? new MemorySettingsStore();
+  if (overrides.seedAuthoritative !== false
+    && settings instanceof MemorySettingsStore && settings.getActive() === null) {
+    seedAuthoritative(settings);
+  }
   const controller = new PairingController({
     location: new URL('https://click.example/pair/web'),
     settings,
@@ -91,7 +103,10 @@ test('credential is staged before an exact Web Crypto HMAC proof is acknowledged
   const ackSent = deferred();
   const settings = new MemorySettingsStore();
   const originalStage = settings.stage.bind(settings);
-  settings.stage = (slot) => { order.push('stage'); return originalStage(slot); };
+  settings.stage = (slot, expectedGeneration) => {
+    order.push('stage');
+    return originalStage(slot, expectedGeneration);
+  };
   const expectedProof = createHmac('sha256', Buffer.from(CREDENTIAL, 'hex'))
     .update(`clickbridge-pair-activate:v1:${CLAIM_ID}:7`, 'utf8').digest();
   const h = harness({ settings });
@@ -118,12 +133,111 @@ test('credential is staged before an exact Web Crypto HMAC proof is acknowledged
   assert.equal(h.started.length, 0);
 });
 
+test('credential acknowledgment waits for the durable async stage and uses its generation fence', async () => {
+  const staged = deferred();
+  const active = { credential: 'a'.repeat(64), version: 6 };
+  const pending = { credential: CREDENTIAL, version: 7 };
+  let snapshot = { active, pending: null, generation: 'before', provenance: 'authoritative' };
+  const stageCalls = [];
+  const settings = {
+    getSnapshot: () => snapshot,
+    getActive: () => snapshot.active,
+    getPending: () => snapshot.pending,
+    async stage(slot, expectedGeneration) {
+      stageCalls.push({ slot, expectedGeneration });
+      await staged.promise;
+      snapshot = { active, pending: slot, generation: 'after', provenance: 'authoritative' };
+      return true;
+    },
+  };
+  const h = harness({ settings });
+  h.controller.start(REFERENCE);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
+  assert.deepEqual(h.states.at(-1), {
+    phase: 'awaiting_approval', reason: null,
+    confirmationCode: '123 456', expiresAtUnixMs: h.states.at(-1).expiresAtUnixMs,
+  });
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await settleAsyncWork();
+
+  assert.deepEqual(stageCalls, [{ slot: pending, expectedGeneration: 'before' }]);
+  assert.equal(h.sockets[0].sent.some(({ type }) => type === 'pair.credential.ack'), false);
+
+  staged.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(h.states.at(-1).phase, 'activating');
+  assert.equal(h.sockets[0].sent.some(({ type }) => type === 'pair.credential.ack'), true);
+});
+
+test('first enrollment durably installs authoritative version one before acknowledgment', async () => {
+  const settings = new MemorySettingsStore();
+  const h = harness({ settings, seedAuthoritative: false });
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 1,
+  }));
+  await ackSent;
+
+  assert.deepEqual(settings.getActive(), { credential: CREDENTIAL, version: 1 });
+  assert.equal(settings.getPending(), null);
+  assert.deepEqual(h.started, []);
+
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 1,
+  }));
+  await settleAsyncWork();
+  assert.deepEqual(h.started, [{ credential: CREDENTIAL, version: 1 }]);
+});
+
+test('cancelling during durable staging prevents a late acknowledgment', async () => {
+  const staged = deferred();
+  const active = { credential: 'a'.repeat(64), version: 6 };
+  let snapshot = { active, pending: null, generation: 'before', provenance: 'authoritative' };
+  const settings = {
+    getSnapshot: () => snapshot,
+    getActive: () => snapshot.active,
+    getPending: () => snapshot.pending,
+    async stage(slot) {
+      await staged.promise;
+      snapshot = { active, pending: slot, generation: 'after', provenance: 'authoritative' };
+      return true;
+    },
+  };
+  const h = harness({ settings });
+  h.controller.start(REFERENCE);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await settleAsyncWork();
+  h.controller.cancel();
+  staged.resolve();
+  await settleAsyncWork();
+
+  assert.equal(h.sockets[0].sent.some(({ type }) => type === 'pair.credential.ack'), false);
+  assert.equal(h.states.at(-1).phase, 'cancelled');
+});
+
 test('activation promotes pending before starting the ordinary phone transport', async () => {
   const h = harness();
   h.controller.start(REFERENCE);
   const ackSent = observeAck(h.sockets[0]);
   h.sockets[0].open();
   acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
   h.sockets[0].message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
@@ -132,10 +246,55 @@ test('activation promotes pending before starting the ordinary phone transport',
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
+  await settleAsyncWork();
 
   assert.deepEqual(h.settings.getActive(), { credential: CREDENTIAL, version: 7 });
   assert.equal(h.settings.getPending(), null);
   assert.deepEqual(h.started, [{ credential: CREDENTIAL, version: 7 }]);
+});
+
+test('ordinary transport waits for durable async promotion and revalidates the promoted snapshot', async () => {
+  const promoted = deferred();
+  const active = { credential: 'a'.repeat(64), version: 6 };
+  const pending = { credential: CREDENTIAL, version: 7 };
+  let snapshot = { active, pending: null, generation: 'before-stage', provenance: 'authoritative' };
+  const settings = {
+    getSnapshot: () => snapshot,
+    getActive: () => snapshot.active,
+    getPending: () => snapshot.pending,
+    async stage(slot, expectedGeneration) {
+      assert.equal(expectedGeneration, 'before-stage');
+      snapshot = { active, pending: slot, generation: 'after-stage', provenance: 'authoritative' };
+      return true;
+    },
+    async promotePending(slot, expectedGeneration) {
+      assert.deepEqual(slot, pending);
+      assert.equal(expectedGeneration, 'after-stage');
+      await promoted.promise;
+      snapshot = { active: slot, pending: null, generation: 'after-promote', provenance: 'authoritative' };
+      return true;
+    },
+  };
+  const h = harness({ settings });
+  h.controller.start(REFERENCE);
+  const ackSent = observeAck(h.sockets[0]);
+  h.sockets[0].open();
+  acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+    credential: CREDENTIAL, credentialVersion: 7,
+  }));
+  await ackSent;
+  h.sockets[0].message(JSON.stringify({
+    type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
+  }));
+  await settleAsyncWork();
+  assert.deepEqual(h.started, []);
+
+  promoted.resolve();
+  await settleAsyncWork();
+  assert.deepEqual(h.started, [pending]);
 });
 
 test('a storage failure sends no credential acknowledgment and preserves active', async () => {
@@ -163,8 +322,9 @@ test('a storage failure sends no credential acknowledgment and preserves active'
 
 test('startup recovery authenticates pending first and promotes it before transport', async () => {
   const h = harness({ authenticateCredential: async (slot) => slot.version === 7 });
-  h.settings.setActive({ credential: 'a'.repeat(64), version: 6 });
-  h.settings.stage({ credential: CREDENTIAL, version: 7 });
+  await h.settings.stage(
+    { credential: CREDENTIAL, version: 7 }, h.settings.getSnapshot().generation,
+  );
 
   assert.equal(await h.controller.recover(), true);
   assert.deepEqual(h.settings.getActive(), { credential: CREDENTIAL, version: 7 });
@@ -181,8 +341,9 @@ test('recovery discards rejected pending and falls back to the old active creden
     },
   });
   const active = { credential: 'a'.repeat(64), version: 6 };
-  h.settings.setActive(active);
-  h.settings.stage({ credential: CREDENTIAL, version: 7 });
+  await h.settings.stage(
+    { credential: CREDENTIAL, version: 7 }, h.settings.getSnapshot().generation,
+  );
 
   assert.equal(await h.controller.recover(), true);
   assert.deepEqual(attempts, [7, 6]);
@@ -210,24 +371,26 @@ test('recovery retries when pending changes during authentication, including sam
       return slot.credential === REPLACEMENT;
     },
   });
-  const active = { credential: 'a'.repeat(64), version: 6 };
-  h.settings.setActive(active);
-  h.settings.stage({ credential: CREDENTIAL, version: 7 });
+  await h.settings.stage(
+    { credential: CREDENTIAL, version: 7 }, h.settings.getSnapshot().generation,
+  );
 
   const recovery = h.controller.recover();
-  h.settings.stage({ credential: REPLACEMENT, version: 7 });
+  await h.settings.setToken(REPLACEMENT);
+  await h.settings.setActive(
+    { credential: REPLACEMENT, version: 1 }, h.settings.getSnapshot().generation,
+  );
   firstAuthentication.resolve(true);
 
   assert.equal(await recovery, true);
   assert.deepEqual(attempts, [CREDENTIAL, REPLACEMENT]);
-  assert.deepEqual(h.settings.getActive(), { credential: REPLACEMENT, version: 7 });
-  assert.deepEqual(h.started, [{ credential: REPLACEMENT, version: 7 }]);
+  assert.deepEqual(h.settings.getActive(), { credential: REPLACEMENT, version: 1 });
+  assert.deepEqual(h.started, [{ credential: REPLACEMENT, version: 1 }]);
 });
 
 test('pair.active cannot promote a pending credential different from the acknowledged slot', async () => {
   const active = { credential: 'a'.repeat(64), version: 6 };
   const h = harness();
-  h.settings.setActive(active);
   h.controller.start(REFERENCE);
   const ackSent = observeAck(h.sockets[0]);
   h.sockets[0].open();
@@ -237,14 +400,14 @@ test('pair.active cannot promote a pending credential different from the acknowl
     credential: CREDENTIAL, credentialVersion: 7,
   }));
   await ackSent;
-  h.settings.stage({ credential: REPLACEMENT, version: 7 });
+  await h.settings.setToken(REPLACEMENT);
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
   await settleAsyncWork();
 
-  assert.deepEqual(h.settings.getActive(), active);
-  assert.deepEqual(h.settings.getPending(), { credential: REPLACEMENT, version: 7 });
+  assert.deepEqual(h.settings.getActive(), { credential: REPLACEMENT, version: 0 });
+  assert.equal(h.settings.getPending(), null);
   assert.deepEqual(h.started, []);
   assert.equal(h.states.at(-1).phase, 'failed');
 });
@@ -256,7 +419,9 @@ test('recovery returns false and publishes failed when transport startup rejects
     startTransport: () => false,
   });
   h.controller.onState = (state) => phases.push(state.phase);
-  h.settings.stage({ credential: CREDENTIAL, version: 7 });
+  await h.settings.stage(
+    { credential: CREDENTIAL, version: 7 }, h.settings.getSnapshot().generation,
+  );
 
   assert.equal(await h.controller.recover(), false);
   assert.deepEqual(phases, ['failed']);
@@ -266,12 +431,14 @@ test('recovery returns false and publishes failed when transport startup rejects
 test('recovery reports a real promotion write failure and preserves old active without transport', async () => {
   const active = { credential: 'a'.repeat(64), version: 6 };
   const pending = { credential: CREDENTIAL, version: 7 };
-  let serialized = JSON.stringify({ active, pending });
+  let serialized = JSON.stringify({
+    active, pending, generation: 8, provenance: 'authoritative',
+  });
   const settings = new PhoneSettingsStore({
     getItem: () => serialized,
     setItem() { throw new Error('blocked'); },
     removeItem() {},
-  });
+  }, { request: (_name, _options, callback) => callback() });
   const h = harness({ settings, authenticateCredential: async () => true });
 
   assert.equal(await h.controller.recover(), false);
@@ -281,23 +448,33 @@ test('recovery reports a real promotion write failure and preserves old active w
   assert.deepEqual(h.states.at(-1), { phase: 'failed', reason: 'storage_failed' });
 });
 
-test('activation uses the acknowledged slot after promotion without a fallible reread', async () => {
+test('activation uses the acknowledged slot after a verified promoted snapshot', async () => {
   const pending = { credential: CREDENTIAL, version: 7 };
   let promoted = false;
+  let snapshot = {
+    active: { credential: 'a'.repeat(64), version: 6 }, pending: null,
+    generation: 1, provenance: 'authoritative',
+  };
   const settings = {
-    stage: () => true,
-    getPending: () => pending,
-    promotePending(expected) {
-      promoted = expected.credential === pending.credential && expected.version === pending.version;
+    getSnapshot: () => snapshot,
+    async stage(slot, expectedGeneration) {
+      if (expectedGeneration !== snapshot.generation) return false;
+      snapshot = { ...snapshot, pending: slot, generation: 2 };
       return true;
     },
-    getActive() { throw new Error('reread unavailable'); },
+    async promotePending(expected, expectedGeneration) {
+      promoted = expected.credential === pending.credential && expected.version === pending.version;
+      if (!promoted || expectedGeneration !== snapshot.generation) return false;
+      snapshot = { ...snapshot, active: pending, pending: null, generation: 3 };
+      return true;
+    },
   };
   const h = harness({ settings });
   h.controller.start(REFERENCE);
   const ackSent = observeAck(h.sockets[0]);
   h.sockets[0].open();
   acceptClaim(h.sockets[0]);
+  await settleAsyncWork();
   h.sockets[0].message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
@@ -306,7 +483,7 @@ test('activation uses the acknowledged slot after promotion without a fallible r
   h.sockets[0].message(JSON.stringify({
     type: 'pair.active', v: 1, claimId: CLAIM_ID, activePhoneCredentialVersion: 7,
   }));
-  await Promise.resolve();
+  await settleAsyncWork();
 
   assert.equal(promoted, true);
   assert.deepEqual(h.started, [pending]);
@@ -584,11 +761,12 @@ test('a stale proof failure cannot fail a newer pairing generation', async () =>
   const oldSocket = h.sockets[0];
   oldSocket.open();
   acceptClaim(oldSocket);
+  await settleAsyncWork();
   oldSocket.message(JSON.stringify({
     type: 'pair.credential', v: 1, claimId: CLAIM_ID,
     credential: CREDENTIAL, credentialVersion: 7,
   }));
-  await Promise.resolve();
+  await settleAsyncWork();
 
   h.controller.start(REFERENCE);
   const newSocket = h.sockets[1];
@@ -604,7 +782,9 @@ test('recovery preserves pending and reports an operational authentication excep
   const h = harness({
     authenticateCredential: async () => { throw new Error('network unavailable'); },
   });
-  h.settings.stage({ credential: CREDENTIAL, version: 7 });
+  await h.settings.stage(
+    { credential: CREDENTIAL, version: 7 }, h.settings.getSnapshot().generation,
+  );
 
   assert.equal(await h.controller.recover(), false);
   assert.deepEqual(h.settings.getPending(), { credential: CREDENTIAL, version: 7 });
@@ -614,27 +794,29 @@ test('recovery preserves pending and reports an operational authentication excep
 test('recovery leaves a newer pending slot and retries after confirmed rejection', async () => {
   const oldPending = { credential: CREDENTIAL, version: 7 };
   const newPending = { credential: REPLACEMENT, version: 7 };
-  let pending = oldPending;
+  const active = { credential: 'a'.repeat(64), version: 6 };
+  let snapshot = { active, pending: oldPending, generation: 1, provenance: 'authoritative' };
   let reads = 0;
   let discardCalls = 0;
   const settings = {
-    getPending() {
+    getSnapshot() {
       reads += 1;
-      if (reads === 2) pending = newPending;
-      return pending;
+      if (reads === 2) snapshot = { ...snapshot, pending: newPending, generation: 2 };
+      return snapshot;
     },
-    discardPending(expected) {
+    async discardPending(expectedGeneration) {
       discardCalls += 1;
-      if (expected.credential !== pending.credential) return false;
-      pending = null;
+      if (expectedGeneration !== snapshot.generation) return false;
+      snapshot = { ...snapshot, pending: null, generation: snapshot.generation + 1 };
       return true;
     },
-    promotePending(expected) {
-      if (expected.credential !== pending?.credential) return false;
-      pending = null;
+    async promotePending(expected, expectedGeneration) {
+      if (expectedGeneration !== snapshot.generation
+        || expected.credential !== snapshot.pending?.credential) return false;
+      snapshot = { active: snapshot.pending, pending: null,
+        generation: snapshot.generation + 1, provenance: 'authoritative' };
       return true;
     },
-    getActive: () => null,
   };
   const attempts = [];
   const h = harness({
@@ -654,28 +836,29 @@ test('recovery leaves a newer pending slot and retries after confirmed rejection
 test('a newer recovery owns activation after an older authentication resumes', async () => {
   const oldAuthentication = deferred();
   const oldPending = { credential: CREDENTIAL, version: 7 };
-  const newPending = { credential: REPLACEMENT, version: 8 };
+  const replacement = { credential: REPLACEMENT, version: 1 };
   const h = harness({
     authenticateCredential: async (slot) => (
       slot.credential === CREDENTIAL ? oldAuthentication.promise : true
     ),
   });
-  h.settings.stage(oldPending);
+  await h.settings.stage(oldPending, h.settings.getSnapshot().generation);
   const oldRecovery = h.controller.recover();
-  h.settings.stage(newPending);
+  await h.settings.setToken(REPLACEMENT);
+  await h.settings.setActive(replacement, h.settings.getSnapshot().generation);
   const newRecovery = h.controller.recover();
 
   assert.equal(await newRecovery, true);
   oldAuthentication.resolve(true);
   assert.equal(await oldRecovery, false);
-  assert.deepEqual(h.started, [newPending]);
+  assert.deepEqual(h.started, [replacement]);
   assert.equal(h.states.filter((state) => state.phase === 'active').length, 1);
 });
 
 test('a newer recovery cannot be overwritten when old transport activation resumes', async () => {
   const oldActivation = deferred();
-  const oldActive = { credential: CREDENTIAL, version: 7 };
-  const newPending = { credential: REPLACEMENT, version: 8 };
+  const oldActive = { credential: 'a'.repeat(64), version: 6 };
+  const replacement = { credential: REPLACEMENT, version: 1 };
   let activationCalls = 0;
   const h = harness({
     authenticateCredential: async () => true,
@@ -686,15 +869,15 @@ test('a newer recovery cannot be overwritten when old transport activation resum
       return true;
     },
   });
-  h.settings.setActive(oldActive);
   const oldRecovery = h.controller.recover();
   await settleAsyncWork();
-  h.settings.stage(newPending);
+  await h.settings.setToken(REPLACEMENT);
+  await h.settings.setActive(replacement, h.settings.getSnapshot().generation);
 
   assert.equal(await h.controller.recover(), true);
   oldActivation.resolve(true);
   assert.equal(await oldRecovery, false);
-  assert.deepEqual(h.started, [newPending]);
+  assert.deepEqual(h.started, [replacement]);
   assert.equal(h.states.filter((state) => state.phase === 'active').length, 1);
 });
 
