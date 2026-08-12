@@ -12,7 +12,9 @@ This AGENTS.md scopes guidance to `benchmarks`. Parent AGENTS guidance still app
 ## Current Layout
 
 ### Files
-- None
+- `measurements.csv`
+- `README.md`
+- `run-evidence.csv`
 
 ### Subdirectories
 - None

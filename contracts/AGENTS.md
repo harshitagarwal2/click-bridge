@@ -12,7 +12,7 @@ This AGENTS.md scopes guidance to `contracts`. Parent AGENTS guidance still appl
 ## Current Layout
 
 ### Files
-- `.DS_Store`
+- None
 
 ### Subdirectories
 - `fixtures/`

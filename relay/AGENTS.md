@@ -12,6 +12,7 @@ This AGENTS.md scopes guidance to `relay`. Parent AGENTS guidance still applies 
 ## Current Layout
 
 ### Files
+- `package-lock.json`
 - `package.json`
 
 ### Subdirectories

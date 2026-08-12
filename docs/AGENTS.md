@@ -13,11 +13,17 @@ This AGENTS.md scopes guidance to `docs`. Parent AGENTS guidance still applies u
 
 ### Files
 - `benchmark.md`
+- `ios-acceptance.md`
+- `latency-report.md`
 - `oci-deployment.md`
+- `oci-recovery.md`
+- `physical-smoke-test.md`
+- `preflight.md`
+- `release-automation.md`
 - `smoke-test.md`
 
 ### Subdirectories
-- None
+- `superpowers/`
 
 <!-- OMX:AGENTS-INIT:MANUAL:START -->
 ## Local Notes
