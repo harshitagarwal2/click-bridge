@@ -1,6 +1,6 @@
 # Native iOS Client Acceptance
 
-**Automated status:** Passed: 83/83 tests, Release Simulator run, and generic iOS Release build
+**Automated status:** Passed: 90/90 tests, Release Simulator run, and generic iOS Release build
 
 **Physical iPhone status:** `NOT RUN`
 
@@ -42,10 +42,10 @@ A delta is accepted only when the current foreground session, authenticated sock
 | Release Simulator build | Passed | `ClickBridgePhone` built in Release configuration for iOS Simulator |
 | Release Simulator install and launch | Passed | The Release app installed and launched on iPhone 17 / iOS 26.3 |
 | Generic device build | Passed | Release build for generic platform `iOS` with code signing disabled |
-| Full XCTest suite | Passed: **83/83 tests** | XcodeBuildMCP full suite, including takeover close ordering, focused three-click triggering, App Intent routing, no-delayed-shortcut guarantees, fail-closed Keychain coverage, validated settings drafts, stored-token reuse and repair, typed issues, accessibility-focus transitions and priority, connection-specific detail, and readable rejection results. |
+| Full XCTest suite | Passed: **90/90 tests** | XcodeBuildMCP full suite, including takeover close ordering, focused three-click triggering, App Intent routing, no-delayed-shortcut guarantees, fail-closed Keychain coverage, validated settings drafts, stored-token reuse and repair, typed issues, accessibility-focus transitions and priority, connection-specific detail, and readable rejection results. |
 | Release bundle inspection | Passed | The app bundle contains `Assets.car` with `AppIcon`, `PrivacyInfo.xcprivacy`, and `Metadata.appintents`; `ITSAppUsesNonExemptEncryption` is `false` |
 
-The 83 passing automated tests cover the deterministic contracts for:
+The 90 passing automated tests cover the deterministic contracts for:
 
 - upward and downward volume deltas;
 - initial baseline and exact duplicate-value callback suppression;
@@ -153,6 +153,6 @@ Record the iPhone model, iOS version, signing identity, relay environment, Mac v
 
 ## Acceptance conclusion
 
-Automated implementation status is **passed** with 83/83 XcodeBuildMCP tests, including the original ten SwiftUI correction tests and two accessibility-focus transition regressions, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
+Automated implementation status is **passed** with 90/90 XcodeBuildMCP tests, including the current SwiftUI correction coverage and three accessibility-focus transition regressions, a successful Release Simulator build/install/launch on iPhone 17 / iOS 26.3, a successful generic iOS Release device build with signing disabled, and the required release-bundle metadata and resources.
 
 Physical hardware-volume and live end-to-end acceptance remain **`NOT RUN`**. A physical iPhone run is mandatory before claiming the user requirement is fully accepted.

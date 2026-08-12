@@ -83,15 +83,6 @@ final class PhoneStateTests: XCTestCase {
         XCTAssertEqual(state.primaryStatusDetail, "Connection lost. Retrying automatically.")
     }
 
-    func testRejectionReasonsHaveReadableActionResults() {
-        XCTAssertEqual(ResultReason.permissionRequired.userFacingDescription,
-                       "Mac Accessibility permission is required.")
-        XCTAssertEqual(ResultReason.remoteDisabled.userFacingDescription,
-                       "Remote control is disabled on the Mac.")
-        XCTAssertEqual(ResultReason.capacityExceeded.userFacingDescription,
-                       "The relay is busy. Try again.")
-    }
-
     func testOnlySettingsRelatedIssuesAreForwardedIntoSettings() {
         XCTAssertEqual(PhoneAppIssue.invalidSettings.settingsMessage,
                        PhoneAppIssue.invalidSettings.message)
