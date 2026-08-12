@@ -29,13 +29,14 @@ final class SettingsPresentationTests: XCTestCase {
     }
 
     func testDraftPreservesSensitiveInputAfterFailureAndClearsErrorWhenEdited() {
-        var draft = RelaySettingsDraft(initialRelayURL: "wss://relay.example/ws",
+        var draft = RelaySettingsDraft(initialRelayURL: "https://replacement.example/ws",
                                        hasStoredToken: false)
         draft.token = validToken
-        draft.errorMessage = "Secure storage is unavailable."
+        draft.errorMessage = PhoneAppIssue.invalidSettings.localizedDescription
 
+        XCTAssertEqual(draft.relayURL, "https://replacement.example/ws")
         XCTAssertEqual(draft.token, validToken)
-        XCTAssertEqual(draft.errorMessage, "Secure storage is unavailable.")
+        XCTAssertEqual(draft.errorMessage, PhoneAppIssue.invalidSettings.localizedDescription)
 
         draft.relayURL = "wss://new.example/ws"
         XCTAssertNil(draft.errorMessage)

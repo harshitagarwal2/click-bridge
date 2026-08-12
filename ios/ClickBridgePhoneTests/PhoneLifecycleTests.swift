@@ -33,15 +33,32 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertTrue(harness.transport.sentMessages.isEmpty)
     }
 
-    func testInvalidSettingsFailClosedAndEndCurrentSession() throws {
+    func testInvalidReplacementSettingsPreserveWorkingSession() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.active)
+        harness.makeReady()
+        let oldToken = try XCTUnwrap(harness.secret.value)
+        let oldConfiguration = try XCTUnwrap(harness.transport.configurations.last)
+        let replacementToken = String(repeating: "b", count: 64)
 
-        XCTAssertThrowsError(try harness.model.saveSettings(urlString: "https://relay.example/ws", token: String(repeating: "a", count: 64)))
+        XCTAssertThrowsError(try harness.model.saveSettings(
+            urlString: "https://replacement.example/ws",
+            token: replacementToken
+        )) { error in
+            XCTAssertEqual(error as? PhoneAppIssue, .invalidSettings)
+        }
 
-        XCTAssertEqual(harness.model.state.primaryStatus, .notConnected)
-        XCTAssertEqual(harness.transport.disconnectReasons, ["settings_invalid"])
-        XCTAssertEqual(harness.model.state.issue, .invalidSettings)
+        XCTAssertEqual(harness.model.settings.relayURLString, "wss://relay.example/ws")
+        XCTAssertEqual(harness.defaults.string(forKey: PhoneSettingsStore.relayURLKey),
+                       "wss://relay.example/ws")
+        XCTAssertEqual(harness.secret.value, oldToken)
+        XCTAssertEqual(harness.transport.configurations, [oldConfiguration])
+        XCTAssertEqual(harness.transport.disconnectReasons, [])
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertEqual(harness.source.stopCount, 1)
+        XCTAssertTrue(harness.model.state.foregroundSessionActive)
+        XCTAssertEqual(harness.model.state.primaryStatus, .ready)
+        XCTAssertNil(harness.model.state.issue)
     }
 
     func testSavingFirstValidTokenWhileActiveStartsForegroundSession() throws {
@@ -123,18 +140,68 @@ final class PhoneLifecycleTests: XCTestCase {
 
         harness.transport.emit(.connection(generation: harness.transport.generation, state: .takenOver))
 
+        XCTAssertEqual(harness.model.state.connection, .takenOver)
         XCTAssertEqual(harness.model.state.primaryStatus, .anotherPhoneTookOver)
         XCTAssertFalse(harness.model.canTriggerClick)
+
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .authenticated))
+        XCTAssertEqual(harness.model.state.connection, .takenOver)
+
+        XCTAssertThrowsError(try harness.model.saveSettings(
+            urlString: "https://replacement.example/ws",
+            token: String(repeating: "b", count: 64)
+        ))
+        XCTAssertEqual(harness.model.state.connection, .takenOver)
+        XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount)
 
         harness.model.scenePhaseChanged(.background)
         harness.model.scenePhaseChanged(.active)
         XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount)
+        XCTAssertEqual(harness.model.state.connection, .takenOver)
         XCTAssertEqual(harness.model.state.primaryStatus, .anotherPhoneTookOver)
 
         harness.model.reconnectAfterTakeover()
 
         XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount + 1)
+        XCTAssertEqual(harness.model.state.connection, .disconnected)
         XCTAssertEqual(harness.model.state.primaryStatus, .notConnected)
+    }
+
+    func testValidSettingsClearTakeoverAndReconnectActivePhone() throws {
+        let harness = try Harness()
+        harness.model.scenePhaseChanged(.active)
+        let firstConnectionCount = harness.transport.configurations.count
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .takenOver))
+
+        try harness.model.saveSettings(urlString: "wss://new.example/ws",
+                                       token: String(repeating: "b", count: 64))
+
+        XCTAssertFalse(harness.model.state.phoneTakenOver)
+        XCTAssertEqual(harness.model.state.connection, .disconnected)
+        XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount + 1)
+        XCTAssertEqual(harness.transport.configurations.last?.url.absoluteString,
+                       "wss://new.example/ws")
+    }
+
+    func testFailedTokenWritePreservesTakeover() throws {
+        let writeError = NSError(domain: String(repeating: "c", count: 64), code: 1)
+        let harness = try Harness(writeError: writeError)
+        harness.model.scenePhaseChanged(.active)
+        let firstConnectionCount = harness.transport.configurations.count
+        harness.transport.emit(.connection(generation: harness.transport.generation,
+                                           state: .takenOver))
+
+        XCTAssertThrowsError(try harness.model.saveSettings(
+            urlString: "wss://new.example/ws",
+            token: String(repeating: "b", count: 64)
+        ))
+
+        XCTAssertTrue(harness.model.state.phoneTakenOver)
+        XCTAssertEqual(harness.model.state.connection, .takenOver)
+        XCTAssertEqual(harness.transport.configurations.count, firstConnectionCount)
+        XCTAssertEqual(harness.transport.disconnectReasons, [])
     }
 
     func testOnScreenClickUsesCurrentReadinessWithoutChangingVolumeObservation() throws {

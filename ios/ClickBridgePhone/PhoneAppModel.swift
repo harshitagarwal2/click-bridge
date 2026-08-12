@@ -136,8 +136,6 @@ final class PhoneAppModel {
             configuration = try RelayConfiguration.validated(urlString: urlString,
                                                               token: resolvedToken)
         } catch {
-            endForegroundSession(reason: "settings_invalid")
-            state.issue = .invalidSettings
             throw PhoneAppIssue.invalidSettings
         }
 
@@ -152,7 +150,7 @@ final class PhoneAppModel {
 
         settings.relayURLString = configuration.url.absoluteString
         state.issue = nil
-        state.phoneTakenOver = false
+        if state.phoneTakenOver { state.connection = .disconnected }
         if foregroundGeneration != nil {
             endForegroundSession(reason: "settings_changed")
             startForegroundSession()
@@ -166,7 +164,7 @@ final class PhoneAppModel {
     func reconnectAfterTakeover() {
         guard state.phoneTakenOver else { return }
         endForegroundSession(reason: "takeover_reconnect")
-        state.phoneTakenOver = false
+        state.connection = .disconnected
         if sceneIsActive { startForegroundSession() }
     }
 
@@ -228,7 +226,7 @@ final class PhoneAppModel {
         clockHealth.stop()
         actions.abandonPending(reason: reason)
         transport.disconnect(reason: reason)
-        state.connection = .disconnected
+        if state.connection != .takenOver { state.connection = .disconnected }
         state.clock = .init(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
     }
 
@@ -256,8 +254,8 @@ final class PhoneAppModel {
         switch event {
         case .connection(let generation, let connection):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
+            guard !state.phoneTakenOver else { return }
             state.connection = connection
-            if connection == .takenOver { state.phoneTakenOver = true }
             if connection == .authenticated {
                 startClockCheckIfReady(socketGeneration: generation)
             } else {
@@ -266,6 +264,7 @@ final class PhoneAppModel {
             }
         case .message(let generation, let message):
             guard foregroundGeneration != nil, generation == transport.generation else { return }
+            guard !state.phoneTakenOver else { return }
             switch message {
             case .state(let relayState):
                 let wasReady = macIsReady

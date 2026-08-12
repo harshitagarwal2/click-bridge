@@ -114,6 +114,10 @@ assert.notEqual(
 assertIncludes(xcodeCloudScript, "set -eu");
 assertIncludes(xcodeCloudScript, "xcodegen_version='2.46.0'");
 assertIncludes(xcodeCloudScript, 'mkdir -p "$install_root"');
+assert.ok(
+  !xcodeCloudScript.includes("CDPATH= cd"),
+  "Xcode Cloud post-clone script must not trigger ShellCheck SC1007",
+);
 assertIncludes(
   xcodeCloudScript,
   "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806",

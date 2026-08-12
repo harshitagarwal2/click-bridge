@@ -29,7 +29,7 @@ enum PhoneAppIssue: LocalizedError, Equatable, Sendable {
 }
 
 enum PhonePrimaryStatus: Equatable, Sendable {
-    case notConnected, anotherPhoneTookOver, macOffline, macNotReady, checkingClock, clockMismatch, sending
+    case notConnected, anotherPhoneTookOver, macOffline, macNotReady, checkingClock, clockUnavailable, clockMismatch, sending
     case atVolumeBoundary(VolumeBoundary)
     case ready
 
@@ -40,6 +40,7 @@ enum PhonePrimaryStatus: Equatable, Sendable {
         case .macOffline: "Mac offline"
         case .macNotReady: "Mac not ready"
         case .checkingClock: "Checking clock"
+        case .clockUnavailable: "Clock check unavailable"
         case .clockMismatch: "Clock mismatch"
         case .sending: "Sending"
         case .atVolumeBoundary: "At volume boundary"
@@ -58,6 +59,7 @@ enum PhonePrimaryStatus: Equatable, Sendable {
         case .macOffline: "Start Click Bridge on the Mac."
         case .macNotReady: "Enable remote control and macOS Accessibility permission."
         case .checkingClock: "Validating phone and Mac clocks."
+        case .clockUnavailable: "Unable to validate the phone and Mac clocks. Retry the clock check."
         case .clockMismatch: "Enable automatic date and time."
         case .sending: "Waiting for the Mac terminal result."
         case .ready: nil
@@ -74,15 +76,16 @@ struct PhoneState: Equatable, Sendable {
     var actionPhase: PhoneActionPhase = .idle
     var lastActionOutcome: String?
     var issue: PhoneAppIssue?
-    var phoneTakenOver = false
 
+    var phoneTakenOver: Bool { connection == .takenOver }
     var primaryStatus: PhonePrimaryStatus {
         if phoneTakenOver { return .anotherPhoneTookOver }
         guard foregroundSessionActive, connection == .authenticated else { return .notConnected }
         guard mac.online else { return .macOffline }
         guard mac.remoteEnabled, mac.permission == .ready else { return .macNotReady }
         switch clock.status {
-        case .unchecked, .checking, .unavailable: return .checkingClock
+        case .unchecked, .checking: return .checkingClock
+        case .unavailable: return .clockUnavailable
         case .mismatch: return .clockMismatch
         case .healthy: break
         }
@@ -93,6 +96,8 @@ struct PhoneState: Equatable, Sendable {
         if let boundary = volume.boundary { return .atVolumeBoundary(boundary) }
         return .ready
     }
+
+    var showsClockRetry: Bool { clock.status == .unavailable }
 
     var primaryStatusDetail: String? {
         guard foregroundSessionActive else { return primaryStatus.detail }

@@ -181,7 +181,7 @@ private struct DashboardView: View {
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("status.summary")
 
-            if state.clock.status == .unavailable {
+            if state.showsClockRetry {
                 Button("Retry clock check", action: retryClockCheck)
                     .accessibilityHint("Checks the phone and Mac clocks again")
                     .accessibilityIdentifier("clock.retry")

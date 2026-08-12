@@ -104,6 +104,38 @@ final class PhoneClockHealthControllerTests: XCTestCase {
         XCTAssertTrue(scheduler.entries.isEmpty)
     }
 
+    func testRetryAfterUnavailableStartsFreshBatch() {
+        let scheduler = FakePhoneScheduler()
+        var health: [ClockHealth] = []
+        var requests: [TimeSyncRequest] = []
+        var ids = [
+            UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f03001")!,
+            UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f03002")!,
+        ]
+        let subject = PhoneClockHealthController(
+            clock: FakePhoneClock(),
+            scheduler: scheduler,
+            makeSyncID: { ids.removeFirst() },
+            isActionPending: { false },
+            onHealth: { health.append($0) }
+        )
+        subject.start(foregroundGeneration: 1, socketGeneration: 1) { message in
+            guard case .timeSyncRequest(let request) = message else { return false }
+            requests.append(request)
+            return true
+        }
+
+        scheduler.runFirst(after: PhoneProtocolV1.clockExchangeTimeout)
+        subject.retry()
+
+        XCTAssertEqual(health.map(\.status), [.checking, .unavailable, .checking])
+        XCTAssertEqual(requests.map(\.syncID), [
+            UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f03001")!,
+            UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f03002")!,
+        ])
+        XCTAssertEqual(scheduler.entries.map(\.delay), [PhoneProtocolV1.clockExchangeTimeout])
+    }
+
     func testClockMismatchUsesTolerancePlusHalfRTT() {
         let clock = FakePhoneClock(unixMilliseconds: 1_000)
         let scheduler = FakePhoneScheduler()
