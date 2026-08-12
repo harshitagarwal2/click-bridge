@@ -1,10 +1,24 @@
 import { deriveRelayWebSocketUrl } from './relay-transport.js';
-import { parseServerMessage } from './wire-protocol.js';
+import {
+  CREDENTIAL_REPLACED_CLOSE_CODE,
+  PAIRING_TTL_MS,
+  PAIRING_VERSION,
+  PROTOCOL_VERSION,
+  encodeMessage,
+  parseServerMessage,
+} from './wire-protocol.js';
 
-const PROTOCOL_VERSION = 1;
-const PAIRING_VERSION = 1;
-const REPLACED_CLOSE_CODE = 4004;
 const HEX = /^[a-f0-9]{64}$/;
+const DEFAULT_DEADLINES = Object.freeze({
+  connectionMs: 10_000,
+  claimMs: 10_000,
+  approvalMs: PAIRING_TTL_MS,
+});
+const ALLOWED_MESSAGES = Object.freeze({
+  claiming: new Set(['pair.claimed.phone', 'pair.failed']),
+  awaiting_approval: new Set(['pair.credential', 'pair.failed']),
+  activating: new Set(['pair.active', 'pair.failed']),
+});
 
 function toHex(bytes) {
   return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
@@ -42,6 +56,9 @@ export class PairingController {
     onState = () => {},
     authenticateCredential = async () => false,
     startTransport = () => {},
+    scheduler = globalThis,
+    deadlines = DEFAULT_DEADLINES,
+    now = () => Date.now(),
   }) {
     this.location = location;
     this.settings = settings;
@@ -52,16 +69,21 @@ export class PairingController {
     this.onState = onState;
     this.authenticateCredential = authenticateCredential;
     this.startTransport = startTransport;
+    this.scheduler = scheduler;
+    this.deadlines = { ...DEFAULT_DEADLINES, ...deadlines };
+    this.now = now;
     this.socket = null;
     this.reference = null;
     this.claimId = null;
     this.acknowledgedSlot = null;
     this.generation = 0;
     this.phase = 'idle';
+    this.deadlineTimer = null;
   }
 
   start(reference) {
-    this.#retireSocket();
+    this.#clearDeadline();
+    this.#retireSocket(this.socket);
     const generation = ++this.generation;
     this.reference = reference;
     this.claimId = this.idGenerator();
@@ -70,20 +92,30 @@ export class PairingController {
     const socket = this.createSocket(deriveRelayWebSocketUrl(this.location));
     this.socket = socket;
     this.#publish('connecting');
+    this.#scheduleDeadline(
+      socket, generation, 'connecting', this.deadlines.connectionMs, 'connection_timeout',
+    );
 
     socket.onopen = () => {
       if (!this.#current(socket, generation)) return;
-      socket.send(JSON.stringify({
-        type: 'pair.claim',
-        v: PROTOCOL_VERSION,
-        reference: this.reference,
-        claimId: this.claimId,
-        sessionNonce,
-        pairingVersion: PAIRING_VERSION,
-        clientKind: 'pwa',
-      }));
+      try {
+        this.#send(socket, {
+          type: 'pair.claim',
+          reference: this.reference,
+          claimId: this.claimId,
+          sessionNonce,
+          pairingVersion: PAIRING_VERSION,
+          clientKind: 'pwa',
+        });
+      } catch {
+        this.#terminate('failed', 'connection_failed', socket);
+        return;
+      }
       this.reference = null;
       this.#publish('claiming');
+      this.#scheduleDeadline(
+        socket, generation, 'claiming', this.deadlines.claimMs, 'claim_timeout',
+      );
     };
     socket.onmessage = (event) => {
       if (!this.#current(socket, generation)) return;
@@ -91,42 +123,61 @@ export class PairingController {
     };
     socket.onclose = (event) => {
       if (!this.#current(socket, generation)) return;
-      this.socket = null;
-      this.reference = null;
-      if (event.code === REPLACED_CLOSE_CODE) this.#publish('replaced');
-      else if (!['active', 'failed', 'cancelled'].includes(this.phase)) this.#publish('failed', 'disconnected');
+      if (event.code === CREDENTIAL_REPLACED_CLOSE_CODE) {
+        this.#terminate('replaced', null, socket);
+      } else {
+        this.#terminate('failed', 'disconnected', socket);
+      }
     };
     socket.onerror = () => {
-      if (this.#current(socket, generation)) this.#publish('failed', 'connection_failed');
+      if (this.#current(socket, generation)) {
+        this.#terminate('failed', 'connection_failed', socket);
+      }
     };
   }
 
   cancel() {
     const socket = this.socket;
-    if (socket?.readyState === 1 && this.claimId) {
-      socket.send(JSON.stringify({
-        type: 'pair.cancel.claim', v: PROTOCOL_VERSION, claimId: this.claimId,
-      }));
+    try {
+      if (socket?.readyState === 1 && this.claimId) {
+        this.#send(socket, { type: 'pair.cancel.claim', claimId: this.claimId });
+      }
+    } catch {
+      // Cancellation is local-first. Cleanup below must not depend on delivery.
+    } finally {
+      this.generation += 1;
+      this.#clearDeadline();
+      this.#clearSensitive();
+      this.#retireSocket(socket);
+      this.#publish('cancelled');
     }
-    this.generation += 1;
-    this.reference = null;
-    this.acknowledgedSlot = null;
-    this.#retireSocket();
-    this.#publish('cancelled');
   }
 
   async recover() {
+    const ownership = { generation: ++this.generation, socket: null };
+    this.#clearDeadline();
+    this.#retireSocket(this.socket);
+    this.#clearSensitive();
     while (true) {
+      if (!this.#owns(ownership)) return false;
       const pending = this.settings.getPending();
       if (pending) {
-        if (await this.#authenticates(pending)) {
+        const authentication = await this.#authenticate(pending);
+        if (!this.#owns(ownership)) return false;
+        if (authentication === 'error') {
+          this.#publish('failed', 'authentication_failed');
+          return false;
+        }
+        if (!sameSlot(this.settings.getPending(), pending)) continue;
+        if (authentication === 'accepted') {
           if (!this.settings.promotePending(pending)) {
             if (!sameSlot(this.settings.getPending(), pending)) continue;
             this.#publish('failed', 'storage_failed');
             return false;
           }
-          return this.#activateTransport(pending);
+          return this.#activateTransport(pending, ownership);
         }
+        if (!sameSlot(this.settings.getPending(), pending)) continue;
         if (!this.settings.discardPending(pending)) {
           if (!sameSlot(this.settings.getPending(), pending)) continue;
           this.#publish('failed', 'storage_failed');
@@ -139,9 +190,15 @@ export class PairingController {
         this.#publish('idle');
         return false;
       }
-      if (await this.#authenticates(active)) {
-        if (!sameSlot(this.settings.getActive(), active)) continue;
-        return this.#activateTransport(active);
+      const authentication = await this.#authenticate(active);
+      if (!this.#owns(ownership)) return false;
+      if (authentication === 'error') {
+        this.#publish('failed', 'authentication_failed');
+        return false;
+      }
+      if (!sameSlot(this.settings.getActive(), active)) continue;
+      if (authentication === 'accepted') {
+        return this.#activateTransport(active, ownership);
       }
       this.#publish('idle');
       return false;
@@ -153,27 +210,42 @@ export class PairingController {
     try {
       message = parseServerMessage(raw, 'phone');
     } catch {
-      this.#publish('failed', 'invalid_response');
+      if (this.#current(socket, generation)) {
+        this.#terminate('failed', 'invalid_response', socket);
+      }
       return;
     }
     if (!this.#current(socket, generation) || message.claimId !== this.claimId) return;
+    if (!ALLOWED_MESSAGES[this.phase]?.has(message.type)) {
+      this.#terminate('failed', 'invalid_response', socket);
+      return;
+    }
 
     if (message.type === 'pair.claimed.phone') {
       this.#publish('awaiting_approval', null, {
         confirmationCode: message.confirmationCode,
         expiresAtUnixMs: message.expiresAtUnixMs,
       });
+      const untilServerExpiry = Math.max(0, message.expiresAtUnixMs - this.now());
+      this.#scheduleDeadline(
+        socket,
+        generation,
+        'awaiting_approval',
+        Math.min(this.deadlines.approvalMs, untilServerExpiry),
+        'expired',
+      );
       return;
     }
     if (message.type === 'pair.failed') {
-      this.reference = null;
-      this.#publish(message.reason === 'replaced' ? 'replaced' : 'failed', message.reason);
+      this.#terminate(
+        message.reason === 'replaced' ? 'replaced' : 'failed', message.reason, socket,
+      );
       return;
     }
     if (message.type === 'pair.credential') {
       const pending = { credential: message.credential, version: message.credentialVersion };
       if (!this.settings.stage(pending)) {
-        this.#publish('failed', 'storage_failed');
+        this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       let proof;
@@ -182,64 +254,115 @@ export class PairingController {
           this.crypto, pending.credential, this.claimId, pending.version,
         );
       } catch {
-        this.#publish('failed', 'activation_failed');
+        if (this.#current(socket, generation)) {
+          this.#terminate('failed', 'activation_failed', socket);
+        }
         return;
       }
       if (!this.#current(socket, generation)) return;
       if (!sameSlot(this.settings.getPending(), pending)) {
-        this.#publish('failed', 'storage_failed');
+        this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       this.acknowledgedSlot = pending;
-      socket.send(JSON.stringify({
-        type: 'pair.credential.ack',
-        v: PROTOCOL_VERSION,
-        claimId: this.claimId,
-        credentialVersion: pending.version,
-        proof,
-      }));
+      try {
+        this.#send(socket, {
+          type: 'pair.credential.ack',
+          claimId: this.claimId,
+          credentialVersion: pending.version,
+          proof,
+        });
+      } catch {
+        this.#terminate('failed', 'activation_failed', socket);
+        return;
+      }
       this.#publish('activating');
+      this.#clearDeadline();
       return;
     }
     if (message.type === 'pair.active') {
       const acknowledged = this.acknowledgedSlot;
       if (!acknowledged || acknowledged.version !== message.activePhoneCredentialVersion
         || !this.settings.promotePending(acknowledged)) {
-        this.#publish('failed', 'storage_failed');
+        this.#terminate('failed', 'storage_failed', socket);
         return;
       }
       this.acknowledgedSlot = null;
       this.reference = null;
-      if (await this.#activateTransport(acknowledged)) {
-        this.#retireSocket(1000, 'pairing_complete');
+      if (await this.#activateTransport(acknowledged, { socket, generation })) {
+        this.#retireSocket(socket, 1000, 'pairing_complete');
       }
     }
   }
 
-  async #authenticates(slot) {
+  async #authenticate(slot) {
     try {
-      return await this.authenticateCredential(slot) === true;
+      return await this.authenticateCredential(slot) === true ? 'accepted' : 'rejected';
     } catch {
-      return false;
+      return 'error';
     }
   }
 
-  async #activateTransport(active) {
+  async #activateTransport(active, ownership) {
+    if (!this.#owns(ownership)) return false;
     if (!active) {
-      this.#publish('failed', 'storage_failed');
+      this.#failActivation('storage_failed', ownership);
       return false;
     }
     try {
       if (await this.startTransport(active) === false) {
-        this.#publish('failed', 'activation_failed');
+        if (this.#owns(ownership)) this.#failActivation('activation_failed', ownership);
         return false;
       }
     } catch {
-      this.#publish('failed', 'activation_failed');
+      if (this.#owns(ownership)) this.#failActivation('activation_failed', ownership);
       return false;
     }
+    if (!this.#owns(ownership)) return false;
     this.#publish('active');
     return true;
+  }
+
+  #failActivation(reason, ownership) {
+    if (ownership.socket) this.#terminate('failed', reason, ownership.socket);
+    else {
+      this.#clearSensitive();
+      this.#publish('failed', reason);
+    }
+  }
+
+  #send(socket, message) {
+    socket.send(encodeMessage({ ...message, v: PROTOCOL_VERSION }));
+  }
+
+  #scheduleDeadline(socket, generation, phase, delay, reason) {
+    this.#clearDeadline();
+    this.deadlineTimer = this.scheduler.setTimeout(() => {
+      this.deadlineTimer = null;
+      if (this.#current(socket, generation) && this.phase === phase) {
+        this.#terminate('failed', reason, socket);
+      }
+    }, Math.max(0, delay));
+  }
+
+  #clearDeadline() {
+    if (this.deadlineTimer === null) return;
+    this.scheduler.clearTimeout(this.deadlineTimer);
+    this.deadlineTimer = null;
+  }
+
+  #terminate(phase, reason, socket) {
+    this.generation += 1;
+    this.#clearDeadline();
+    this.#clearSensitive();
+    this.#retireSocket(socket);
+    this.#publish(phase, reason);
+  }
+
+  #clearSensitive() {
+    this.reference = null;
+    this.claimId = null;
+    this.acknowledgedSlot = null;
   }
 
   #publish(phase, reason = null, details = {}) {
@@ -251,9 +374,12 @@ export class PairingController {
     return this.socket === socket && this.generation === generation;
   }
 
-  #retireSocket(code, reason) {
-    const socket = this.socket;
-    this.socket = null;
+  #owns({ socket, generation }) {
+    return this.generation === generation && (socket === null || this.socket === socket);
+  }
+
+  #retireSocket(socket, code, reason) {
+    if (this.socket === socket) this.socket = null;
     if (!socket) return;
     socket.onopen = null;
     socket.onmessage = null;
