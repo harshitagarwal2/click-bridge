@@ -1,5 +1,9 @@
 # Private CI/CD Implementation Plan
 
+**Archive status:** Historical implementation plan; not an active task queue.
+Checklist state is preserved as written. Operational acceptance below remains
+evidence-driven and does not assert current service health.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add fast private CI and automatic rollback-capable OCI deployment for every verified `main` commit.

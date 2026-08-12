@@ -1,4 +1,5 @@
 import { pathToFileURL } from 'node:url';
+import { createInterface } from 'node:readline/promises';
 import WebSocket from 'ws';
 
 import { PHYSICAL_CLICKS_PER_POSTED_ACTION } from '../public/benchmark-session.js';
@@ -16,32 +17,39 @@ function observedIncrement(observation) {
   return observation.after - observation.before;
 }
 
-export async function runNegativeMatrix({ harness, octoObservations = {},
+export async function runNegativeMatrix({ harness, readOctoCount = async () => null,
   nowUnixMs = Date.now, idGenerator = () => crypto.randomUUID() }) {
   const now = nowUnixMs();
   const duplicateRequest = request(idGenerator(), now);
-  const duplicate = await harness.duplicate(duplicateRequest);
   const conflictOriginal = request(idGenerator(), now);
-  const conflict = await harness.conflict(conflictOriginal, request(conflictOriginal.actionId, now + 1));
-  const expired = await harness.expired(request(idGenerator(), now - lifetime - 1_001));
-  const dropped = await harness.resultDrop(request(idGenerator(), now));
   const clicks = PHYSICAL_CLICKS_PER_POSTED_ACTION;
   const cases = [
-    ['exact_duplicate', duplicate, clicks, duplicate.exactCached
-      && duplicate.mouseDownIncrement === clicks && duplicate.mouseUpIncrement === clicks],
-    ['id_conflict', conflict, 0, conflict.reason === 'id_conflict'
-      && conflict.mouseDownIncrement === 0 && conflict.mouseUpIncrement === 0],
-    ['expired', expired, 0, expired.reason === 'expired'
-      && expired.mouseDownIncrement === 0 && expired.mouseUpIncrement === 0],
-    ['result_drop', dropped, clicks, !dropped.lateDelivery
-      && dropped.totalDownIncrement === clicks && dropped.totalUpIncrement === clicks],
+    ['exact_duplicate', () => harness.duplicate(duplicateRequest), clicks,
+      (detail) => detail.exactCached
+        && detail.mouseDownIncrement === clicks && detail.mouseUpIncrement === clicks],
+    ['id_conflict', () => harness.conflict(
+      conflictOriginal, request(conflictOriginal.actionId, now + 1)), clicks,
+      (detail) => detail.reason === 'id_conflict'
+        && detail.mouseDownIncrement === 0 && detail.mouseUpIncrement === 0],
+    ['expired', () => harness.expired(request(idGenerator(), now - lifetime - 1_001)), 0,
+      (detail) => detail.reason === 'expired'
+        && detail.mouseDownIncrement === 0 && detail.mouseUpIncrement === 0],
+    ['result_drop', () => harness.resultDrop(request(idGenerator(), now)), clicks,
+      (detail) => !detail.lateDelivery
+        && detail.totalDownIncrement === clicks && detail.totalUpIncrement === clicks],
   ];
-  return cases.map(([scenario, detail, expectedOctoIncrement, protocolPassed]) => {
-    const octoIncrement = observedIncrement(octoObservations[scenario]);
-    return Object.freeze({ scenario,
-      outcome: protocolPassed && octoIncrement === expectedOctoIncrement ? 'pass' : 'fail',
-      octoIncrement, octoObservation: octoObservations[scenario] ?? null, detail });
-  });
+  const report = [];
+  for (const [scenario, run, expectedOctoIncrement, protocolPassed] of cases) {
+    const before = await readOctoCount({ scenario, phase: 'before' });
+    const detail = await run();
+    const after = await readOctoCount({ scenario, phase: 'after' });
+    const octoObservation = Object.freeze({ before, after });
+    const octoIncrement = observedIncrement(octoObservation);
+    report.push(Object.freeze({ scenario,
+      outcome: protocolPassed(detail) && octoIncrement === expectedOctoIncrement ? 'pass' : 'fail',
+      octoIncrement, octoObservation, detail }));
+  }
+  return report;
 }
 
 class PhoneConnection {
@@ -159,13 +167,25 @@ async function main() {
   if (!process.env.CLICK_BRIDGE_URL || !process.env.PHONE_TOKEN) {
     throw new Error('CLICK_BRIDGE_URL and PHONE_TOKEN are required; tokens are never command arguments');
   }
-  if (!process.env.NEGATIVE_MATRIX_OCTO_OBSERVATIONS) {
-    throw new Error('NEGATIVE_MATRIX_OCTO_OBSERVATIONS is required for explicit operator evidence');
+  const prompts = createInterface({ input: process.stdin, output: process.stderr });
+  const readOctoCount = async ({ scenario, phase }) => {
+    const answer = await prompts.question(`Octo ${scenario} ${phase} counter: `);
+    if (!/^(0|[1-9]\d*)$/.test(answer.trim())) {
+      throw new Error(`Octo ${scenario} ${phase} counter must be a non-negative integer`);
+    }
+    const value = Number(answer.trim());
+    if (!Number.isSafeInteger(value)) throw new Error(`Octo ${scenario} ${phase} counter is too large`);
+    return value;
+  };
+  let report;
+  try {
+    report = await runNegativeMatrix({
+      harness: new LiveNegativeHarness(process.env.CLICK_BRIDGE_URL, process.env.PHONE_TOKEN),
+      readOctoCount,
+    });
+  } finally {
+    prompts.close();
   }
-  const report = await runNegativeMatrix({
-    harness: new LiveNegativeHarness(process.env.CLICK_BRIDGE_URL, process.env.PHONE_TOKEN),
-    octoObservations: JSON.parse(process.env.NEGATIVE_MATRIX_OCTO_OBSERVATIONS),
-  });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.some((row) => row.outcome !== 'pass')) process.exitCode = 1;
 }

@@ -1,5 +1,9 @@
 # Native iOS Volume Client Design
 
+**Archive status:** Historical approved design; not an active implementation
+queue. Physical-device acceptance below remains an evidence requirement, not
+an inferred pass.
+
 **Status:** Approved for implementation
 
 **Date:** 2026-08-12

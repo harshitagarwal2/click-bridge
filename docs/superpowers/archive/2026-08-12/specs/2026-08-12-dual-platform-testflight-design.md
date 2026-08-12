@@ -1,5 +1,9 @@
 # Dual-Platform TestFlight Design
 
+**Archive status:** Historical approved design; not an active implementation
+queue. Release acceptance below remains an evidence requirement, not an
+inferred pass.
+
 **Status:** Approved on 2026-08-12
 
 ## Goal

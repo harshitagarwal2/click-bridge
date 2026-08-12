@@ -1,5 +1,8 @@
 # Three Independent Clicks Design
 
+**Archive status:** Historical approved design; not an active implementation
+queue. The real-phone/Octo acceptance below remains `NOT RUN` until observed.
+
 **Status:** Approved for implementation
 
 **Date:** 2026-08-12

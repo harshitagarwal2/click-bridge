@@ -1,5 +1,9 @@
 # Three Independent Clicks Implementation Plan
 
+**Archive status:** Historical implementation plan; not an active task queue.
+Checklist state is preserved as written. The real-phone/Octo gate below remains
+`NOT RUN` until observed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use xcodebuildmcp-cli for every Xcode build, test, and diagnostic command. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make one successful Click Bridge logical action post exactly three independent ordinary left clicks on the Mac while preserving one action ID, one result, and one terminal-result haptic.
@@ -10,7 +14,7 @@
 
 ## Global Constraints
 
-- Read `docs/superpowers/specs/2026-08-12-three-independent-clicks-design.md` before implementation; it is the approved design source.
+- Read `docs/superpowers/archive/2026-08-12/specs/2026-08-12-three-independent-clicks-design.md` before implementation; it is the approved design source.
 - One accepted input still produces one immutable protocol-v1 `action.request`, one `actionId`, one terminal `action.result`, and at most one terminal-result haptic.
 - Add `Constants.clickRepetitions = 3`; do not add a repetition field, new message type, action name, or protocol version.
 - Capture the cursor point once, construct three distinct down/up pairs backed by six distinct `CGEvent` objects at that point, validate the complete burst before posting, then post the pairs in order. Every native down and up keeps `mouseEventClickState = 1`; never post semantic click states `2` or `3`.
@@ -56,11 +60,10 @@ README.md
 FINAL-PLAN.md
 benchmarks/README.md
 docs/benchmark.md
-docs/smoke-test.md
 docs/physical-smoke-test.md
 docs/ios-acceptance.md
-docs/superpowers/specs/2026-08-12-native-ios-volume-client-design.md
-docs/superpowers/plans/2026-08-12-native-ios-volume-client.md
+docs/superpowers/archive/2026-08-12/specs/2026-08-12-native-ios-volume-client-design.md
+docs/superpowers/archive/2026-08-12/plans/2026-08-12-native-ios-volume-client.md
   Distinguish one logical action/result/haptic from three physical clicks.
 ```
 
@@ -467,11 +470,10 @@ git commit -m "test(relay): verify three-click action evidence"
 - Modify: `FINAL-PLAN.md`
 - Modify: `benchmarks/README.md`
 - Modify: `docs/benchmark.md`
-- Modify: `docs/smoke-test.md`
 - Modify: `docs/physical-smoke-test.md`
 - Modify: `docs/ios-acceptance.md`
-- Modify: `docs/superpowers/specs/2026-08-12-native-ios-volume-client-design.md`
-- Modify: `docs/superpowers/plans/2026-08-12-native-ios-volume-client.md`
+- Modify: `docs/superpowers/archive/2026-08-12/specs/2026-08-12-native-ios-volume-client-design.md`
+- Modify: `docs/superpowers/archive/2026-08-12/plans/2026-08-12-native-ios-volume-client.md`
 
 **Interfaces:**
 - Consumes: the implemented one-logical-action/three-physical-click contract.
@@ -549,10 +551,10 @@ xcodebuildmcp simulator test \
   --use-latest-os \
   --extra-args '-only-testing:ClickBridgePhoneTests/PhoneStateTests'
 rg -n 'one mouse-down and one mouse-up|one counter increment|one Octo increment|send one click|Sends one click' \
-  README.md FINAL-PLAN.md docs/benchmark.md docs/smoke-test.md \
+  README.md FINAL-PLAN.md docs/benchmark.md \
   docs/physical-smoke-test.md docs/ios-acceptance.md \
-  docs/superpowers/specs/2026-08-12-native-ios-volume-client-design.md \
-  docs/superpowers/plans/2026-08-12-native-ios-volume-client.md \
+  docs/superpowers/archive/2026-08-12/specs/2026-08-12-native-ios-volume-client-design.md \
+  docs/superpowers/archive/2026-08-12/plans/2026-08-12-native-ios-volume-client.md \
   benchmarks/README.md relay/public ios/ClickBridgePhone
 ```
 

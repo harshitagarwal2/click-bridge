@@ -1,5 +1,9 @@
 # Native iOS Volume Client Implementation Plan
 
+**Archive status:** Historical implementation plan; not an active task queue.
+Checklist state is preserved as written. Physical-device gates below retain
+their original `NOT RUN` or `BLOCKED` status until observed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use xcodebuildmcp-cli for every Xcode build, test, simulator, device, and diagnostic command. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a foreground native SwiftUI iPhone client that converts each distinct accepted `AVAudioSession.outputVolume` delta into exactly one existing protocol-v1 click action, which the Mac expands into exactly three independent ordinary left clicks, while preserving PWA behavior and protocol compatibility.
@@ -10,7 +14,7 @@
 
 ## Global Constraints
 
-- Read `docs/superpowers/specs/2026-08-12-native-ios-volume-client-design.md` before implementation; it is the approved design source for this plan.
+- Read `docs/superpowers/archive/2026-08-12/specs/2026-08-12-native-ios-volume-client-design.md` before implementation; it is the approved design source for this plan.
 - Create the XcodeGen source at exactly `ios/project.yml`; generate `ios/ClickBridgePhone.xcodeproj`; expose one shared scheme named exactly `ClickBridgePhone`.
 - Use an iOS 17.0 deployment target and Swift 5.9. Add no third-party package or runtime dependency.
 - Observe only `AVAudioSession.sharedInstance().outputVolume` via KVO. Do not import AVKit, use `AVCaptureEventInteraction`, use camera-capture event modifiers, request camera permission, or activate a camera session.

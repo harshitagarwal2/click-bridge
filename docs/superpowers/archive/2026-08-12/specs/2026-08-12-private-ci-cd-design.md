@@ -1,5 +1,9 @@
 # Private CI/CD Design
 
+**Archive status:** Historical approved design; not an active implementation
+queue. Operational acceptance below remains evidence-driven and does not
+assert current service health.
+
 ## Goal
 
 Automate Click Bridge validation and OCI production deployment while keeping
@@ -125,4 +129,3 @@ gate: watch every PR check to completion and merge only when all checks pass.
 6. OCI reports the new git SHA as `current-release`; HTTPS health and the
    authenticated WSS smoke pass.
 7. Repository visibility remains private and no container package is public.
-
