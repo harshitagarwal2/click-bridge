@@ -151,15 +151,23 @@ final class PhoneActionCoordinatorTests: XCTestCase {
         XCTAssertTrue(haptics.terminalResults.isEmpty)
     }
 
-    func testTerminalRelayAckSettlesWithoutHaptic() {
+    func testMacOfflineRelayAckPreservesDistinctPresentationWithoutHaptic() {
         let subject = makeSubject()
         _ = subject.accept(delta(), readiness: ready)
+        clock.set(monotonicMilliseconds: 512)
         let ack = RelayAck(actionID: firstID, status: .macOffline, reason: .macOffline,
                            relayProcessingMicroseconds: 1)
 
         XCTAssertTrue(subject.handle(.relayAck(ack), socketGeneration: 9))
         XCTAssertFalse(subject.hasPendingAction)
+        XCTAssertTrue(scheduler.entries.isEmpty)
         XCTAssertTrue(haptics.terminalResults.isEmpty)
+        XCTAssertEqual(
+            phases.last,
+            .rejected(actionID: firstID, reason: .macOffline, elapsedMilliseconds: 12)
+        )
+        XCTAssertEqual(PhoneActionRejectionReason.macOffline.userFacingDescription,
+                       "The Mac went offline.")
     }
 
     func testMatchingCurrentGenerationMacResultHapticsExactlyOnce() {
@@ -183,6 +191,25 @@ final class PhoneActionCoordinatorTests: XCTestCase {
         XCTAssertTrue(subject.handle(.actionResult(result), socketGeneration: 9))
         XCTAssertEqual(haptics.terminalResults, [result])
         XCTAssertEqual(phases.last, .rejected(actionID: firstID, reason: .expired, elapsedMilliseconds: 20))
+        XCTAssertEqual(PhoneActionRejectionReason.expired.userFacingDescription,
+                       "The click request expired before it could be posted.")
+    }
+
+    func testWireResultReasonsMapToInternalPresentationReasons() {
+        let mappings: [(ResultReason, PhoneActionRejectionReason)] = [
+            (.ok, .invalidRequest),
+            (.permissionRequired, .permissionRequired),
+            (.remoteDisabled, .remoteDisabled),
+            (.idConflict, .idConflict),
+            (.expired, .expired),
+            (.capacityExceeded, .capacityExceeded),
+            (.eventCreationFailed, .eventCreationFailed),
+            (.invalidRequest, .invalidRequest),
+        ]
+
+        for (wireReason, presentationReason) in mappings {
+            XCTAssertEqual(PhoneActionRejectionReason(wireReason), presentationReason)
+        }
     }
 
     func testMismatchedIDAndStaleGenerationAreIgnoredWithoutHaptic() {

@@ -28,12 +28,57 @@ enum ActionDisposition: Equatable, Sendable {
     case sendFailed
 }
 
+enum PhoneActionRejectionReason: String, Equatable, Sendable {
+    case macOffline = "mac_offline"
+    case permissionRequired = "permission_required"
+    case remoteDisabled = "remote_disabled"
+    case idConflict = "id_conflict"
+    case expired
+    case capacityExceeded = "capacity_exceeded"
+    case eventCreationFailed = "event_creation_failed"
+    case invalidRequest = "invalid_request"
+
+    init(_ reason: ResultReason) {
+        switch reason {
+        case .ok: self = .invalidRequest
+        case .permissionRequired: self = .permissionRequired
+        case .remoteDisabled: self = .remoteDisabled
+        case .idConflict: self = .idConflict
+        case .expired: self = .expired
+        case .capacityExceeded: self = .capacityExceeded
+        case .eventCreationFailed: self = .eventCreationFailed
+        case .invalidRequest: self = .invalidRequest
+        }
+    }
+
+    var userFacingDescription: String {
+        switch self {
+        case .macOffline:
+            "The Mac went offline."
+        case .permissionRequired:
+            "Mac Accessibility permission is required."
+        case .remoteDisabled:
+            "Remote control is disabled on the Mac."
+        case .idConflict:
+            "The click request conflicted with an earlier request."
+        case .expired:
+            "The click request expired before it could be posted."
+        case .capacityExceeded:
+            "The relay is busy. Try again."
+        case .eventCreationFailed:
+            "The Mac could not create the click event."
+        case .invalidRequest:
+            "The relay rejected the click request."
+        }
+    }
+}
+
 enum PhoneActionPhase: Equatable, Sendable {
     case idle
     case sending(actionID: UUID)
     case forwarded(actionID: UUID)
     case posted(actionID: UUID, elapsedMilliseconds: Double)
-    case rejected(actionID: UUID, reason: ResultReason, elapsedMilliseconds: Double)
+    case rejected(actionID: UUID, reason: PhoneActionRejectionReason, elapsedMilliseconds: Double)
     case unknown(actionID: UUID)
 }
 
@@ -165,7 +210,8 @@ final class PhoneActionCoordinator {
             case .posted:
                 onPhase(.posted(actionID: result.actionID, elapsedMilliseconds: elapsed))
             case .rejected:
-                onPhase(.rejected(actionID: result.actionID, reason: result.reason,
+                onPhase(.rejected(actionID: result.actionID,
+                                  reason: PhoneActionRejectionReason(result.reason),
                                   elapsedMilliseconds: elapsed))
             }
             return true
@@ -181,17 +227,19 @@ final class PhoneActionCoordinator {
         onPhase(.unknown(actionID: pending.request.actionID))
     }
 
-    private func settleWithoutHaptic(_ pending: PendingAction, reason: ResultReason, actionID: UUID) {
+    private func settleWithoutHaptic(_ pending: PendingAction,
+                                     reason: PhoneActionRejectionReason,
+                                     actionID: UUID) {
         scheduler.cancel(pending.timeout)
         let elapsed = max(0, clock.nowMonotonicMilliseconds() - pending.startedMonotonicMilliseconds)
         self.pending = nil
         onPhase(.rejected(actionID: actionID, reason: reason, elapsedMilliseconds: elapsed))
     }
 
-    private func resultReason(for reason: RelayAckReason) -> ResultReason {
+    private func resultReason(for reason: RelayAckReason) -> PhoneActionRejectionReason {
         switch reason {
         case .ok: .invalidRequest
-        case .macOffline: .remoteDisabled
+        case .macOffline: .macOffline
         case .expired: .expired
         case .invalidRequest: .invalidRequest
         }
