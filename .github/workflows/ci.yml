@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  relay-container:
+    name: Relay, PWA, and container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - name: Install relay dependencies
+        working-directory: relay
+        run: npm ci
+
+      - name: Check relay and PWA
+        working-directory: relay
+        run: npm run check
+
+      - name: Verify workflow contracts
+        run: |
+          node .github/scripts/test-workflows.mjs
+          node .github/scripts/verify-workflows.mjs
+          bash .github/scripts/test-deploy-oci.sh
+
+      - name: Lint workflows and shell
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
+          mapfile -t shell_files < <(git ls-files '*.sh')
+          if ((${#shell_files[@]})); then
+            shellcheck "${shell_files[@]}"
+          fi
+
+      - name: Validate Compose model
+        run: |
+          install -m 0600 /dev/null deploy/oci/.env
+          {
+            echo 'CLICK_BRIDGE_DOMAIN=example.test'
+            echo 'CLICK_BRIDGE_RELEASE=ci'
+            echo 'PHONE_TOKEN=1111111111111111111111111111111111111111111111111111111111111111'
+            echo 'MAC_TOKEN=2222222222222222222222222222222222222222222222222222222222222222'
+          } > deploy/oci/.env
+          docker compose --env-file deploy/oci/.env -f deploy/oci/compose.yaml config --quiet
+
+      - name: Build and health-check relay image
+        run: |
+          docker build -f deploy/oci/Dockerfile -t click-bridge-relay:ci .
+          cleanup() { docker rm -f click-bridge-relay-ci >/dev/null 2>&1 || true; }
+          trap cleanup EXIT INT TERM
+          cleanup
+          docker run --detach --name click-bridge-relay-ci \
+            --publish 127.0.0.1:18080:8080 \
+            --env PHONE_TOKEN=1111111111111111111111111111111111111111111111111111111111111111 \
+            --env MAC_TOKEN=2222222222222222222222222222222222222222222222222222222222222222 \
+            --env CLICK_BRIDGE_DOMAIN=example.test \
+            click-bridge-relay:ci
+          ready=0
+          for _ in $(seq 1 30); do
+            if test "$(curl --silent --show-error http://127.0.0.1:18080/healthz 2>/dev/null || true)" = ok; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if test "$ready" != 1; then
+            docker logs click-bridge-relay-ci
+            exit 1
+          fi
+
+  apple-clients:
+    name: macOS and iOS clients
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate macOS project
+        working-directory: mac
+        run: xcodegen generate
+
+      - name: Test macOS client
+        run: |
+          xcodebuild \
+            -project mac/ClickBridgeMac.xcodeproj \
+            -scheme ClickBridgeMac \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-macos-tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test
+
+      - name: Build macOS Release
+        run: |
+          xcodebuild \
+            -project mac/ClickBridgeMac.xcodeproj \
+            -scheme ClickBridgeMac \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-macos-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Generate iOS project
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Select iPhone simulator
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        run: |
+          device_id="$(xcrun simctl list devices available --json | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(device["udid"] for devices in data["devices"].values() for device in devices if device["name"].startswith("iPhone")))')"
+          test -n "$device_id"
+          echo "IOS_DEVICE_ID=$device_id" >> "$GITHUB_ENV"
+
+      - name: Test iOS client
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        run: |
+          xcodebuild \
+            -project ios/ClickBridgePhone.xcodeproj \
+            -scheme ClickBridgePhone \
+            -destination "platform=iOS Simulator,id=$IOS_DEVICE_ID" \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-ios-tests" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            test
+
+      - name: Build iOS simulator Release
+        if: ${{ hashFiles('ios/project.yml') != '' }}
+        run: |
+          xcodebuild \
+            -project ios/ClickBridgePhone.xcodeproj \
+            -scheme ClickBridgePhone \
+            -configuration Release \
+            -destination "platform=iOS Simulator,id=$IOS_DEVICE_ID" \
+            -derivedDataPath "$RUNNER_TEMP/click-bridge-ios-build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build

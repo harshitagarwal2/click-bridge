@@ -1,0 +1,122 @@
+name: Deploy OCI
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-oci
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy verified main commit
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://${{ vars.CLICK_BRIDGE_DOMAIN }}
+    steps:
+      - name: Check out the verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Verify deployment contract
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.event.workflow_run.head_sha }}"
+          node .github/scripts/test-workflows.mjs
+          node .github/scripts/verify-workflows.mjs
+          bash -n .github/scripts/deploy-oci.sh
+
+      - name: Configure dedicated SSH identity
+        env:
+          DEPLOY_PRIVATE_KEY: ${{ secrets.OCI_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.OCI_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DEPLOY_PRIVATE_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          umask 077
+          install -d -m 0700 "$RUNNER_TEMP/click-bridge-ssh"
+          printf '%s\n' "$DEPLOY_PRIVATE_KEY" > "$RUNNER_TEMP/click-bridge-ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/click-bridge-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/click-bridge-ssh/id_ed25519" "$RUNNER_TEMP/click-bridge-ssh/known_hosts"
+          echo "OCI_SSH_KEY=$RUNNER_TEMP/click-bridge-ssh/id_ed25519" >> "$GITHUB_ENV"
+          echo "OCI_KNOWN_HOSTS_FILE=$RUNNER_TEMP/click-bridge-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Transfer and activate immutable release
+        env:
+          OCI_DEPLOY_HOST: ${{ vars.OCI_DEPLOY_HOST }}
+          OCI_DEPLOY_USER: ${{ vars.OCI_DEPLOY_USER }}
+          CLICK_BRIDGE_DOMAIN: ${{ vars.CLICK_BRIDGE_DOMAIN }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$OCI_DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$OCI_DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]]
+          [[ "$CLICK_BRIDGE_DOMAIN" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]]
+
+          target="${OCI_DEPLOY_USER}@${OCI_DEPLOY_HOST}"
+          release_dir="/opt/click-bridge/releases/${RELEASE_SHA}"
+          ssh_options=(
+            -i "$OCI_SSH_KEY"
+            -o "UserKnownHostsFile=$OCI_KNOWN_HOSTS_FILE"
+            -o StrictHostKeyChecking=yes
+            -o BatchMode=yes
+          )
+
+          # The command substitution is intentionally preserved for the remote shell.
+          # shellcheck disable=SC2016
+          printf -v remote_prepare \
+            'set -eu; test -f /opt/click-bridge/shared/secrets.env; test "$(stat -c %%a /opt/click-bridge/shared/secrets.env)" = 600; install -d -m 0755 %q' \
+            "$release_dir"
+          # Inputs are validated above and escaped with printf %q for remote execution.
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" "$target" "$remote_prepare"
+
+          printf -v rsync_ssh 'ssh -i %q -o UserKnownHostsFile=%q -o StrictHostKeyChecking=yes -o BatchMode=yes' \
+            "$OCI_SSH_KEY" "$OCI_KNOWN_HOSTS_FILE"
+          rsync --archive --compress --delete \
+            --exclude .git \
+            --exclude node_modules \
+            --exclude build \
+            --exclude DerivedData \
+            --exclude deploy/oci/.env \
+            --exclude archive \
+            --exclude _to_delete \
+            --exclude benchmarks \
+            -e "$rsync_ssh" \
+            ./ "$target:$release_dir/"
+
+          printf -v remote_deploy 'CLICK_BRIDGE_RELEASE=%q %q' \
+            "$RELEASE_SHA" "$release_dir/.github/scripts/deploy-oci.sh"
+          # shellcheck disable=SC2029
+          ssh "${ssh_options[@]}" "$target" "$remote_deploy"
+
+          curl --fail --silent --show-error \
+            --retry 12 --retry-delay 2 --retry-all-errors \
+            "https://${CLICK_BRIDGE_DOMAIN}/healthz"
+
+      - name: Remove runner SSH material
+        if: ${{ always() }}
+        run: |
+          set -Eeuo pipefail
+          if [[ -n "${OCI_SSH_KEY:-}" ]]; then
+            rm -f "$OCI_SSH_KEY"
+          fi
+          if [[ -n "${OCI_KNOWN_HOSTS_FILE:-}" ]]; then
+            rm -f "$OCI_KNOWN_HOSTS_FILE"
+          fi
