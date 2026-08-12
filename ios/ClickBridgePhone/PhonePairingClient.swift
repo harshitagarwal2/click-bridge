@@ -148,8 +148,15 @@ final class PhonePairingClient {
         let authenticated = await authenticatePending(configuration)
         guard generation == expectedGeneration else { return .superseded }
         guard authenticated else { return .authenticationRejected }
-        do { try settings.promotePairingCredential(pending) }
-        catch { return .promotionFailed }
+        do {
+            try settings.promotePairingCredential(pending)
+        } catch PhonePairingCredentialStorageError.invalidState {
+            return .superseded
+        } catch PhonePairingCredentialStorageError.corruptState {
+            return .storageCorrupt
+        } catch {
+            return .promotionFailed
+        }
         guard generation == expectedGeneration else { return .superseded }
         normalTransport.connect(configuration: configuration)
         publish(.active)

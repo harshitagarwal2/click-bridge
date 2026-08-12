@@ -459,6 +459,187 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(promotionResult, .promotionFailed)
         XCTAssertTrue(promotionNormal.configurations.isEmpty)
     }
+
+    func testRecoveryReportsSupersededWhenNewerSaveWinsDuringAuthentication() async throws {
+        let secrets = PairingTestSecretStore()
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!, secrets: secrets
+        )
+        try store.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let gate = PairingAuthenticationGate()
+        let normal = FakePhoneActionTransport()
+        let subject = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            randomBytes: { self.nonce }, authenticatePending: { _ in await gate.wait() }
+        )
+
+        let recovery = Task {
+            await subject.recoverPending(
+                relayWebSocketURL: try! XCTUnwrap(URL(string: "wss://relay.example/ws"))
+            )
+        }
+        await gate.waitUntilEntered()
+        let newerToken = String(repeating: "c", count: 64)
+        try store.savePhoneToken(newerToken)
+        gate.resume(authenticated: true)
+
+        let result = await recovery.value
+        XCTAssertEqual(result, .superseded)
+        XCTAssertEqual(try store.phoneToken(), newerToken)
+        XCTAssertTrue(normal.configurations.isEmpty)
+    }
+
+    func testRecoveryReportsSupersededWhenPendingIsDiscardedDuringAuthentication() async throws {
+        let store = try makeStore()
+        let pending = try store.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let gate = PairingAuthenticationGate()
+        let normal = FakePhoneActionTransport()
+        let subject = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            randomBytes: { self.nonce }, authenticatePending: { _ in await gate.wait() }
+        )
+
+        let recovery = Task {
+            await subject.recoverPending(
+                relayWebSocketURL: try! XCTUnwrap(URL(string: "wss://relay.example/ws"))
+            )
+        }
+        await gate.waitUntilEntered()
+        try store.discardPairingCredential(pending)
+        gate.resume(authenticated: true)
+
+        let result = await recovery.value
+        XCTAssertEqual(result, .superseded)
+        XCTAssertNil(try store.pendingPairingCredential())
+        XCTAssertTrue(normal.configurations.isEmpty)
+    }
+
+    func testRecoveryReportsStorageCorruptWhenRecordCorruptsDuringAuthentication() async throws {
+        let secrets = PairingTestSecretStore()
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!, secrets: secrets
+        )
+        try store.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let gate = PairingAuthenticationGate()
+        let normal = FakePhoneActionTransport()
+        let subject = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            randomBytes: { self.nonce }, authenticatePending: { _ in await gate.wait() }
+        )
+
+        let recovery = Task {
+            await subject.recoverPending(
+                relayWebSocketURL: try! XCTUnwrap(URL(string: "wss://relay.example/ws"))
+            )
+        }
+        await gate.waitUntilEntered()
+        secrets.value = "corrupt-pairing-record"
+        gate.resume(authenticated: true)
+
+        let result = await recovery.value
+        XCTAssertEqual(result, .storageCorrupt)
+        XCTAssertTrue(normal.configurations.isEmpty)
+    }
+
+    func testCancelDuringRecoveryAuthenticationSupersedesRecovery() async throws {
+        let store = try makeStore()
+        try store.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let gate = PairingAuthenticationGate()
+        let normal = FakePhoneActionTransport()
+        let subject = PhonePairingClient(
+            socketFactory: FakePhoneWebSocketFactory(), settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            randomBytes: { self.nonce }, authenticatePending: { _ in await gate.wait() }
+        )
+
+        let recovery = Task {
+            await subject.recoverPending(
+                relayWebSocketURL: try! XCTUnwrap(URL(string: "wss://relay.example/ws"))
+            )
+        }
+        await gate.waitUntilEntered()
+        subject.cancel()
+        gate.resume(authenticated: true)
+
+        let result = await recovery.value
+        XCTAssertEqual(result, .superseded)
+        XCTAssertTrue(normal.configurations.isEmpty)
+    }
+
+    func testNewPairingDuringRecoveryAuthenticationSupersedesRecovery() async throws {
+        let store = try makeStore()
+        try store.stagePairingCredential(
+            .init(token: credential, version: 1),
+            relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
+        )
+        let gate = PairingAuthenticationGate()
+        let factory = FakePhoneWebSocketFactory()
+        let normal = FakePhoneActionTransport()
+        let subject = PhonePairingClient(
+            socketFactory: factory, settings: store,
+            normalTransport: normal, clock: FakePhoneClock(), scheduler: FakePhoneScheduler(),
+            claimID: { self.claimID }, randomBytes: { self.nonce },
+            authenticatePending: { _ in await gate.wait() }
+        )
+
+        let recovery = Task {
+            await subject.recoverPending(
+                relayWebSocketURL: try! XCTUnwrap(URL(string: "wss://relay.example/ws"))
+            )
+        }
+        await gate.waitUntilEntered()
+        subject.start(try PhonePairingLink.parse(
+            XCTUnwrap(URL(string: "https://relay.example/pair#v=1&r=\(reference)")),
+            expectedHost: "relay.example"
+        ))
+        gate.resume(authenticated: true)
+
+        let result = await recovery.value
+        XCTAssertEqual(result, .superseded)
+        XCTAssertEqual(subject.state.phase, .connecting)
+        XCTAssertEqual(factory.sockets.count, 1)
+        XCTAssertTrue(normal.configurations.isEmpty)
+    }
+}
+
+@MainActor
+private final class PairingAuthenticationGate {
+    private var authenticationContinuation: CheckedContinuation<Bool, Never>?
+    private var entryContinuations: [CheckedContinuation<Void, Never>] = []
+    private var entered = false
+
+    func wait() async -> Bool {
+        entered = true
+        let entryContinuations = self.entryContinuations
+        self.entryContinuations.removeAll()
+        entryContinuations.forEach { $0.resume() }
+        return await withCheckedContinuation { authenticationContinuation = $0 }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { entryContinuations.append($0) }
+    }
+
+    func resume(authenticated: Bool) {
+        authenticationContinuation?.resume(returning: authenticated)
+        authenticationContinuation = nil
+    }
 }
 
 private final class PairingTestSecretStore: SecretStoring, @unchecked Sendable {
