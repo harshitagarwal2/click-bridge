@@ -1,6 +1,46 @@
 import SwiftUI
 
 @MainActor
+final class PhoneClickIntentRouter {
+    static let shared = PhoneClickIntentRouter()
+
+    private var handler: (@MainActor () -> ActionDisposition)?
+    private var appIsActive = false
+    private var isDelivering = false
+    private(set) var hasPendingRequest = false
+
+    func installHandler(_ handler: @escaping @MainActor () -> ActionDisposition) {
+        self.handler = handler
+        deliverIfPossible()
+    }
+
+    func setAppActive(_ isActive: Bool) {
+        appIsActive = isActive
+        deliverIfPossible()
+    }
+
+    func requestClick() {
+        hasPendingRequest = true
+        deliverIfPossible()
+    }
+
+    func discardPendingRequest() {
+        hasPendingRequest = false
+    }
+
+    private func deliverIfPossible() {
+        guard appIsActive, hasPendingRequest, !isDelivering, let handler else { return }
+        isDelivering = true
+        _ = handler()
+        // An App Shortcut gets one immediate delivery attempt after launch-to-active.
+        // Every disposition, including not-ready and send failure, consumes it so an old
+        // shortcut can never turn into a delayed remote click.
+        hasPendingRequest = false
+        isDelivering = false
+    }
+}
+
+@MainActor
 final class PhoneAppModel: ObservableObject {
     @Published private(set) var state: PhoneState
     let settings: PhoneSettingsStore
@@ -9,22 +49,50 @@ final class PhoneAppModel: ObservableObject {
     private let transport: any PhoneActionTransport
     private let clockHealth: PhoneClockHealthController
     private let actions: PhoneActionCoordinator
+    private let intentRouter: PhoneClickIntentRouter
     private var foregroundGeneration: Int?
     private var generationCounter = 0
     private var sceneIsActive = false
+
+    convenience init(settings: PhoneSettingsStore,
+                     volumeController: VolumeDeltaController,
+                     transport: any PhoneActionTransport,
+                     clockHealth: PhoneClockHealthController,
+                     actions: PhoneActionCoordinator) {
+        self.init(settings: settings,
+                  volumeController: volumeController,
+                  transport: transport,
+                  clockHealth: clockHealth,
+                  actions: actions,
+                  intentRouter: .shared)
+    }
 
     init(settings: PhoneSettingsStore,
          volumeController: VolumeDeltaController,
          transport: any PhoneActionTransport,
          clockHealth: PhoneClockHealthController,
-         actions: PhoneActionCoordinator) {
+         actions: PhoneActionCoordinator,
+         intentRouter: PhoneClickIntentRouter) {
         self.settings = settings
         self.volumeController = volumeController
         self.transport = transport
         self.clockHealth = clockHealth
         self.actions = actions
+        self.intentRouter = intentRouter
         state = PhoneState()
         transport.onEvent = { [weak self] event in self?.handle(event) }
+        intentRouter.installHandler { [weak self] in
+            self?.triggerClick() ?? .ignoredNotReady
+        }
+    }
+
+    var canTriggerClick: Bool {
+        actions.canAccept(readiness: actionReadiness)
+    }
+
+    @discardableResult
+    func triggerClick() -> ActionDisposition {
+        actions.accept(readiness: actionReadiness)
     }
 
     func scenePhaseChanged(_ phase: ScenePhase) {
@@ -32,13 +100,18 @@ final class PhoneAppModel: ObservableObject {
         case .active:
             sceneIsActive = true
             if foregroundGeneration == nil { startForegroundSession() }
+            intentRouter.setAppActive(true)
         case .inactive:
-            break
+            intentRouter.setAppActive(false)
         case .background:
             sceneIsActive = false
+            intentRouter.setAppActive(false)
+            intentRouter.discardPendingRequest()
             endForegroundSession(reason: "background")
         @unknown default:
             sceneIsActive = false
+            intentRouter.setAppActive(false)
+            intentRouter.discardPendingRequest()
             endForegroundSession(reason: "unknown_scene_phase")
         }
     }
@@ -72,7 +145,9 @@ final class PhoneAppModel: ObservableObject {
 
     func retryClockCheck() { clockHealth.retry() }
 
-    func applyClockHealth(_ health: ClockHealth) { state.clock = health }
+    func applyClockHealth(_ health: ClockHealth) {
+        state.clock = health
+    }
     func applyActionPhase(_ phase: PhoneActionPhase) {
         state.actionPhase = phase
         switch phase {
@@ -120,14 +195,18 @@ final class PhoneAppModel: ObservableObject {
         case .baseline(let reading): state.volume = reading
         case .delta(let delta):
             state.volume = .init(value: delta.current)
-            _ = actions.accept(delta, readiness: .init(
-                foregroundGeneration: self.foregroundGeneration,
-                socketGeneration: transport.generation,
-                transportAuthenticated: transport.isAuthenticated,
-                mac: state.mac,
-                clock: state.clock
-            ))
+            _ = actions.accept(delta, readiness: actionReadiness)
         }
+    }
+
+    private var actionReadiness: ActionGateSnapshot {
+        ActionGateSnapshot(
+            foregroundGeneration: foregroundGeneration,
+            socketGeneration: transport.generation,
+            transportAuthenticated: transport.isAuthenticated,
+            mac: state.mac,
+            clock: state.clock
+        )
     }
 
     private func handle(_ event: PhoneTransportEvent) {

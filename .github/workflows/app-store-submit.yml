@@ -1,0 +1,148 @@
+name: App Store review submission
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z tag that must point at the dispatched commit
+        required: true
+        type: string
+      build_number:
+        description: Existing processed App Store Connect build number
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: apple-store-release
+  cancel-in-progress: false
+
+jobs:
+  verify-environment:
+    name: Verify protected release environment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require independent release approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: app-store
+        run: |
+          set -Eeuo pipefail
+          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
+          environment_json="$(
+            curl --fail-with-body --silent --show-error \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
+          )"
+          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
+            .name == $expected and
+            .can_admins_bypass == false and
+            any(.protection_rules[]?;
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              (.reviewers | type == "array" and length >= 1)
+            )
+          ' <<< "$environment_json" >/dev/null
+
+  submit:
+    name: Select processed build and submit for review
+    needs: verify-environment
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment:
+      name: app-store
+    steps:
+      - name: Revalidate protected release environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: app-store
+        run: |
+          set -Eeuo pipefail
+          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
+          environment_json="$(
+            curl --fail-with-body --silent --show-error \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
+          )"
+          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
+            .name == $expected and
+            .can_admins_bypass == false and
+            any(.protection_rules[]?;
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              (.reviewers | type == "array" and length >= 1)
+            )
+          ' <<< "$environment_json" >/dev/null
+
+      - name: Check out the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable release tag and build number
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "$EVENT_SHA"
+          {
+            echo "RELEASE_VERSION=${RELEASE_TAG#v}"
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+          } >> "$GITHUB_ENV"
+
+      - name: Reject placeholder store metadata
+        run: |
+          set -Eeuo pipefail
+          if grep -R -q 'REPLACE BEFORE RELEASE\|REPLACE-BEFORE-RELEASE' fastlane/metadata; then
+            echo 'Replace all Fastlane metadata placeholders before submission.' >&2
+            exit 1
+          fi
+
+      - name: Select Ruby and install locked Fastlane
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Configure ephemeral App Store Connect API key
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$APP_STORE_CONNECT_KEY_ID"
+          test -n "$APP_STORE_CONNECT_ISSUER_ID"
+          test -n "$APP_STORE_CONNECT_PRIVATE_KEY_BASE64"
+          api_key="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY_BASE64" | openssl base64 -d -A -out "$api_key"
+          chmod 0600 "$api_key"
+          echo "APP_STORE_CONNECT_KEY_PATH=$api_key" >> "$GITHUB_ENV"
+
+      - name: Submit the existing processed build for review
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: bundle exec fastlane ios submit_app_store release_version:"$RELEASE_VERSION" build_number:"$BUILD_NUMBER"
+
+      - name: Remove ephemeral API key
+        if: ${{ always() }}
+        run: test -z "${APP_STORE_CONNECT_KEY_PATH:-}" || rm -f "$APP_STORE_CONNECT_KEY_PATH"

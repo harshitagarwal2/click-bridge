@@ -11,6 +11,19 @@ struct ContentView: View {
                 Text("\(Int((model.state.volume.value * 100).rounded()))%")
                     .font(.system(size: 64, weight: .bold, design: .rounded))
                     .accessibilityLabel("System volume \(Int((model.state.volume.value * 100).rounded())) percent")
+                Button {
+                    model.triggerClick()
+                } label: {
+                    Label("Trigger Click", systemImage: "cursorarrow.click")
+                        .font(.title2.bold())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!model.canTriggerClick)
+                .accessibilityLabel("Trigger Click")
+                .accessibilityHint("Sends one click to the connected Mac")
                 if let outcome = model.state.lastActionOutcome {
                     Text(outcome).font(.callout).foregroundStyle(.secondary)
                 }

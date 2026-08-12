@@ -1,0 +1,209 @@
+name: TestFlight upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vX.Y.Z tag that must point at the dispatched commit
+        required: true
+        type: string
+      build_number:
+        description: Monotonically increasing App Store Connect build number
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: apple-store-release
+  cancel-in-progress: false
+
+jobs:
+  verify-environment:
+    name: Verify protected release environment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require independent release approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: testflight
+        run: |
+          set -Eeuo pipefail
+          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
+          environment_json="$(
+            curl --fail-with-body --silent --show-error \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
+          )"
+          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
+            .name == $expected and
+            .can_admins_bypass == false and
+            any(.protection_rules[]?;
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              (.reviewers | type == "array" and length >= 1)
+            )
+          ' <<< "$environment_json" >/dev/null
+
+  upload:
+    name: Build and upload without tester distribution
+    needs: verify-environment
+    runs-on: macos-15
+    timeout-minutes: 45
+    environment:
+      name: testflight
+    steps:
+      - name: Revalidate protected release environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ENVIRONMENT: testflight
+        run: |
+          set -Eeuo pipefail
+          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
+          environment_json="$(
+            curl --fail-with-body --silent --show-error \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
+          )"
+          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
+            .name == $expected and
+            .can_admins_bypass == false and
+            any(.protection_rules[]?;
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              (.reviewers | type == "array" and length >= 1)
+            )
+          ' <<< "$environment_json" >/dev/null
+
+      - name: Check out the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable release tag and build number
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "$EVENT_SHA"
+          {
+            echo "RELEASE_VERSION=${RELEASE_TAG#v}"
+            echo "BUILD_NUMBER=$BUILD_NUMBER"
+          } >> "$GITHUB_ENV"
+
+      - name: Reject placeholder release notes
+        run: |
+          set -Eeuo pipefail
+          ! grep -q 'REPLACE BEFORE RELEASE' fastlane/metadata/en-US/release_notes.txt
+
+      - name: Select Ruby and install locked Fastlane
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Install XcodeGen
+        run: |
+          set -Eeuo pipefail
+          version='2.46.0'
+          expected_sha256='4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806'
+          archive="$RUNNER_TEMP/xcodegen-${version}.zip"
+          extracted="$RUNNER_TEMP/xcodegen-${version}-source"
+          install_root="$RUNNER_TEMP/xcodegen-${version}"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            'https://github.com/yonaskolb/XcodeGen/releases/download/2.46.0/xcodegen.zip'
+          printf '%s  %s\n' "$expected_sha256" "$archive" | shasum -a 256 -c -
+          unzip -q "$archive" -d "$extracted"
+          PREFIX="$install_root" "$extracted/xcodegen/install.sh"
+          echo "$install_root/bin" >> "$GITHUB_PATH"
+          "$install_root/bin/xcodegen" --version | grep -Fx 'Version: 2.46.0'
+
+      - name: Configure ephemeral App Store signing
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          set -Eeuo pipefail
+          for required in APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY_BASE64 IOS_CERTIFICATE_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROFILE_BASE64; do
+            test -n "${!required}"
+          done
+
+          keychain="$RUNNER_TEMP/click-bridge-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          certificate="$RUNNER_TEMP/apple-distribution.p12"
+          profile="$RUNNER_TEMP/click-bridge.mobileprovision"
+          profile_plist="$RUNNER_TEMP/click-bridge-profile.plist"
+          api_key="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+
+          printf '%s' "$IOS_CERTIFICATE_BASE64" | openssl base64 -d -A -out "$certificate"
+          printf '%s' "$IOS_PROFILE_BASE64" | openssl base64 -d -A -out "$profile"
+          printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY_BASE64" | openssl base64 -d -A -out "$api_key"
+          chmod 0600 "$certificate" "$profile" "$api_key"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
+          security cms -D -i "$profile" > "$profile_plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          install -d "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$profile" "$HOME/Library/MobileDevice/Provisioning Profiles/${profile_uuid}.mobileprovision"
+
+          {
+            echo "APP_STORE_CONNECT_KEY_ID=$APP_STORE_CONNECT_KEY_ID"
+            echo "APP_STORE_CONNECT_ISSUER_ID=$APP_STORE_CONNECT_ISSUER_ID"
+            echo "APP_STORE_CONNECT_KEY_PATH=$api_key"
+            echo "IOS_PROVISIONING_PROFILE_NAME=$profile_name"
+            echo "SIGNING_KEYCHAIN=$keychain"
+            echo "SIGNING_CERTIFICATE_PATH=$certificate"
+            echo "SIGNING_INPUT_PROFILE_PATH=$profile"
+            echo "SIGNING_PROFILE_PLIST_PATH=$profile_plist"
+            echo "SIGNING_PROFILE_PATH=$HOME/Library/MobileDevice/Provisioning Profiles/${profile_uuid}.mobileprovision"
+          } >> "$GITHUB_ENV"
+
+      - name: Generate the iOS project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Upload to TestFlight only
+        env:
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: bundle exec fastlane ios upload_testflight release_version:"$RELEASE_VERSION" build_number:"$BUILD_NUMBER"
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        run: |
+          set -Eeuo pipefail
+          test -z "${SIGNING_PROFILE_PATH:-}" || rm -f "$SIGNING_PROFILE_PATH"
+          test -z "${SIGNING_KEYCHAIN:-}" || security delete-keychain "$SIGNING_KEYCHAIN" || true
+          test -z "${APP_STORE_CONNECT_KEY_PATH:-}" || rm -f "$APP_STORE_CONNECT_KEY_PATH"
+          test -z "${SIGNING_CERTIFICATE_PATH:-}" || rm -f "$SIGNING_CERTIFICATE_PATH"
+          test -z "${SIGNING_INPUT_PROFILE_PATH:-}" || rm -f "$SIGNING_INPUT_PROFILE_PATH"
+          test -z "${SIGNING_PROFILE_PLIST_PATH:-}" || rm -f "$SIGNING_PROFILE_PLIST_PATH"
+          rm -f "$RUNNER_TEMP/ClickBridgePhone.ipa"

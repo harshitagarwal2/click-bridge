@@ -1,5 +1,9 @@
 # Click Bridge v5 — OCI-First, Low-Latency Implementation Plan
 
+> **Historical plan:** This document is preserved for provenance only. It is
+> non-authoritative; use [`FINAL-PLAN.md`](../../FINAL-PLAN.md) for current scope,
+> implementation status, and acceptance requirements.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Use the xcodebuildmcp-cli skill for the macOS build, test, run, and diagnostic steps. Steps use checkbox syntax for tracking.
 
 **Goal:** While a foreground phone PWA is open, one physical press produces at most one native left mouse click at the Mac's current cursor position within the running-process reliability boundary, initially through the existing OCI San Jose relay and later through an optional measured Tailscale path.
@@ -45,7 +49,7 @@ Current folder facts to preserve during implementation:
 - The flat relay fans out to receivers and does not implement the final result contract.
 - fly.toml is obsolete for the chosen host.
 - The useful visual styling in index.html may be reused, but its behavior is not the contract.
-- PLAN-v4.md and earlier plans remain historical inputs. PLAN-v5.md becomes the only active implementation plan.
+- PLAN-v4.md and earlier plans remain historical inputs. At the time this plan was written, v5 became the active plan; it is now archived at `archive/plans/PLAN-v5.md`, and `FINAL-PLAN.md` is canonical.
 
 Do not edit the prototypes into production files. Build the replacement structure, prove it, then archive the flat prototypes in the final cleanup task.
 
@@ -374,12 +378,13 @@ acceptedVia is oci or tailscale. macProcessingUs uses the Mac's monotonic clock 
 
 ~~~text
 clicker/
-+-- PLAN-v5.md
++-- FINAL-PLAN.md
 +-- README.md
 +-- .gitignore
 +-- .dockerignore
 +-- archive/
 |   +-- plans/
+|   |   +-- PLAN-v5.md
 |   +-- prototypes/
 +-- contracts/
 |   +-- fixtures/
@@ -524,7 +529,7 @@ Tasks 1 through 9 produce the complete application. Tasks 10 and 11 are latency 
 - Create: .gitignore
 - Create: .dockerignore
 - Create: docs/preflight.md
-- Preserve: PLAN-v5.md
+- Preserve: `archive/plans/PLAN-v5.md`
 - Inspect only: current flat prototypes and existing OCI instance
 
 **Interfaces:**
@@ -596,7 +601,7 @@ Create .gitignore and .dockerignore from Section 7, then run:
 ~~~bash
 cd /Users/harshitagarwal/Desktop/clicker
 git init
-git add .gitignore .dockerignore PLAN-v5.md README.md docs/preflight.md
+git add .gitignore .dockerignore archive/plans/PLAN-v5.md README.md docs/preflight.md
 git diff --cached --check
 ~~~
 
@@ -608,7 +613,7 @@ README.md must state:
 
 - Tasks 1 through 9 are Milestone 1;
 - Tailscale and hedging are not enabled before Milestone 1 passes;
-- PLAN-v5.md is the only active plan;
+- `FINAL-PLAN.md` is the only active plan; `archive/plans/PLAN-v5.md` is historical;
 - all earlier files are preserved until the mandatory cleanup inside Task 9.
 
 - [ ] **Step 6: Commit**
@@ -1803,7 +1808,7 @@ Move these historical inputs:
 - PLAN.md, PLAN (1).md, PLAN-v4.md, and 2026-08-11-native-phone-desktop-controller.md to archive/plans/ when present;
 - flat server.js, receiver.js, index.html, and fly.toml to archive/prototypes/ when present.
 
-archive/README.md must state that the contents are non-authoritative historical evidence and are never imported, built, deployed, or linked as current instructions. PLAN-v5.md remains at the repository root. README.md points only to PLAN-v5.md.
+archive/README.md must state that the contents are non-authoritative historical evidence and are never imported, built, deployed, or linked as current instructions. This plan now resides at `archive/plans/PLAN-v5.md`; `FINAL-PLAN.md` remains canonical at the repository root, and README.md points only to it.
 
 Verify active files have no dependency on the archive:
 
@@ -1812,7 +1817,7 @@ cd /Users/harshitagarwal/Desktop/clicker
 rg -n "fly.io|flyctl|libnut|receiver.js|PLAN-v4|fast-server" README.md relay mac deploy docs tests
 ~~~
 
-Historical discussion inside PLAN-v5.md and archive files is allowed; active runtime or installation references are not.
+Historical discussion inside `archive/plans/PLAN-v5.md` and other archive files is allowed; active runtime or installation references are not.
 
 - [ ] **Step 9: Verify and commit the real data and cleanup**
 
@@ -1848,7 +1853,7 @@ git commit -m "test: accept oci milestone with real latency data"
 - [ ] Each baseline condition contains 100 recorded actions.
 - [ ] Clock-corrected estimates include their uncertainty.
 - [ ] No provider estimate is presented as measured data.
-- [ ] PLAN-v5.md is the only active plan and the archive is non-authoritative.
+- [ ] `FINAL-PLAN.md` is the only active plan and `archive/plans/PLAN-v5.md` is non-authoritative.
 
 Stop here if a simple, working personal application is sufficient.
 
@@ -2087,7 +2092,7 @@ Run this task immediately after the chosen stopping point: after Task 9 for OCI-
 **Files:**
 
 - Modify: README.md
-- Verify: PLAN-v5.md remains at repository root
+- Verify: `archive/plans/PLAN-v5.md` remains historical and `FINAL-PLAN.md` remains at the repository root
 - Verify: archive/ remains non-authoritative
 
 - [ ] **Step 1: Run the complete clean verification suite**
@@ -2212,7 +2217,7 @@ If Step 3 required no tracked change, do not create an empty commit; record the 
 - [ ] No Windows or native mobile application exists.
 - [ ] No Cloudflare Durable Object or Fly deployment exists.
 - [ ] No security-hardening features beyond the minimum working boundary were added.
-- [ ] PLAN-v5.md is the single active plan.
+- [ ] `FINAL-PLAN.md` is the single active plan; `archive/plans/PLAN-v5.md` is historical.
 
 ---
 

@@ -22,6 +22,7 @@ targets:
       path: ClickBridgePhone/Info.plist
       properties:
         CFBundleDisplayName: Click Bridge
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -35,6 +36,9 @@ targets:
     sources:
       - path: ClickBridgePhoneTests
       - path: ../contracts/fixtures
+        name: fixtures
+        group: contracts
+        createIntermediateGroups: false
         buildPhase: resources
     dependencies:
       - target: ClickBridgePhone

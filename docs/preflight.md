@@ -82,33 +82,37 @@ A reserved IP remains an optional durability improvement, not a correctness
 dependency. Shared `sslip.io`/`nip.io` names and bare-IP TLS remain out of scope.
 
 The initial OCI-native release `20260812T020129Z` passed HTTPS, TLS, health, and
-an authenticated 11/11 WebSocket smoke. It must still be replaced by an image
-built from the reviewed and merged Milestone 1 commit before repository
-delivery is considered complete.
+an authenticated 11/11 WebSocket smoke and is retained as deployment history.
+The live host now uses immutable releases. This repository record does not
+identify the exact release currently selected on the host; read the live
+`current-release` pointer before any operation that depends on that identifier.
 
 ## Physical target gates
 
 | Gate | Required recorded fact | Current value |
 |---|---|---|
 | MAC-01 | Mac model and OS | MacBook Pro (`MacBookPro18,3`), macOS 27.0 (26A5388g) |
-| OCTO-01 | Installed Octo Browser version | Not found in standard `/Applications` or user `Applications` locations; confirm before Task 7 |
+| OCTO-01 | Installed Octo Browser version | `/Applications/Octo Browser.app`, version 3.0.7 (`net.octobrowser.client`) |
+| OCTO-02 | Octo runtime/session acceptance | `NOT RUN`; installation alone does not prove launch, authenticated session state, click targeting, or end-to-end acceptance |
 | PHONE-01 | Target phone model and OS | Not supplied |
 | PHONE-02 | Target carrier | Not supplied |
 | NETWORK-01 | Whether the Mac uses wired Ethernet or Wi-Fi during the benchmark | Restricted local inspection could not establish this safely |
 | TARGET-01 | Harmless physical click-counting page | `tests/manual/click-target.html` exists |
 
-Phone, carrier, and Octo details are operational inputs rather than repository
-secrets. Record them when the physical devices are available; do not infer them.
+Phone, carrier, network, and Octo session details are operational inputs rather
+than repository secrets. Record them when the physical devices and runtime
+session are available; do not infer runtime acceptance from installation.
 
 ## Canonical repository boundary
 
 - `FINAL-PLAN.md` is the only active plan.
 - Tasks 1 through 9 form Milestone 1.
 - Tailscale and hedging stay disabled until Milestone 1 passes.
-- Earlier plans and prototypes remain non-authoritative historical evidence
-  until the required Task 9 cleanup.
-- The imported application scaffold remains unverified until each task's
-  acceptance gate passes with fresh evidence.
+- Earlier plans and prototypes are non-authoritative historical evidence under
+  `archive/`; `archive/plans/PLAN-v5.md` is not an active instruction source.
+- Automated evidence is recorded in the component acceptance documents.
+  Physical iPhone volume/haptic behavior, macOS Accessibility-authorized
+  clicking, and live Octo end-to-end acceptance remain explicit separate gates.
 - Root Docker context excludes repository metadata, secrets, dependencies,
   build products, archives, bundles, Mac sources, benchmarks, tests, docs, and
   plans while retaining `relay/package*.json`, `relay/src/`, and
@@ -124,4 +128,5 @@ secrets. Record them when the physical devices are available; do not infer them.
 - [x] NODE-01: Node 24.19.0/npm 11.17.0 installed; explicitly select its bin directory for Task 2.
 - [x] OCI-01 through OCI-07: inspected through authenticated OCI CLI, SSH, and public probes.
 - [x] DOMAIN-01: `clickbridge-sjc.duckdns.org` resolves to the active OCI IPv4.
-- [ ] OCTO-01, PHONE-01, PHONE-02, NETWORK-01: record the physical test setup.
+- [x] OCTO-01: `/Applications/Octo Browser.app` version 3.0.7 is installed.
+- [ ] OCTO-02, PHONE-01, PHONE-02, NETWORK-01: record the physical runtime and test setup.

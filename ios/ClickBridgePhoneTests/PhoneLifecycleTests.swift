@@ -78,6 +78,143 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertTrue(harness.actions.hasPendingAction)
     }
 
+    func testOnScreenClickUsesCurrentReadinessWithoutChangingVolumeObservation() throws {
+        let harness = try Harness()
+        harness.model.scenePhaseChanged(.active)
+        XCTAssertFalse(harness.model.canTriggerClick)
+
+        harness.makeReady()
+        XCTAssertTrue(harness.model.canTriggerClick)
+        XCTAssertEqual(harness.model.triggerClick(), .sent(actionID: harness.actionID))
+
+        XCTAssertEqual(harness.transport.sentMessages.compactMap(\.actionID), [harness.actionID])
+        XCTAssertEqual(harness.source.startCount, 1)
+        XCTAssertEqual(harness.source.stopCount, 1) // foreground start resets the observer once
+        XCTAssertFalse(harness.model.canTriggerClick)
+    }
+
+    func testIntentRequestIsDiscardedAfterEveryUnacceptedAttempt() {
+        for disposition in [ActionDisposition.ignoredNotReady, .ignoredPending, .sendFailed] {
+            let subject = PhoneClickIntentRouter()
+            var deliveries = 0
+            subject.installHandler {
+                deliveries += 1
+                return disposition
+            }
+
+            subject.requestClick()
+            XCTAssertTrue(subject.hasPendingRequest)
+            XCTAssertEqual(deliveries, 0)
+
+            subject.setAppActive(true)
+            XCTAssertFalse(subject.hasPendingRequest)
+            XCTAssertEqual(deliveries, 1)
+
+            subject.setAppActive(false)
+            subject.setAppActive(true)
+            XCTAssertEqual(deliveries, 1)
+            XCTAssertFalse(subject.hasPendingRequest)
+        }
+    }
+
+    func testMultipleInactiveIntentRequestsCollapseIntoOneAttempt() {
+        let subject = PhoneClickIntentRouter()
+        var deliveries = 0
+        subject.installHandler {
+            deliveries += 1
+            return .ignoredPending
+        }
+
+        subject.requestClick()
+        subject.requestClick()
+        subject.requestClick()
+        subject.setAppActive(true)
+
+        XCTAssertEqual(deliveries, 1)
+        XCTAssertFalse(subject.hasPendingRequest)
+    }
+
+    func testActiveIntentRequestDeliversWhenHandlerIsInstalled() {
+        let subject = PhoneClickIntentRouter()
+        subject.setAppActive(true)
+        subject.requestClick()
+        var deliveries = 0
+
+        subject.installHandler {
+            deliveries += 1
+            return .sent(actionID: UUID())
+        }
+
+        XCTAssertEqual(deliveries, 1)
+        XCTAssertFalse(subject.hasPendingRequest)
+    }
+
+    func testIntentDeliveryDoesNotRetainAReentrantRequest() {
+        let subject = PhoneClickIntentRouter()
+        var deliveries = 0
+        subject.installHandler {
+            deliveries += 1
+            subject.requestClick()
+            return .ignoredNotReady
+        }
+        subject.setAppActive(true)
+
+        subject.requestClick()
+
+        XCTAssertEqual(deliveries, 1)
+        XCTAssertFalse(subject.hasPendingRequest)
+    }
+
+    func testIntentRequestWaitsWhileSceneIsInactive() throws {
+        let harness = try Harness()
+        harness.model.scenePhaseChanged(.active)
+        harness.makeReady()
+        harness.model.scenePhaseChanged(.inactive)
+
+        harness.intentRouter.requestClick()
+        XCTAssertTrue(harness.intentRouter.hasPendingRequest)
+        XCTAssertTrue(harness.transport.sentMessages.filter {
+            if case .actionRequest = $0 { return true }
+            return false
+        }.isEmpty)
+
+        harness.model.scenePhaseChanged(.active)
+        XCTAssertFalse(harness.intentRouter.hasPendingRequest)
+        XCTAssertEqual(harness.transport.sentMessages.compactMap(\.actionID), [harness.actionID])
+    }
+
+    func testColdLaunchIntentIsNotRetriedAfterActiveAttemptWasNotReady() throws {
+        let harness = try Harness()
+        harness.intentRouter.requestClick()
+
+        harness.model.scenePhaseChanged(.active)
+        XCTAssertFalse(harness.intentRouter.hasPendingRequest)
+        XCTAssertTrue(harness.transport.sentMessages.compactMap(\.actionID).isEmpty)
+
+        harness.makeReady()
+
+        XCTAssertFalse(harness.intentRouter.hasPendingRequest)
+        XCTAssertTrue(harness.transport.sentMessages.compactMap(\.actionID).isEmpty)
+
+        harness.model.applyClockHealth(.init(status: .healthy, offsetMilliseconds: 0,
+                                             uncertaintyMilliseconds: 1))
+        XCTAssertTrue(harness.transport.sentMessages.compactMap(\.actionID).isEmpty)
+    }
+
+    func testBackgroundDiscardsAnInactiveIntentRequest() throws {
+        let harness = try Harness()
+        harness.model.scenePhaseChanged(.inactive)
+        harness.intentRouter.requestClick()
+        XCTAssertTrue(harness.intentRouter.hasPendingRequest)
+
+        harness.model.scenePhaseChanged(.background)
+        harness.model.scenePhaseChanged(.active)
+        harness.makeReady()
+
+        XCTAssertFalse(harness.intentRouter.hasPendingRequest)
+        XCTAssertTrue(harness.transport.sentMessages.compactMap(\.actionID).isEmpty)
+    }
+
     func testClockCheckWaitsForMacReadyAndRestartsAfterOfflineTransition() throws {
         let harness = try Harness()
         harness.model.scenePhaseChanged(.active)
@@ -119,6 +256,8 @@ final class PhoneLifecycleTests: XCTestCase {
         let source: FakeVolumeChangeSource
         let transport: FakePhoneActionTransport
         let actions: PhoneActionCoordinator
+        let actionID: UUID
+        let intentRouter: PhoneClickIntentRouter
         let defaults: UserDefaults
         let secret: LifecycleSecretStore
         let model: PhoneAppModel
@@ -132,20 +271,27 @@ final class PhoneLifecycleTests: XCTestCase {
             let transport = FakePhoneActionTransport()
             let scheduler = FakePhoneScheduler()
             let clock = FakePhoneClock()
+            let actionID = UUID(uuidString: "018f63f5-6f3d-7d21-88bc-9ef561f030de")!
+            let intentRouter = PhoneClickIntentRouter()
             let actions = PhoneActionCoordinator(transport: transport, clock: clock,
-                                                 scheduler: scheduler, haptics: FakePhoneHaptics()) { _ in }
+                                                 scheduler: scheduler,
+                                                 haptics: FakePhoneHaptics(),
+                                                 makeActionID: { actionID }) { _ in }
             let clockHealth = PhoneClockHealthController(clock: clock, scheduler: scheduler,
                                                         isActionPending: { actions.hasPendingAction }) { _ in }
             self.source = source
             self.transport = transport
             self.actions = actions
+            self.actionID = actionID
+            self.intentRouter = intentRouter
             self.defaults = defaults
             self.secret = secret
             model = PhoneAppModel(settings: settings,
                                   volumeController: VolumeDeltaController(source: source),
                                   transport: transport,
                                   clockHealth: clockHealth,
-                                  actions: actions)
+                                  actions: actions,
+                                  intentRouter: intentRouter)
         }
 
         var timeSyncRequestCount: Int {

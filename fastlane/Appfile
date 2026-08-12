@@ -1,0 +1,2 @@
+app_identifier(ENV.fetch("CLICK_BRIDGE_IOS_BUNDLE_ID", "com.clickbridge.phone"))
+team_id(ENV["APPLE_TEAM_ID"]) if ENV["APPLE_TEAM_ID"]
