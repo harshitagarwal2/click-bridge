@@ -86,6 +86,8 @@ actor RelayClient {
     private var heartbeatTimeoutTask: Task<Void, Never>?
     private var generation = 0
     private var authenticatedGeneration: Int?
+    private var authenticatedActionAuthorization: ActionAuthorizationLease?
+    private var authorizationActivationTask: Task<ActionAuthorizationLease, Never>?
     private var reconnectAttempt = 0
     private var sequence = 0
     private var pendingHeartbeat: Int?
@@ -196,8 +198,12 @@ actor RelayClient {
     }
 
     private func cancelGeneration() async {
+        let authorization = authenticatedActionAuthorization
+        let activatingAuthorization = authorizationActivationTask
         generation += 1
         authenticatedGeneration = nil
+        authenticatedActionAuthorization = nil
+        authorizationActivationTask = nil
         receiveTask?.cancel(); receiveTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
@@ -205,6 +211,13 @@ actor RelayClient {
         pendingHeartbeat = nil
         let old = transport
         transport = nil
+        if let authorization { await actionSink.revokeAuthorizationLease(authorization) }
+        if let activatingAuthorization {
+            let activatingLease = await activatingAuthorization.value
+            if activatingLease != authorization {
+                await actionSink.revokeAuthorizationLease(activatingLease)
+            }
+        }
         await old?.close()
     }
 
@@ -269,6 +282,19 @@ actor RelayClient {
                 throw WireError.messageNotAllowed
             }
             authenticatedGeneration = expected
+            let authorizationGeneration = ActionAuthorizationGeneration(
+                credentialMutationEpoch: credentialMutationEpoch,
+                connectionGeneration: expected
+            )
+            let activationTask = Task { await actionSink.activateAuthorizationLease(for: authorizationGeneration) }
+            authorizationActivationTask = activationTask
+            let authorization = await activationTask.value
+            guard isAuthenticated(expected) else {
+                await actionSink.revokeAuthorizationLease(authorization)
+                throw CancellationError()
+            }
+            authorizationActivationTask = nil
+            authenticatedActionAuthorization = authorization
             reconnectAttempt = 0
             setStatus(.connected)
             try await send(advertisedState, socket: socket, generation: expected, requireAuthentication: true)
@@ -285,7 +311,10 @@ actor RelayClient {
                 heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
             }
         case .actionRequest(let request):
-            let result = await actionSink.receive(request, via: .oci)
+            guard isAuthenticated(expected), let authorization = authenticatedActionAuthorization else {
+                throw CancellationError()
+            }
+            let result = await actionSink.receive(request, via: .oci, authorization: authorization)
             guard isAuthenticated(expected) else { throw CancellationError() }
             resultHandler?(result)
             try await send(result, socket: socket, generation: expected, requireAuthentication: true)
@@ -375,12 +404,23 @@ actor RelayClient {
 
         generation += 1
         let reconnectGeneration = generation
+        let authorization = authenticatedActionAuthorization
+        let activatingAuthorization = authorizationActivationTask
         authenticatedGeneration = nil
+        authenticatedActionAuthorization = nil
+        authorizationActivationTask = nil
         receiveTask?.cancel(); receiveTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
         pendingHeartbeat = nil
         transport = nil
+        if let authorization { await actionSink.revokeAuthorizationLease(authorization) }
+        if let activatingAuthorization {
+            let activatingLease = await activatingAuthorization.value
+            if activatingLease != authorization {
+                await actionSink.revokeAuthorizationLease(activatingLease)
+            }
+        }
         await socket.close()
 
         guard running, generation == reconnectGeneration else { return }

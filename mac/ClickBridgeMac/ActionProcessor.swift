@@ -25,6 +25,7 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
     private let capacity: Int
     private let skewToleranceMilliseconds: Double
     private var remoteEnabled = false
+    private var activeAuthorizationLease: ActionAuthorizationLease?
     private var entries: [String: Entry] = [:]
     private var order: [String] = []
 
@@ -46,7 +47,36 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
 
     func setRemoteEnabled(_ enabled: Bool) { remoteEnabled = enabled }
 
+    func activateAuthorizationLease(
+        for generation: ActionAuthorizationGeneration
+    ) async -> ActionAuthorizationLease {
+        let lease = ActionAuthorizationLease(generation: generation)
+        activeAuthorizationLease = lease
+        return lease
+    }
+
+    func revokeAuthorizationLease(_ lease: ActionAuthorizationLease) async {
+        if activeAuthorizationLease == lease { activeAuthorizationLease = nil }
+    }
+
     func receive(_ request: ActionRequest, via ingress: ActionIngress) async -> ActionResult {
+        await receive(request, via: ingress, trustedLocalRequest: true, authorization: nil)
+    }
+
+    func receive(
+        _ request: ActionRequest,
+        via ingress: ActionIngress,
+        authorization: ActionAuthorizationLease
+    ) async -> ActionResult {
+        await receive(request, via: ingress, trustedLocalRequest: false, authorization: authorization)
+    }
+
+    private func receive(
+        _ request: ActionRequest,
+        via ingress: ActionIngress,
+        trustedLocalRequest: Bool,
+        authorization: ActionAuthorizationLease?
+    ) async -> ActionResult {
         let started = ContinuousClock.now
         guard request.action == "click",
               request.expiresAtUnixMs - request.issuedAtUnixMs == Constants.actionLifetimeMs else {
@@ -87,8 +117,9 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
             result = rejected(request.actionId, .remoteDisabled, ingress, started)
         } else if !permission.isGranted() {
             result = rejected(request.actionId, .permissionRequired, ingress, started)
-        } else {
-            switch poster.postLeftClickAtCurrentCursor() {
+        } else if trustedLocalRequest || authorization == activeAuthorizationLease {
+            let postOutcome = poster.postLeftClickAtCurrentCursor()
+            switch postOutcome {
             case .posted(let timestamp):
                 result = ActionResult(actionId: request.actionId, status: .posted, reason: .ok,
                                       acceptedVia: ingress, macProcessingUs: elapsedMicroseconds(started),
@@ -96,6 +127,10 @@ actor ActionProcessor: ActionRequestSink, DiagnosticCounterReading {
             case .creationFailed:
                 result = rejected(request.actionId, .eventCreationFailed, ingress, started)
             }
+        } else {
+            entries.removeValue(forKey: request.actionId)
+            order.removeAll { $0 == request.actionId }
+            return rejected(request.actionId, .remoteDisabled, ingress, started)
         }
 
         entries[request.actionId] = .completed(fingerprint: fingerprint,

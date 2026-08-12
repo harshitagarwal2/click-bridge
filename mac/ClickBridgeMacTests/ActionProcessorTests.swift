@@ -20,6 +20,28 @@ private final class LockedPoster: InputPosting, @unchecked Sendable {
     func callCount() -> Int { lock.withLock { calls } }
 }
 
+private final class BlockingPoster: InputPosting, @unchecked Sendable {
+    private let started = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var calls = 0
+
+    func postLeftClickAtCurrentCursor() -> InputPostOutcome {
+        started.signal()
+        release.wait()
+        lock.withLock { calls += 1 }
+        return .posted(mouseDownUnixMs: 1_000)
+    }
+
+    func diagnosticPostCounts() -> InputPostCounts {
+        lock.withLock { InputPostCounts(mouseDownPostCount: calls, mouseUpPostCount: calls) }
+    }
+
+    func waitUntilStarted() -> Bool { started.wait(timeout: .now() + 1) == .success }
+    func unblock() { release.signal() }
+    func callCount() -> Int { lock.withLock { calls } }
+}
+
 private final class LockedPermission: PostEventPermissionChecking, @unchecked Sendable {
     private let lock = NSLock()
     private var granted: Bool
@@ -235,6 +257,79 @@ final class ActionProcessorTests: XCTestCase {
                 XCTAssertEqual(poster.callCount(), 0)
             }
         }
+    }
+
+    func testRevocationWaitsForAdmittedPostAndNoPostOccursAfterItReturns() async {
+        let poster = BlockingPoster()
+        let subject = ActionProcessor(poster: poster, permission: LockedPermission(),
+                                      nowMilliseconds: { self.base })
+        await subject.setRemoteEnabled(true)
+        let lease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 1, connectionGeneration: 1)
+        )
+        let action = request(id: "admitted")
+        let posting = Task { await subject.receive(action, via: .oci, authorization: lease) }
+        XCTAssertTrue(poster.waitUntilStarted())
+
+        let revoked = DispatchSemaphore(value: 0)
+        let revoking = Task {
+            await subject.revokeAuthorizationLease(lease)
+            revoked.signal()
+        }
+        XCTAssertEqual(revoked.wait(timeout: .now() + 0.1), .timedOut)
+        poster.unblock()
+
+        let result = await posting.value
+        await revoking.value
+        XCTAssertEqual(result.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(poster.callCount(), 1)
+    }
+
+    func testStaleRevokeCannotDisableNewGenerationAndStaleRejectionDoesNotCache() async {
+        let poster = LockedPoster()
+        let subject = processor(poster: poster)
+        await subject.setRemoteEnabled(true)
+        let oldLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 1, connectionGeneration: 1)
+        )
+        let newLease = await subject.activateAuthorizationLease(
+            for: ActionAuthorizationGeneration(credentialMutationEpoch: 2, connectionGeneration: 2)
+        )
+        await subject.revokeAuthorizationLease(oldLease)
+        let action = request(id: "same-external-revision")
+
+        let stale = await subject.receive(action, via: .oci, authorization: oldLease)
+        let current = await subject.receive(action, via: .oci, authorization: newLease)
+
+        XCTAssertEqual(stale.status, .rejected)
+        XCTAssertEqual(current.status, .posted)
+        XCTAssertEqual(poster.callCount(), 1)
+    }
+
+    func testRemoteDisableWaitsForAdmittedPostThenRejectsQueuedWork() async {
+        let poster = BlockingPoster()
+        let subject = ActionProcessor(poster: poster, permission: LockedPermission(),
+                                      nowMilliseconds: { self.base })
+        await subject.setRemoteEnabled(true)
+        let posting = Task { await subject.receive(self.request(id: "before-disable"), via: .tailscale) }
+        XCTAssertTrue(poster.waitUntilStarted())
+
+        let disabled = DispatchSemaphore(value: 0)
+        let disabling = Task {
+            await subject.setRemoteEnabled(false)
+            disabled.signal()
+        }
+        XCTAssertEqual(disabled.wait(timeout: .now() + 0.1), .timedOut)
+        poster.unblock()
+        let result = await posting.value
+        XCTAssertEqual(result.status, .posted)
+        await disabling.value
+
+        let rejected = await subject.receive(request(id: "after-disable"), via: .tailscale)
+        XCTAssertEqual(rejected.reason, .remoteDisabled)
+        XCTAssertEqual(poster.callCount(), 1)
     }
 }
 
