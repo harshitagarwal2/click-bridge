@@ -1,6 +1,7 @@
 require "json"
 require "fileutils"
 require "open3"
+require "rexml/document"
 require "tmpdir"
 require "yaml"
 
@@ -31,6 +32,21 @@ XCODEGEN_URL = "https://github.com/yonaskolb/XcodeGen/releases/download/#{XCODEG
 def fail_contract(message)
   warn("release workflow contract failed: #{message}")
   exit(1)
+end
+
+def validate_mac_app_store_category(path)
+  document = REXML::Document.new(File.read(path))
+  dictionary = document.elements["plist/dict"]
+  elements = dictionary&.elements&.to_a || []
+  category_key_index = elements.index do |element|
+    element.name == "key" && element.text == "LSApplicationCategoryType"
+  end
+  category = elements[category_key_index + 1]&.text if category_key_index
+  fail_contract("Mac App Store category must be utilities") unless category == "public.app-category.utilities"
+rescue Errno::ENOENT => error
+  fail_contract("Mac App Store Info.plist is unavailable: #{error.message}")
+rescue REXML::ParseException => error
+  fail_contract("Mac App Store Info.plist is invalid XML: #{error.message}")
 end
 
 def workflow_trigger(document)
@@ -182,6 +198,13 @@ def verify_testflight_cleanup(cleanup_script)
   end
 end
 
+if ARGV.first == "--validate-mac-app-store-category"
+  fail_contract("Mac App Store category validation requires one plist path") unless ARGV.length == 2
+  validate_mac_app_store_category(ARGV.fetch(1))
+  puts("Validated Mac App Store category contract.")
+  exit(0)
+end
+
 WORKFLOWS.each do |filename, expected|
   path = File.join(WORKFLOW_DIR, filename)
   text = File.read(path)
@@ -313,6 +336,9 @@ mac_entitlements = File.read(mac_entitlements_path)
 %w[com.apple.security.app-sandbox com.apple.security.network.client].each do |entitlement|
   fail_contract("Mac TestFlight entitlements are missing #{entitlement}") unless mac_entitlements.include?(entitlement)
 end
+
+mac_info_plist_path = File.join(ROOT, "mac", "ClickBridgeMac", "Info.plist")
+validate_mac_app_store_category(mac_info_plist_path)
 
 %w[testflight.yml macos-notarized-release.yml].each do |filename|
   workflow = File.read(File.join(WORKFLOW_DIR, filename))

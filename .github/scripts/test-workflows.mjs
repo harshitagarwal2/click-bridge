@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -72,6 +79,61 @@ assert.equal(
   0,
   `release workflow validation failed:\n${releaseValidation.stdout}${releaseValidation.stderr}`,
 );
+
+const rubyResolution = spawnSync(
+  "ruby",
+  ["-rrbconfig", "-e", "print RbConfig.ruby"],
+  { encoding: "utf8" },
+);
+assert.equal(rubyResolution.status, 0, rubyResolution.stderr);
+const rubyExecutable = rubyResolution.stdout;
+const pathWithoutPlutil = (process.env.PATH ?? "")
+  .split(path.delimiter)
+  .filter((entry) => !existsSync(path.join(entry, "plutil")))
+  .join(path.delimiter);
+const plistFixtureDirectory = mkdtempSync(
+  path.join(tmpdir(), "click-bridge-plist-contract-"),
+);
+const macCategoryValidator = ".github/scripts/validate-release-workflows.rb";
+const runMacCategoryValidation = (fixturePath) =>
+  spawnSync(
+    rubyExecutable,
+    [macCategoryValidator, "--validate-mac-app-store-category", fixturePath],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: { ...process.env, PATH: pathWithoutPlutil },
+    },
+  );
+const plistFixture = (category) => `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+${category === null ? "" : `  <key>LSApplicationCategoryType</key>\n  <string>${category}</string>\n`}</dict>
+</plist>
+`;
+
+try {
+  const fixtureCases = [
+    ["utilities", "public.app-category.utilities", true],
+    ["missing", null, false],
+    ["wrong", "public.app-category.productivity", false],
+  ];
+  for (const [name, category, expectedSuccess] of fixtureCases) {
+    const fixturePath = path.join(plistFixtureDirectory, `${name}.plist`);
+    writeFileSync(fixturePath, plistFixture(category));
+    const result = runMacCategoryValidation(fixturePath);
+    const output = `${result.stdout}${result.stderr}`;
+    if (expectedSuccess) {
+      assert.equal(result.status, 0, `Mac category fixture ${name} was mishandled:\n${output}`);
+      assertIncludes(result.stdout, "Validated Mac App Store category contract.");
+    } else {
+      assert.notEqual(result.status, 0, `Mac category fixture ${name} unexpectedly passed`);
+      assertIncludes(result.stderr, "Mac App Store category must be utilities");
+    }
+  }
+} finally {
+  rmSync(plistFixtureDirectory, { recursive: true, force: true });
+}
 
 const deploy = readRequired(".github/workflows/deploy-oci.yml");
 assertIncludes(deploy, "name: Deploy OCI");
