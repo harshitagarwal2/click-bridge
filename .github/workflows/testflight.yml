@@ -217,6 +217,24 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain"
 
+          # BEGIN Mac installer identity selection
+          installer_identity_output="$(security find-identity -v -p basic "$keychain")"
+          installer_certificate_names="$(
+            printf '%s\n' "$installer_identity_output" |
+              sed -nE 's/^[[:space:]]*[0-9]+\) [0-9A-Fa-f]+ "((3rd Party Mac Developer Installer|Mac Installer Distribution):[^"]+)"$/\1/p'
+          )"
+          installer_certificate_count="$(
+            printf '%s\n' "$installer_certificate_names" |
+              awk 'NF { count += 1 } END { print count + 0 }'
+          )"
+          if [ "$installer_certificate_count" -ne 1 ]; then
+            echo "::error::Expected exactly one Mac installer distribution identity; found $installer_certificate_count."
+            exit 1
+          fi
+          mac_installer_certificate_name="$(printf '%s\n' "$installer_certificate_names" | awk 'NF { print; exit }')"
+          printf 'MAC_INSTALLER_CERTIFICATE_NAME=%s\n' "$mac_installer_certificate_name" >> "$GITHUB_ENV"
+          # END Mac installer identity selection
+
           security cms -D -i "$ios_profile" > "$ios_profile_plist"
           ios_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$ios_profile_plist")"
           ios_profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$ios_profile_plist")"

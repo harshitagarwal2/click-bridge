@@ -115,6 +115,35 @@ assertIncludes(
 
 readRequired(".github/scripts/verify-workflows.mjs");
 
+const testflight = readRequired(".github/workflows/testflight.yml");
+for (const contract of [
+  'security find-identity -v -p basic "$keychain"',
+  "3rd Party Mac Developer Installer|Mac Installer Distribution",
+  "MAC_INSTALLER_CERTIFICATE_NAME",
+]) {
+  assertIncludes(testflight, contract, `TestFlight signing must include ${contract}`);
+}
+
+const fastfile = readRequired("fastlane/Fastfile");
+assertIncludes(
+  fastfile,
+  'mac_installer_certificate_name = ENV.fetch("MAC_INSTALLER_CERTIFICATE_NAME")',
+  "Fastfile must require the resolved Mac installer certificate name",
+);
+assert.equal(
+  fastfile.match(/mac_installer_certificate_name/g)?.length,
+  3,
+  "Fastfile must use the resolved installer identity for both package selectors",
+);
+assert.ok(
+  !fastfile.includes('installer_cert_name: "Mac Installer Distribution"'),
+  "Fastfile must not use the generic installer certificate selector",
+);
+assert.ok(
+  !fastfile.includes('installerSigningCertificate: "Mac Installer Distribution"'),
+  "Fastfile must not export with the generic installer certificate selector",
+);
+
 const releaseValidation = spawnSync(
   "ruby",
   [".github/scripts/validate-release-workflows.rb"],
