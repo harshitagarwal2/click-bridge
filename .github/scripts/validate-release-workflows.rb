@@ -9,10 +9,10 @@ ROOT = File.expand_path("../..", __dir__)
 WORKFLOW_DIR = File.join(ROOT, ".github", "workflows")
 
 WORKFLOWS = {
-  "testflight.yml" => { environment: "testflight", concurrency: "apple-store-release", release_job: "upload" },
-  "app-store-submit.yml" => { environment: "app-store", concurrency: "apple-store-release", release_job: "submit" },
-  "macos-notarized-release.yml" => { environment: "macos-release", concurrency: "macos-notarized-release", release_job: "release" },
-  "ghcr-relay.yml" => { environment: "ghcr-private", concurrency: "ghcr-relay-release", release_job: "publish" }
+  "testflight.yml" => { environment: "testflight", concurrency: "apple-store-release", release_job: "upload", automatic: true },
+  "app-store-submit.yml" => { environment: "app-store", concurrency: "apple-store-release", release_job: "submit", automatic: false },
+  "macos-notarized-release.yml" => { environment: "macos-release", concurrency: "macos-notarized-release", release_job: "release", automatic: true },
+  "ghcr-relay.yml" => { environment: "ghcr-private", concurrency: "ghcr-relay-release", release_job: "publish", automatic: true }
 }.freeze
 
 PINS = {
@@ -169,48 +169,6 @@ end
 
 def workflow_trigger(document)
   document["on"] || document[true]
-end
-
-def verify_guard_fixtures(filename, guard_script, environment_name)
-  reviewer_rule = {
-    "type" => "required_reviewers",
-    "prevent_self_review" => true,
-    "reviewers" => [{ "type" => "User", "reviewer" => { "login" => "independent-reviewer" } }]
-  }
-  valid = {
-    "name" => environment_name,
-    "can_admins_bypass" => false,
-    "protection_rules" => [reviewer_rule]
-  }
-  cases = {
-    "valid protected environment" => [valid, true],
-    "administrator bypass enabled" => [valid.merge("can_admins_bypass" => true), false],
-    "administrator bypass null" => [valid.merge("can_admins_bypass" => nil), false],
-    "administrator bypass missing" => [valid.reject { |key, _| key == "can_admins_bypass" }, false],
-    "required reviewer rule missing" => [valid.merge("protection_rules" => []), false],
-    "self-review enabled" => [valid.merge("protection_rules" => [reviewer_rule.merge("prevent_self_review" => false)]), false],
-    "reviewer list empty" => [valid.merge("protection_rules" => [reviewer_rule.merge("reviewers" => [])]), false]
-  }
-
-  Dir.mktmpdir("release-environment-guard") do |directory|
-    fake_curl = File.join(directory, "curl")
-    File.write(fake_curl, "#!/bin/sh\nset -eu\nprintf '%s\\n' \"${MOCK_ENVIRONMENT_JSON:?}\"\n")
-    File.chmod(0o755, fake_curl)
-
-    cases.each do |case_name, (fixture, expected_success)|
-      environment = {
-        "GH_TOKEN" => "synthetic-job-token",
-        "GITHUB_REPOSITORY" => "example/click-bridge",
-        "RELEASE_ENVIRONMENT" => environment_name,
-        "MOCK_ENVIRONMENT_JSON" => JSON.generate(fixture),
-        "PATH" => "#{directory}:#{ENV.fetch("PATH")}"
-      }
-      stdout, stderr, status = Open3.capture3(environment, "bash", "-c", guard_script)
-      next if status.success? == expected_success
-
-      fail_contract("#{filename} environment guard mishandled #{case_name}: #{stdout}#{stderr}")
-    end
-  end
 end
 
 def require_script_order(script, earlier, later, message)
@@ -428,46 +386,28 @@ WORKFLOWS.each do |filename, expected|
   text = File.read(path)
   document = YAML.safe_load(text, aliases: true)
   trigger = workflow_trigger(document)
-  fail_contract("#{filename} must be workflow_dispatch-only") unless trigger.is_a?(Hash) && trigger.keys == ["workflow_dispatch"]
-  fail_contract("#{filename} must grant Actions read access for runtime environment checks") unless document.dig("permissions", "actions") == "read"
+  if expected[:automatic]
+    fail_contract("#{filename} must trigger on v* tags and support manual dispatch") unless trigger.is_a?(Hash) && trigger.keys.sort == ["push", "workflow_dispatch"] && trigger.dig("push", "tags") == ["v*"]
+    fail_contract("#{filename} manual dispatch must not accept release values that differ from the selected tag") unless trigger["workflow_dispatch"].nil?
+    fail_contract("#{filename} must not retain removed release-tag inputs") if text.include?("inputs.release_tag")
+  else
+    fail_contract("#{filename} must remain workflow_dispatch-only") unless trigger.is_a?(Hash) && trigger.keys == ["workflow_dispatch"]
+  end
+  fail_contract("#{filename} must not retain Actions access solely for removed environment checks") if document.dig("permissions", "actions")
 
   concurrency = document.fetch("concurrency")
   fail_contract("#{filename} has the wrong concurrency group") unless concurrency["group"] == expected[:concurrency]
   fail_contract("#{filename} must not cancel an in-flight release") unless concurrency["cancel-in-progress"] == false
 
   jobs = document.fetch("jobs")
-  fail_contract("#{filename} must contain one preflight and one release job") unless jobs.keys.sort == [expected[:release_job], "verify-environment"].sort
-  preflight = jobs.fetch("verify-environment")
-  fail_contract("#{filename} preflight must not declare an environment") if preflight.key?("environment")
-  fail_contract("#{filename} preflight must have only Actions read permission") unless preflight["permissions"] == { "actions" => "read" }
-  fail_contract("#{filename} preflight must run on Ubuntu 24.04") unless preflight["runs-on"] == "ubuntu-24.04"
-
-  preflight_steps = preflight.fetch("steps")
-  fail_contract("#{filename} preflight must contain exactly one guard step") unless preflight_steps.size == 1
-  guard = preflight_steps.first
-  fail_contract("#{filename} is missing the fail-closed environment guard") unless guard["name"] == "Require independent release approval"
-  fail_contract("#{filename} environment guard must use the job token") unless guard.dig("env", "GH_TOKEN") == "${{ github.token }}"
-  fail_contract("#{filename} environment guard must verify the named environment") unless guard.dig("env", "RELEASE_ENVIRONMENT") == expected[:environment]
-  guard_script = guard.fetch("run")
-  fail_contract("#{filename} environment guard must GET the documented environment endpoint") unless guard_script.include?("/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}")
-  fail_contract("#{filename} environment guard must fail on missing or unreadable environments") unless guard_script.include?("curl --fail-with-body")
-  fail_contract("#{filename} environment guard must require reviewers") unless guard_script.include?('.type == "required_reviewers"') && guard_script.include?("length >= 1")
-  fail_contract("#{filename} environment guard must prevent self-review") unless guard_script.include?(".prevent_self_review == true")
-  fail_contract("#{filename} environment guard must reject administrator bypass or a missing field") unless guard_script.include?(".can_admins_bypass == false")
-  verify_guard_fixtures(filename, guard_script, expected[:environment])
+  fail_contract("#{filename} must contain only its release job") unless jobs.keys == [expected[:release_job]]
 
   job = jobs.fetch(expected[:release_job])
-  fail_contract("#{filename} has the wrong protected environment") unless job.dig("environment", "name") == expected[:environment]
-  fail_contract("#{filename} release job must depend on the environment preflight") unless job["needs"] == "verify-environment"
+  fail_contract("#{filename} has the wrong release environment") unless job.dig("environment", "name") == expected[:environment]
+  fail_contract("#{filename} must not depend on a removed environment preflight") if job.key?("needs")
 
   steps = job.fetch("steps")
-  release_guard = steps.first
-  fail_contract("#{filename} release job must revalidate the environment before any other step") unless release_guard["name"] == "Revalidate protected release environment"
-  fail_contract("#{filename} release revalidation must use the job token") unless release_guard.dig("env", "GH_TOKEN") == "${{ github.token }}"
-  fail_contract("#{filename} release revalidation must verify the named environment") unless release_guard.dig("env", "RELEASE_ENVIRONMENT") == expected[:environment]
-  release_guard_script = release_guard.fetch("run")
-  fail_contract("#{filename} preflight and release revalidation must use the exact same guard") unless release_guard_script == guard_script
-  verify_guard_fixtures("#{filename} release revalidation", release_guard_script, expected[:environment])
+  fail_contract("#{filename} release job must not revalidate environment protection") if steps.any? { |step| step["name"] == "Revalidate protected release environment" }
 
   checkout_index = steps.index { |step| step["uses"]&.start_with?("actions/checkout@") }
   checkout = checkout_index && steps.fetch(checkout_index)
@@ -481,6 +421,10 @@ WORKFLOWS.each do |filename, expected|
   fail_contract("#{filename} release source guard must run after checkout") unless checkout_index < source_guard_index
   fail_contract("#{filename} release source guard must use the job token") unless source_guard.dig("env", "GH_TOKEN") == "${{ github.token }}"
   source_guard_script = source_guard.fetch("run")
+  if expected[:automatic]
+    fail_contract("#{filename} must derive the release tag from the selected tag ref") unless source_guard.dig("env", "RELEASE_TAG") == "${{ github.ref_name }}"
+    fail_contract("#{filename} must read the shared marketing version") unless source_guard_script.include?("read-apple-version.sh marketing")
+  end
   fail_contract("#{filename} must require dispatch from its release tag") unless source_guard_script.include?('test "$EVENT_REF" = "refs/tags/$RELEASE_TAG"')
   fail_contract("#{filename} must verify its version tag resolves to EVENT_SHA") unless source_guard_script.include?("refs/tags/${RELEASE_TAG}^{commit}") && source_guard_script.include?("EVENT_SHA")
   fail_contract("#{filename} must require EVENT_SHA to be reachable from origin/main") unless source_guard_script.include?('git merge-base --is-ancestor "$EVENT_SHA" refs/remotes/origin/main')
@@ -619,6 +563,11 @@ end
 mac_project_path = File.join(ROOT, "mac", "project.yml")
 mac_info_plist_path = File.join(ROOT, "mac", "ClickBridgeMac", "Info.plist")
 validate_mac_app_store_category(mac_project_path, mac_info_plist_path)
+mac_project = YAML.safe_load(File.read(mac_project_path), aliases: true)
+mac_release_settings = mac_project.dig("targets", "ClickBridgeMac", "settings", "configs", "Release") || {}
+fail_contract("Mac Release archives must enable App Sandbox") unless mac_release_settings["ENABLE_APP_SANDBOX"] == true
+fail_contract("Mac Release archives must use hardened runtime") unless mac_release_settings["ENABLE_HARDENED_RUNTIME"] == true
+fail_contract("Mac Release archives must sign with the App Store entitlements") unless mac_release_settings["CODE_SIGN_ENTITLEMENTS"] == "ClickBridgeMac/ClickBridgeMac-AppStore.entitlements"
 
 xcodegen_workflows = {
   "ci.yml" => {
@@ -853,4 +802,4 @@ dockerfile = File.read(File.join(ROOT, "deploy", "oci", "Dockerfile"))
 expected_base = "FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43"
 fail_contract("relay base image must use the reviewed Node 24 Alpine index digest") unless dockerfile.lines.map(&:strip).include?(expected_base)
 
-puts("Validated #{WORKFLOWS.size} manual release workflows and Fastlane 2.237.0 contracts.")
+puts("Validated 3 tag-driven and 1 manual release workflow plus Fastlane 2.237.0 contracts.")

@@ -13,7 +13,6 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
 
 concurrency:
@@ -21,68 +20,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify-environment:
-    name: Verify protected release environment
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: read
-    steps:
-      - name: Require independent release approval
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ENVIRONMENT: app-store
-        run: |
-          set -Eeuo pipefail
-          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
-          environment_json="$(
-            curl --fail-with-body --silent --show-error \
-              --header 'Accept: application/vnd.github+json' \
-              --header "Authorization: Bearer ${GH_TOKEN}" \
-              --header 'X-GitHub-Api-Version: 2026-03-10' \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
-          )"
-          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
-            .name == $expected and
-            .can_admins_bypass == false and
-            any(.protection_rules[]?;
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              (.reviewers | type == "array" and length >= 1)
-            )
-          ' <<< "$environment_json" >/dev/null
-
   submit:
     name: Select processed iOS and macOS builds and submit for review
-    needs: verify-environment
     runs-on: macos-15
     timeout-minutes: 30
     environment:
       name: app-store
     steps:
-      - name: Revalidate protected release environment
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ENVIRONMENT: app-store
-        run: |
-          set -Eeuo pipefail
-          encoded_environment="$(jq -rn --arg name "$RELEASE_ENVIRONMENT" '$name | @uri')"
-          environment_json="$(
-            curl --fail-with-body --silent --show-error \
-              --header 'Accept: application/vnd.github+json' \
-              --header "Authorization: Bearer ${GH_TOKEN}" \
-              --header 'X-GitHub-Api-Version: 2026-03-10' \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/${encoded_environment}"
-          )"
-          jq -e --arg expected "$RELEASE_ENVIRONMENT" '
-            .name == $expected and
-            .can_admins_bypass == false and
-            any(.protection_rules[]?;
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              (.reviewers | type == "array" and length >= 1)
-            )
-          ' <<< "$environment_json" >/dev/null
 
       - name: Check out the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
