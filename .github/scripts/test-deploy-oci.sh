@@ -668,15 +668,9 @@ NODE_VERIFIER='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd3
 HEALTH_COMMAND='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 # This must match the literal candidate health script passed to Node.
 CANDIDATE_HEALTH_COMMAND='fetch("http://127.0.0.1:8080/healthz").then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
-# This must match the literal script that checks whether the provisioned
-# legacy token still maps to an active persisted phone.
-LEGACY_PHONE_MATCH_SCRIPT='const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)'
 # This must match the literal script run in the container.
 # shellcheck disable=SC2016
 SMOKE_COMMAND='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
-# This must match the literal retired-legacy-token smoke command.
-# shellcheck disable=SC2016
-MAC_ONLY_SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 root="$(new_case_root first-success)"
 add_release "$root" "$SHA_A"
 
