@@ -193,9 +193,14 @@ export class PairingCoordinator {
       const duplicate = session.claimId === message.claimId
         && session.sessionNonce === message.sessionNonce
         && verifier !== null
-        && sameHex(verifier, session.claimVerifier)
-        && this.#owns(session.claimant, connection, generation);
+        && sameHex(verifier, session.claimVerifier);
       if (duplicate) {
+        if (session.claimant === null && session.pendingCredential && !session.activationPromise) {
+          session.claimant = { connection, generation };
+        } else if (!this.#owns(session.claimant, connection, generation)) {
+          this.#send(connection, failureForClaimant(message.claimId, 'used'));
+          return 'used';
+        }
         if (session.activationPromise) return 'activation_in_progress';
         if (session.pendingCredential) this.#sendCredential(session);
         else this.#sendClaimed(session);
@@ -352,6 +357,10 @@ export class PairingCoordinator {
     }
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
+    }
+    if (this.#session.pendingCredential) {
+      this.#session.claimant = null;
+      return 'suspended';
     }
     this.#terminate('cancelled', {
       source: 'claimant_disconnect',

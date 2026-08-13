@@ -319,7 +319,7 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(subject.state.phase, .replaced)
     }
 
-    func testAmbiguousDisconnectAfterStagingPreservesPendingCredential() throws {
+    func testAmbiguousDisconnectAfterStagingReclaimsAndAcknowledgesTheSameCredential() throws {
         let store = try makeStore()
         let factory = FakePhoneWebSocketFactory()
         let scheduler = FakePhoneScheduler()
@@ -337,7 +337,26 @@ final class PhonePairingClientTests: XCTestCase {
         socket.emitClose(code: 1006)
 
         XCTAssertEqual(try store.pendingPairingCredential(), .init(token: credential, version: 1))
-        XCTAssertEqual(subject.state.failure, "disconnected")
+        XCTAssertEqual(factory.sockets.count, 2)
+        let resumed = factory.sockets[1]
+        resumed.emitOpen()
+        let originalClaim = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(socket.sentTexts[0].utf8)) as? [String: Any]
+        )
+        let resumedClaim = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(resumed.sentTexts[0].utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(resumedClaim["type"] as? String, "pair.claim")
+        XCTAssertEqual(resumedClaim["reference"] as? String, originalClaim["reference"] as? String)
+        XCTAssertEqual(resumedClaim["claimId"] as? String, originalClaim["claimId"] as? String)
+        XCTAssertEqual(resumedClaim["sessionNonce"] as? String, originalClaim["sessionNonce"] as? String)
+
+        resumed.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        let acknowledgement = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(resumed.sentTexts.last!.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(acknowledgement["type"] as? String, "pair.credential.ack")
+        XCTAssertEqual(subject.state.phase, .awaitingActivation)
     }
 
     func testRandomnessFailureStopsBeforeCreatingOrOpeningSocket() throws {

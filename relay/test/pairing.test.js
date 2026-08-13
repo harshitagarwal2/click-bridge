@@ -339,6 +339,32 @@ test('approval is claim-bound CAS and offers a next-version credential without a
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
 });
 
+test('the same claimant proof resumes an issued credential after disconnect', () => {
+  const h = harness();
+  const resumed = Object.freeze({ id: 'resumed-claimant' });
+  connectAndCreate(h);
+  claim(h);
+  assert.equal(approve(h), 'ok');
+
+  assert.equal(h.coordinator.disconnectClaimant(PHONE, 5), 'suspended');
+  assert.equal(h.activateCalls(), 0);
+  assert.equal(h.record().activePhoneCredentialVersion, 7);
+
+  assert.equal(h.coordinator.claim(resumed, 6, claimMessage()), 'ok');
+  assert.deepEqual(h.events.at(-1), {
+    connection: resumed,
+    message: {
+      type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+      credential: CREDENTIAL, credentialVersion: 8,
+    },
+  });
+
+  assert.equal(h.coordinator.claim(Object.freeze({ id: 'wrong-proof' }), 7, {
+    ...claimMessage(), sessionNonce: '55'.repeat(32),
+  }), 'used');
+  assert.equal(h.activateCalls(), 0);
+});
+
 test('a connected replacement Mac cannot approve, deny, or cancel before capability opt-in', async () => {
   const actions = [
     {
