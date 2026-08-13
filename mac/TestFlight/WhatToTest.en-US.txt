@@ -1,10 +1,10 @@
 Please test the complete iPhone-to-Mac click path:
 
 Setup and action paths:
-1. Use an operator-bootstrapped Mac that is already connected to the relay. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN.
-2. In Mac Settings, choose Pair Phone. If a phone is enrolled, choose Replace Phone and confirm.
-3. Scan the QR code nearby, or use Copy Invitation or Share… to send the single-use HTTPS link to a phone anywhere on the internet. Without the native app, use Copy PWA Invitation for the /pair/web browser fallback.
-4. Confirm that both devices show the same six-digit code, then approve on the Mac. Do not approve a mismatch.
+1. Use an operator-bootstrapped Mac that is already connected to the relay. Normal testers do not enter a relay URL, PHONE_TOKEN, or MAC_TOKEN. Never put PHONE_TOKEN or MAC_TOKEN in a URL, log, screenshot, or Git.
+2. In Mac Settings, choose Pair Phone. If a phone is enrolled, choose Replace Phone… and confirm.
+3. Scan the nearby QR code, or choose Share Secure Setup Link… to send the HTTPS link to a phone anywhere on the internet. The link is single-use and expires after five minutes. Without the native app, use Other Ways to Connect > Copy Browser Invitation Link for the /pair/web browser fallback.
+4. Confirm that both devices show the same six-digit code, then have the Mac owner approve it. The internet link never bypasses code comparison and approval; do not approve a mismatch.
 5. Set Mac Remote control ON. In System Settings, grant Accessibility permission to Click Bridge and verify that it remains enabled.
 6. Before testing actions, confirm the Mac status is Connected and the iPhone status is Ready.
 7. With the pointer over a safe target, tap the on-screen Trigger 3 Clicks control.
@@ -21,5 +21,5 @@ Outcome contract:
 
 Recovery:
 - Fault injection: Exercise a relay disconnect, invalid credential or revocation, clock mismatch, and taken-over state. Each condition must close the readiness gate. Require a terminal result only if the action was actually sent or forwarded.
-- Taken-over state: Verify the terminal taken-over state and that the client does not auto-reconnect. Recovery requires the user to explicitly re-save or reconnect.
+- Taken-over state: Verify the terminal taken-over state and that the client does not auto-reconnect. Recovery requires the user to explicitly choose Save & Reconnect or reconnect.
 - Return to ready: Restore, reconnect, or reconfigure as appropriate; confirm the Mac is Connected and the iPhone is Ready, then confirm a newly accepted action produces exactly three clicks with a terminal Succeeded result and success haptic.

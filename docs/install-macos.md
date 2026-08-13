@@ -15,6 +15,8 @@ clicking is still **NOT RUN** in [`physical-smoke-test.md`](physical-smoke-test.
   lowercase hexadecimal `MAC_TOKEN`; it must not expose that token in a URL,
   command argument, log, screenshot, or repository file.
 
+Never put `MAC_TOKEN` or `PHONE_TOKEN` in a URL, log, screenshot, or Git.
+
 The default project uses deterministic ad-hoc signing and needs no Apple
 account. For a stable development signature, copy
 `mac/Config/Local.xcconfig.example` to the ignored
@@ -91,28 +93,29 @@ window. Always launch and grant permission to the installed
    actions without posting input.
 
 For an alternate/self-hosted deployment or operator recovery, expand
-**Advanced legacy connection**. Enter the exact `wss://<host>/ws` relay URL,
-paste the matching `MAC_TOKEN`, and choose **Save**. **Clear** removes the
-Keychain token and disconnects the receiver. These fields are not required for
-normal phone pairing.
+**Advanced Connection**. Enter the exact `wss://<host>/ws` relay URL, paste the
+matching `MAC_TOKEN`, and choose **Save & Reconnect**. **Remove Saved
+Credential…** removes the Keychain token and disconnects the receiver after
+confirmation. These fields are not required for normal phone pairing.
 
 ## Pair or replace a phone
 
 1. In Mac **Settings…**, choose **Pair Phone**. If a phone is already enrolled,
-   choose **Replace Phone** and confirm the replacement.
+   choose **Replace Phone…** and confirm the replacement.
 2. For a nearby iPhone, scan the QR code in Click Bridge. For a phone anywhere
-   else on the internet, choose **Copy Invitation** or **Share…** and send the
-   single-use HTTPS link through a trusted channel. The devices do not need to
-   share a LAN.
+   else on the internet, choose **Share Secure Setup Link…** and send the HTTPS
+   link through a trusted channel. The devices do not need to share a LAN.
 3. Open the invitation in the native iOS app. To use the browser instead,
-   choose **Copy PWA Invitation** on the Mac and open that HTTPS link on the
-   phone. It safely targets `/pair/web` while preserving the same opaque,
-   single-use invitation and approval flow.
+   use **Other Ways to Connect → Copy Browser Invitation Link** on the Mac and
+   open that HTTPS link on the phone. It safely targets `/pair/web` while
+   preserving the same opaque invitation and approval flow.
 4. Verify that the same six-digit confirmation code appears on the phone and
-   Mac, then approve on the Mac. Do not approve a mismatch.
+   Mac, then have the Mac owner approve it. Do not approve a mismatch.
 
-The invitation expires after five minutes and can be claimed only once. Create
-a fresh invitation after expiry, cancellation, or a failed claim.
+Both the native and browser links work over the internet. Each invitation
+expires after five minutes, can be claimed only once, and still requires the
+Mac owner to compare and approve the matching code. Create a fresh invitation
+after expiry, cancellation, or a failed claim.
 
 The Mac menu shows **Connected**, **Connecting…**, or **Disconnected** and the
 last terminal result. The phone becomes **Ready** only after the relay sees this

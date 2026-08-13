@@ -11,7 +11,11 @@ unverified until direct evidence records a different result.
 
 ## Active plans
 
-None.
+- **Mac Settings and remote phone pairing:**
+  [plan](plans/2026-08-12-mac-settings-pairing.md) and
+  [design](specs/2026-08-12-mac-settings-pairing-design.md).
+  Physical iPhone scanning, public-relay enrollment, Accessibility-authorized
+  clicking, signing, TestFlight, and production remain **NOT RUN**.
 
 New work belongs under `plans/`, with its approved design under `specs/`. Add it
 to this section while it remains an active queue.
