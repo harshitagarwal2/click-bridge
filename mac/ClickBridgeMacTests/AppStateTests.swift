@@ -5,16 +5,34 @@ import Combine
 
 private enum AppStateTestError: Error { case deleteFailed }
 
+private enum AppStateTestToken {
+    static let stored = String(repeating: "a", count: 64)
+    static let replacement = String(repeating: "b", count: 64)
+    static let alternate = String(repeating: "c", count: 64)
+}
+
+private enum AppStateSecretAccount {
+    static let connection = "connection.v1"
+    static let legacyToken = "macToken"
+}
+
 private final class AppStateSecretStore: SecretStoring, @unchecked Sendable {
     private let lock = NSLock()
-    private var token: String?
+    private var values: [String: String]
     private var readError: Error?
-    private let deleteError: Error?
-    private let writeError: Error?
+    private var deleteError: Error?
+    private var writeError: Error?
+    private var readCounts: [String: Int] = [:]
+    private var writeCounts: [String: Int] = [:]
+    private var deleteCounts: [String: Int] = [:]
 
     init(token: String? = nil, readError: Error? = nil,
          deleteError: Error? = nil, writeError: Error? = nil) {
-        self.token = token
+        if let token {
+            values = [AppStateSecretAccount.legacyToken: token]
+        } else {
+            values = [:]
+        }
         self.readError = readError
         self.deleteError = deleteError
         self.writeError = writeError
@@ -22,18 +40,38 @@ private final class AppStateSecretStore: SecretStoring, @unchecked Sendable {
 
     func read(account: String) throws -> String? {
         try lock.withLock {
+            readCounts[account, default: 0] += 1
             if let readError { throw readError }
-            return token
+            return values[account]
         }
     }
     func setReadError(_ error: Error?) { lock.withLock { readError = error } }
+    func setWriteError(_ error: Error?) { lock.withLock { writeError = error } }
     func write(_ value: String, account: String) throws {
-        if let writeError { throw writeError }
-        lock.withLock { token = value }
+        try lock.withLock {
+            writeCounts[account, default: 0] += 1
+            if let writeError { throw writeError }
+            values[account] = value
+        }
     }
     func delete(account: String) throws {
-        if let deleteError { throw deleteError }
-        lock.withLock { token = nil }
+        try lock.withLock {
+            deleteCounts[account, default: 0] += 1
+            if let deleteError { throw deleteError }
+            values[account] = nil
+        }
+    }
+
+    func value(account: String) -> String? { lock.withLock { values[account] } }
+    func reads(account: String) -> Int { lock.withLock { readCounts[account, default: 0] } }
+    func writes(account: String) -> Int { lock.withLock { writeCounts[account, default: 0] } }
+    func deletes(account: String) -> Int { lock.withLock { deleteCounts[account, default: 0] } }
+
+    func storedConnection() -> StoredConnection? {
+        lock.withLock {
+            guard let encoded = values[AppStateSecretAccount.connection] else { return nil }
+            return try? JSONDecoder().decode(StoredConnection.self, from: Data(encoded.utf8))
+        }
     }
 }
 
@@ -60,24 +98,49 @@ private actor AppStateTransport: WebSocketTransport {
     private var closeContinuation: CheckedContinuation<Void, Never>?
     private var pairingSendContinuations: [CheckedContinuation<Void, Error>] = []
     private var helloWaiters: [(String, CheckedContinuation<Void, Never>)] = []
+    private var cancelSendContinuation: CheckedContinuation<Void, Error>?
     private let gateClose: Bool
     private let gatePairingStatus: Bool
+    private let gatePairingCancel: Bool
+    private let failPairingCancel: Bool
+    private let connectError: Error?
     private(set) var closeCount = 0
     private(set) var closeStarted = false
     private(set) var sent: [String] = []
+    private(set) var connectedURLs: [URL] = []
 
-    init(gateClose: Bool, gatePairingStatus: Bool = false) {
+    init(
+        gateClose: Bool,
+        gatePairingStatus: Bool = false,
+        gatePairingCancel: Bool = false,
+        failPairingCancel: Bool = false,
+        connectError: Error? = nil
+    ) {
         self.gateClose = gateClose
         self.gatePairingStatus = gatePairingStatus
+        self.gatePairingCancel = gatePairingCancel
+        self.failPairingCancel = failPairingCancel
+        self.connectError = connectError
     }
 
-    func connect(to url: URL) async throws {}
+    func connect(to url: URL) async throws {
+        connectedURLs.append(url)
+        if let connectError { throw connectError }
+    }
     func sendText(_ text: String) async throws {
         sent.append(text)
-        if gatePairingStatus,
-           case .pairStatusRequest = try? StrictWireDecoder().decodeText(text) {
-            try await withCheckedThrowingContinuation { pairingSendContinuations.append($0) }
-            return
+        if let message = try? StrictWireDecoder().decodeText(text) {
+            if gatePairingStatus, case .pairStatusRequest = message {
+                try await withCheckedThrowingContinuation { pairingSendContinuations.append($0) }
+                return
+            }
+            if case .pairCancel = message {
+                if failPairingCancel { throw AppStateTestError.deleteFailed }
+                if gatePairingCancel {
+                    try await withCheckedThrowingContinuation { cancelSendContinuation = $0 }
+                    return
+                }
+            }
         }
         guard let token = (try? JSONDecoder().decode(Hello.self, from: Data(text.utf8)))?.token else { return }
         let ready = helloWaiters.filter { $0.0 == token }
@@ -113,7 +176,12 @@ private actor AppStateTransport: WebSocketTransport {
     func didStartClose() -> Bool { closeStarted }
     func pairingSendCount() -> Int { pairingSendContinuations.count }
     func completePairingSend(at index: Int) { pairingSendContinuations[index].resume() }
+    func releasePairingCancel() {
+        cancelSendContinuation?.resume()
+        cancelSendContinuation = nil
+    }
     func sentMessages() -> [String] { sent }
+    func urls() -> [URL] { connectedURLs }
     func containsHello(token: String) -> Bool {
         sent.contains { (try? JSONDecoder().decode(Hello.self, from: Data($0.utf8)))?.token == token }
     }
@@ -194,6 +262,21 @@ private final class MutablePermission: @unchecked Sendable {
 }
 
 @MainActor
+private struct AppStateHarness {
+    let suite: String
+    let defaults: UserDefaults
+    let secrets: AppStateSecretStore
+    let settings: SettingsStore
+    let client: RelayClient
+    let state: AppState
+    let factory: AppStateTransportFactory
+
+    func cleanUp() {
+        defaults.removePersistentDomain(forName: suite)
+    }
+}
+
+@MainActor
 final class AppStateTests: XCTestCase {
     private func eventually(
         timeout: TimeInterval = 1,
@@ -205,6 +288,79 @@ final class AppStateTests: XCTestCase {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return false
+    }
+
+    private func makeHarness(
+        connection: StoredConnection? = nil,
+        secrets: AppStateSecretStore = AppStateSecretStore(),
+        transports: [AppStateTransport]
+    ) throws -> AppStateHarness {
+        let suite = "AppStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let settings = try SettingsStore(defaults: defaults, secrets: secrets)
+        if let connection { try settings.saveConnection(connection) }
+        let permission = PostEventPermissionService(preflight: { false }, request: { false })
+        let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
+        let factory = AppStateTransportFactory(transports)
+        let client = RelayClient(
+            actionSink: processor,
+            diagnostics: processor,
+            makeTransport: { factory.make() },
+            sleep: { _ in try await Task.sleep(for: .seconds(60)) },
+            jitter: { _ in 0 }
+        )
+        let state = AppState(
+            settings: settings,
+            client: client,
+            processor: processor,
+            permissionService: permission,
+            activationNotifications: NotificationCenter()
+        )
+        return AppStateHarness(
+            suite: suite,
+            defaults: defaults,
+            secrets: secrets,
+            settings: settings,
+            client: client,
+            state: state,
+            factory: factory
+        )
+    }
+
+    private func connection(
+        url: String = "wss://old.example.com/ws",
+        token: String = AppStateTestToken.stored
+    ) -> StoredConnection {
+        StoredConnection(version: StoredConnection.currentVersion, relayURLString: url, macToken: token)
+    }
+
+    private func makePairingReady(
+        in harness: AppStateHarness,
+        transport: AppStateTransport,
+        token: String = AppStateTestToken.stored
+    ) async throws -> PairingController {
+        await transport.waitForHello(token: token)
+        await transport.push(try Wire.encode(HelloOK(role: "mac")))
+        let requestedStatus = await eventually {
+            await transport.sentMessages().contains {
+                if case .pairStatusRequest = try? StrictWireDecoder().decodeText($0) { return true }
+                return false
+            }
+        }
+        XCTAssertTrue(requestedStatus)
+        let sent = await transport.sentMessages()
+        let requestID = try XCTUnwrap(sent.compactMap { text -> String? in
+            guard case .pairStatusRequest(let request) = try? StrictWireDecoder().decodeText(text) else { return nil }
+            return request.requestId
+        }.last)
+        await transport.push(try Wire.encode(PairStatus(
+            requestId: requestID,
+            enrollmentState: .paired,
+            activePhoneCredentialVersion: 1
+        )))
+        let ready = await eventually { harness.state.pairing?.state == .ready }
+        XCTAssertTrue(ready)
+        return try XCTUnwrap(harness.state.pairing)
     }
 
     func testApplicationActivationRefreshesPermissionWithoutPrompting() async throws {
@@ -234,7 +390,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://relay.example/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let transport = AppStateTransport(gateClose: false)
@@ -242,7 +398,7 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        await transport.waitForHello(token: "stored-token")
+        await transport.waitForHello(token: AppStateTestToken.stored)
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
         let requestedStatus = await eventually {
             await transport.sentMessages().contains {
@@ -273,7 +429,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let transport = AppStateTransport(gateClose: false, gatePairingStatus: true)
@@ -287,7 +443,7 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        await transport.waitForHello(token: "stored-token")
+        await transport.waitForHello(token: AppStateTestToken.stored)
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
         let firstRefreshStarted = await eventually { await transport.pairingSendCount() == 1 }
         XCTAssertTrue(firstRefreshStarted)
@@ -323,12 +479,12 @@ final class AppStateTests: XCTestCase {
         await client.stop()
     }
 
-    func testInvalidRelayURLDoesNotRequireResavingPersistedTokenBeforeReconnect() async throws {
+    func testInvalidPersistedRelayURLCanBeRepairedWithoutReplacingStoredToken() async throws {
         let suite = "AppStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("https://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let transport = AppStateTransport(gateClose: false)
@@ -337,30 +493,34 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        await state.reconnect().value
+        let invalidOutcome = await state.reconnect().value
 
         let invalidStatus = await client.currentStatus()
+        XCTAssertEqual(invalidOutcome, .rejected(.invalidRelayURL))
         XCTAssertEqual(factory.count(), 0)
         XCTAssertEqual(invalidStatus, .disconnected)
-        XCTAssertEqual(try settings.macToken(), "stored-token")
+        XCTAssertEqual(try settings.macToken(), AppStateTestToken.stored)
         XCTAssertNotNil(state.notice)
 
-        settings.stageRelayURLDraft("wss://example.com/ws")
-        await state.reconnect().value
+        let repairedOutcome = await state.applyConnectionSettings(
+            relayURLString: "wss://example.com/ws",
+            replacementMacToken: ""
+        ).value
 
+        XCTAssertEqual(repairedOutcome, .accepted)
         XCTAssertEqual(factory.count(), 1)
         guard factory.count() == 1 else { return }
-        await transport.waitForHello(token: "stored-token")
-        let sentStoredToken = await transport.containsHello(token: "stored-token")
+        await transport.waitForHello(token: AppStateTestToken.stored)
+        let sentStoredToken = await transport.containsHello(token: AppStateTestToken.stored)
         XCTAssertTrue(sentStoredToken)
     }
 
-    func testTokenReadFailureRemainsIneligibleAfterStorageRecovers() async throws {
+    func testTokenReadFailurePreservesRuntimeAndReconnectWorksAfterStorageRecovers() async throws {
         let suite = "AppStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "stored-token")
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         secrets.setReadError(AppStateTestError.deleteFailed)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
@@ -370,12 +530,14 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        await state.reconnect().value
+        let failed = await state.reconnect().value
         secrets.setReadError(nil)
-        await state.reconnect().value
+        let recovered = await state.reconnect().value
 
-        XCTAssertEqual(factory.count(), 0)
-        XCTAssertNotNil(settings.storageError)
+        XCTAssertEqual(failed, .rejected(.keychainUnavailable))
+        XCTAssertEqual(recovered, .accepted)
+        XCTAssertEqual(factory.count(), 1)
+        XCTAssertNil(settings.storageError)
     }
 
     func testClearRetagsDisconnectedStatusForCurrentCredentialRevision() async throws {
@@ -383,7 +545,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "stored-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let firstTransport = AppStateTransport(gateClose: false)
@@ -393,9 +555,9 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        await firstTransport.waitForHello(token: "stored-token")
-        await state.reconnect().value
-        await secondTransport.waitForHello(token: "stored-token")
+        await firstTransport.waitForHello(token: AppStateTestToken.stored)
+        _ = await state.reconnect().value
+        await secondTransport.waitForHello(token: AppStateTestToken.stored)
         let appConnecting = await eventually { state.connection == .connecting }
         XCTAssertTrue(appConnecting)
 
@@ -421,7 +583,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "token")
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -452,7 +614,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "token", deleteError: AppStateTestError.deleteFailed)
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored, deleteError: AppStateTestError.deleteFailed)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -471,16 +633,16 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(closed)
         XCTAssertTrue(errorReported)
         XCTAssertNotEqual(state.notice, "Token cleared.")
-        XCTAssertTrue(settings.hasToken)
+        XCTAssertFalse(settings.hasToken)
         XCTAssertEqual(clearedStatus, .disconnected)
 
-        await state.reconnect().value
+        _ = await state.reconnect().value
         let closeCountAfterReconnect = await transport.closes()
         XCTAssertEqual(closeCountAfterReconnect, 1)
 
-        let save = state.saveToken("replacement-token")
-        await save.value
-        let restarted = await eventually { await transport.containsHello(token: "replacement-token") }
+        let save = state.saveToken(AppStateTestToken.replacement)
+        _ = await save.value
+        let restarted = await eventually { await transport.containsHello(token: AppStateTestToken.replacement) }
         XCTAssertTrue(restarted)
     }
 
@@ -490,7 +652,7 @@ final class AppStateTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
         defaults.set(true, forKey: SettingsStore.remoteEnabledKey)
-        let secrets = AppStateSecretStore(token: "token", deleteError: AppStateTestError.deleteFailed)
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored, deleteError: AppStateTestError.deleteFailed)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { true }, request: { true })
         let poster = AppStateCountingPoster()
@@ -500,7 +662,7 @@ final class AppStateTests: XCTestCase {
         let client = RelayClient(actionSink: sink, diagnostics: processor, makeTransport: { transport })
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
-        let helloSent = await eventually { await transport.containsHello(token: "token") }
+        let helloSent = await eventually { await transport.containsHello(token: AppStateTestToken.stored) }
         XCTAssertTrue(helloSent)
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
         let connected = await eventually { await client.currentStatus() == .connected }
@@ -526,11 +688,11 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(status, .disconnected)
         XCTAssertEqual(closeCount, 1)
         XCTAssertEqual(state.notice, settings.storageError)
-        XCTAssertTrue(settings.hasToken)
+        XCTAssertFalse(settings.hasToken)
 
-        await state.saveToken("replacement-token").value
+        _ = await state.saveToken(AppStateTestToken.replacement).value
         let replacementHelloSent = await eventually {
-            await transport.containsHello(token: "replacement-token")
+            await transport.containsHello(token: AppStateTestToken.replacement)
         }
         XCTAssertTrue(replacementHelloSent)
         await transport.push(try Wire.encode(HelloOK(role: "mac")))
@@ -544,7 +706,7 @@ final class AppStateTests: XCTestCase {
                                                                + Constants.actionLifetimeMs)))
         let replacementPosted = await eventually { poster.postCount() == 1 }
         XCTAssertTrue(replacementPosted)
-        XCTAssertEqual(state.notice, "Token saved.")
+        XCTAssertEqual(state.notice, "Settings saved. Reconnecting…")
     }
 
     func testNewerSaveSupersedesClearSuspendedWhileClosingOldTransport() async throws {
@@ -552,7 +714,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "old-token")
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -568,19 +730,19 @@ final class AppStateTests: XCTestCase {
         let clear = state.clearToken()
         let clearSuspended = await eventually { await oldTransport.didStartClose() }
         XCTAssertTrue(clearSuspended)
-        let save = state.saveToken("new-token")
+        let save = state.saveToken(AppStateTestToken.replacement)
         let replacementStarted = await eventually { factory.count() == 2 }
         XCTAssertTrue(replacementStarted)
 
         await oldTransport.releaseClose()
         await clear.value
-        await save.value
+        _ = await save.value
 
         let newHelloSent = await eventually {
-            await newTransport.containsHello(token: "new-token")
+            await newTransport.containsHello(token: AppStateTestToken.replacement)
         }
-        XCTAssertEqual(state.notice, "Token saved.")
-        XCTAssertEqual(try settings.macToken(), "new-token")
+        XCTAssertEqual(state.notice, "Settings saved. Reconnecting…")
+        XCTAssertEqual(try settings.macToken(), AppStateTestToken.replacement)
         let status = await client.currentStatus()
         XCTAssertEqual(status, .connecting)
         XCTAssertEqual(state.connection, .connecting)
@@ -593,7 +755,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "old-token")
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -604,17 +766,17 @@ final class AppStateTests: XCTestCase {
                              permissionService: permission, activationNotifications: NotificationCenter())
 
         let clear = state.clearToken()
-        let save = state.saveToken("new-token")
+        let save = state.saveToken(AppStateTestToken.replacement)
         await clear.value
-        await save.value
+        _ = await save.value
 
         let newHelloSent = await eventually {
-            await transport.containsHello(token: "new-token")
+            await transport.containsHello(token: AppStateTestToken.replacement)
         }
-        XCTAssertEqual(try settings.macToken(), "new-token")
+        XCTAssertEqual(try settings.macToken(), AppStateTestToken.replacement)
         XCTAssertEqual(factory.count(), 1)
         XCTAssertTrue(newHelloSent)
-        XCTAssertEqual(state.notice, "Token saved.")
+        XCTAssertEqual(state.notice, "Settings saved. Reconnecting…")
     }
 
     func testClearDuringDelayedBootstrapBlocksOldTokenEvenWhenDeletionFailsUntilSave() async throws {
@@ -622,7 +784,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "old-token", deleteError: AppStateTestError.deleteFailed)
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored, deleteError: AppStateTestError.deleteFailed)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -633,19 +795,20 @@ final class AppStateTests: XCTestCase {
                              permissionService: permission, activationNotifications: NotificationCenter())
 
         await state.clearToken().value
-        await state.reconnect().value
+        let reconnectOutcome = await state.reconnect().value
 
         XCTAssertEqual(factory.count(), 0)
-        XCTAssertEqual(try settings.macToken(), "old-token")
-        XCTAssertEqual(state.notice, settings.storageError)
+        XCTAssertNil(try settings.macToken())
+        XCTAssertEqual(reconnectOutcome, .rejected(.missingToken))
+        XCTAssertEqual(state.notice, ConnectionActionIssue.missingToken.errorDescription)
 
-        await state.saveToken("new-token").value
+        _ = await state.saveToken(AppStateTestToken.replacement).value
         let newHelloSent = await eventually {
-            await transport.containsHello(token: "new-token")
+            await transport.containsHello(token: AppStateTestToken.replacement)
         }
         XCTAssertEqual(factory.count(), 1)
         XCTAssertTrue(newHelloSent)
-        XCTAssertEqual(state.notice, "Token saved.")
+        XCTAssertEqual(state.notice, "Settings saved. Reconnecting…")
     }
 
     func testIneligibleReconnectCannotCancelClearSuspendedWhileClosing() async throws {
@@ -653,7 +816,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "old-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let transport = AppStateTransport(gateClose: true)
@@ -668,7 +831,7 @@ final class AppStateTests: XCTestCase {
         let closeStarted = await eventually { await transport.didStartClose() }
         XCTAssertTrue(closeStarted)
         let reconnect = state.reconnect()
-        await reconnect.value
+        _ = await reconnect.value
         await transport.releaseClose()
         await clear.value
 
@@ -687,7 +850,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let secrets = AppStateSecretStore(token: "old-token", writeError: AppStateTestError.deleteFailed)
+        let secrets = AppStateSecretStore(token: AppStateTestToken.stored, writeError: AppStateTestError.deleteFailed)
         let settings = try SettingsStore(defaults: defaults, secrets: secrets)
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
@@ -702,8 +865,8 @@ final class AppStateTests: XCTestCase {
         let clear = state.clearToken()
         let closeStarted = await eventually { await transport.didStartClose() }
         XCTAssertTrue(closeStarted)
-        let failedSave = state.saveToken("new-token")
-        await failedSave.value
+        let failedSave = state.saveToken(AppStateTestToken.replacement)
+        let failedOutcome = await failedSave.value
         await transport.releaseClose()
         await clear.value
 
@@ -715,7 +878,8 @@ final class AppStateTests: XCTestCase {
         let closeCount = await transport.closes()
         XCTAssertEqual(closeCount, 1)
         XCTAssertNil(try settings.macToken())
-        XCTAssertEqual(state.notice, settings.storageError)
+        XCTAssertEqual(failedOutcome, .rejected(.keychainUnavailable))
+        XCTAssertEqual(state.notice, "Token cleared.")
     }
 
     func testClearSupersedesReconnectSuspendedWhileClosingWithoutOrphanTransport() async throws {
@@ -723,7 +887,7 @@ final class AppStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("wss://example.com/ws", forKey: SettingsStore.relayURLKey)
-        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: "old-token"))
+        let settings = try SettingsStore(defaults: defaults, secrets: AppStateSecretStore(token: AppStateTestToken.stored))
         let permission = PostEventPermissionService(preflight: { false }, request: { false })
         let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
         let transport = AppStateTransport(gateClose: true)
@@ -740,7 +904,7 @@ final class AppStateTests: XCTestCase {
         let clear = state.clearToken()
         await clear.value
         await transport.releaseClose()
-        await reconnect.value
+        _ = await reconnect.value
 
         let appDisconnected = await eventually { state.connection == .disconnected }
         let relayStatus = await client.currentStatus()
@@ -765,20 +929,271 @@ final class AppStateTests: XCTestCase {
         let state = AppState(settings: settings, client: client, processor: processor,
                              permissionService: permission, activationNotifications: NotificationCenter())
 
-        let saveA = state.saveToken("token-a")
-        let saveB = state.saveToken("token-b")
-        await saveA.value
-        await saveB.value
+        let saveA = state.saveToken(AppStateTestToken.replacement)
+        let saveB = state.saveToken(AppStateTestToken.alternate)
+        _ = await saveA.value
+        _ = await saveB.value
 
         let helloB = await eventually {
-            await transport.containsHello(token: "token-b")
+            await transport.containsHello(token: AppStateTestToken.alternate)
         }
-        let helloA = await transport.containsHello(token: "token-a")
+        let helloA = await transport.containsHello(token: AppStateTestToken.replacement)
         XCTAssertTrue(helloB)
         XCTAssertFalse(helloA)
-        XCTAssertEqual(try settings.macToken(), "token-b")
+        XCTAssertEqual(try settings.macToken(), AppStateTestToken.alternate)
         XCTAssertEqual(factory.count(), 1)
-        XCTAssertEqual(state.notice, "Token saved.")
+        XCTAssertEqual(state.notice, "Settings saved. Reconnecting…")
+    }
+
+    func testURLOnlyApplyReusesStoredTokenAndOpensOnlyNormalizedNewEndpoint() async throws {
+        let transport = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(connection: connection(), transports: [transport])
+        defer { harness.cleanUp() }
+
+        let outcome = await harness.state.applyConnectionSettings(
+            relayURLString: "  wss://new.example.com/ws  ",
+            replacementMacToken: ""
+        ).value
+
+        XCTAssertEqual(outcome, .accepted)
+        await transport.waitForHello(token: AppStateTestToken.stored)
+        let connectedURLs = await transport.urls()
+        XCTAssertEqual(connectedURLs, [URL(string: "wss://new.example.com/ws")!])
+        XCTAssertEqual(harness.factory.count(), 1)
+        XCTAssertEqual(
+            try harness.settings.connection(),
+            connection(url: "wss://new.example.com/ws")
+        )
+        XCTAssertEqual(
+            harness.secrets.writes(account: SettingsStore.connectionRecordAccount),
+            2,
+            "the seed and one complete URL+token commit are the only writes"
+        )
+        await harness.client.stop()
+    }
+
+    func testApplyWithoutStoredOrReplacementTokenRejectsBeforeRuntimeMutation() async throws {
+        let harness = try makeHarness(transports: [AppStateTransport(gateClose: false)])
+        defer { harness.cleanUp() }
+
+        let outcome = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://example.com/ws",
+            replacementMacToken: ""
+        ).value
+
+        XCTAssertEqual(outcome, .rejected(.missingToken))
+        XCTAssertEqual(harness.factory.count(), 0)
+        XCTAssertNil(try harness.settings.connection())
+        XCTAssertEqual(harness.secrets.writes(account: SettingsStore.connectionRecordAccount), 0)
+    }
+
+    func testReplacementApplyCommitsAndConfiguresOnlyTheValidatedPair() async throws {
+        let transport = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(transports: [transport])
+        defer { harness.cleanUp() }
+
+        let outcome = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://replacement.example.com/ws",
+            replacementMacToken: "  \(AppStateTestToken.replacement.uppercased())  "
+        ).value
+
+        XCTAssertEqual(outcome, .accepted)
+        await transport.waitForHello(token: AppStateTestToken.replacement)
+        let connectedURLs = await transport.urls()
+        XCTAssertEqual(connectedURLs, [URL(string: "wss://replacement.example.com/ws")!])
+        XCTAssertEqual(
+            harness.secrets.storedConnection(),
+            connection(url: "wss://replacement.example.com/ws", token: AppStateTestToken.replacement)
+        )
+        XCTAssertEqual(harness.secrets.writes(account: SettingsStore.connectionRecordAccount), 1)
+        XCTAssertEqual(harness.factory.count(), 1)
+        await harness.client.stop()
+    }
+
+    func testInvalidApplyRejectsWithoutPersistenceRuntimeOrControllerMutation() async throws {
+        let transport = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(connection: connection(), transports: [transport])
+        defer { harness.cleanUp() }
+        await transport.waitForHello(token: AppStateTestToken.stored)
+        let pairing = try XCTUnwrap(harness.state.pairing)
+        let pairingIdentity = ObjectIdentifier(pairing)
+        let writesBefore = harness.secrets.writes(account: SettingsStore.connectionRecordAccount)
+
+        let invalidURL = await harness.state.applyConnectionSettings(
+            relayURLString: "https://new.example.com/ws",
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        let invalidToken = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://new.example.com/ws",
+            replacementMacToken: "not-a-token"
+        ).value
+
+        XCTAssertEqual(invalidURL, .rejected(.invalidRelayURL))
+        XCTAssertEqual(invalidToken, .rejected(.invalidReplacementToken))
+        XCTAssertEqual(harness.secrets.writes(account: SettingsStore.connectionRecordAccount), writesBefore)
+        XCTAssertEqual(try harness.settings.connection(), connection())
+        XCTAssertEqual(harness.factory.count(), 1)
+        let closeCount = await transport.closes()
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(harness.state.pairing)), pairingIdentity)
+        let status = await harness.client.currentStatus()
+        XCTAssertEqual(status, .connecting)
+        await harness.client.stop()
+    }
+
+    func testKeychainReadAndWriteFailuresPreserveAuthoritativePairAndLiveController() async throws {
+        let transport = AppStateTransport(gateClose: false)
+        let secrets = AppStateSecretStore()
+        let harness = try makeHarness(connection: connection(), secrets: secrets, transports: [transport])
+        defer { harness.cleanUp() }
+        await transport.waitForHello(token: AppStateTestToken.stored)
+        let pairingIdentity = ObjectIdentifier(try XCTUnwrap(harness.state.pairing))
+        let writesBefore = secrets.writes(account: SettingsStore.connectionRecordAccount)
+        let draft = ConnectionSettingsDraft(
+            appliedRelayURLString: harness.settings.relayURLString,
+            relayURLString: "wss://new.example.com/ws",
+            replacementMacToken: ""
+        )
+
+        secrets.setReadError(AppStateTestError.deleteFailed)
+        let readFailure = await harness.state.applyConnectionSettings(
+            relayURLString: draft.relayURLString,
+            replacementMacToken: draft.replacementMacToken
+        ).value
+        let reconnectFailure = await harness.state.reconnect().value
+        secrets.setReadError(nil)
+        secrets.setWriteError(AppStateTestError.deleteFailed)
+        let writeFailure = await harness.state.applyConnectionSettings(
+            relayURLString: draft.relayURLString,
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        secrets.setWriteError(nil)
+
+        XCTAssertEqual(readFailure, .rejected(.keychainUnavailable))
+        XCTAssertEqual(reconnectFailure, .rejected(.keychainUnavailable))
+        XCTAssertEqual(writeFailure, .rejected(.keychainUnavailable))
+        XCTAssertEqual(draft.relayURLString, "wss://new.example.com/ws")
+        XCTAssertEqual(draft.replacementMacToken, "")
+        XCTAssertEqual(try harness.settings.connection(), connection())
+        XCTAssertEqual(secrets.writes(account: SettingsStore.connectionRecordAccount), writesBefore + 1)
+        XCTAssertEqual(harness.factory.count(), 1)
+        let closeCount = await transport.closes()
+        XCTAssertEqual(closeCount, 0)
+        XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(harness.state.pairing)), pairingIdentity)
+        let status = await harness.client.currentStatus()
+        XCTAssertEqual(status, .connecting)
+        await harness.client.stop()
+    }
+
+    func testAcceptedConfigurationStaysSavedWhenTheNetworkIsUnavailable() async throws {
+        let transport = AppStateTransport(gateClose: false, connectError: AppStateTestError.deleteFailed)
+        let harness = try makeHarness(transports: [transport])
+        defer { harness.cleanUp() }
+
+        let outcome = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://offline.example.com/ws",
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        let attempted = await eventually { await transport.urls().count == 1 }
+
+        XCTAssertEqual(outcome, .accepted)
+        XCTAssertTrue(attempted)
+        XCTAssertEqual(
+            try harness.settings.connection(),
+            connection(url: "wss://offline.example.com/ws", token: AppStateTestToken.replacement)
+        )
+        XCTAssertEqual(harness.state.notice, "Settings saved. Reconnecting…")
+        XCTAssertNotEqual(harness.state.notice, "Connected")
+        await harness.client.stop()
+    }
+
+    func testConnectionChangeBlocklistIncludesEveryActivePairingState() {
+        let invitation = PairingController.Invitation(
+            url: URL(string: "https://example.com/pair#ref")!,
+            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        let approval = PairingController.Approval(
+            confirmationCode: "123456",
+            clientKind: .ios,
+            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        let blocked: [PairingController.State] = [
+            .creating,
+            .invitation(invitation),
+            .approval(approval),
+            .approving,
+            .denying,
+            .cancelling,
+            .cancelFailed
+        ]
+
+        for state in blocked {
+            XCTAssertTrue(AppState.blocksConnectionChanges(in: state), "expected \(state) to block")
+        }
+        for state in [PairingController.State.ready, .denied, .expired, .failed] {
+            XCTAssertFalse(AppState.blocksConnectionChanges(in: state), "expected \(state) to be safe")
+        }
+    }
+
+    func testApplyAndReconnectBlockDuringPairingThenResumeAfterConfirmedCancellation() async throws {
+        let current = AppStateTransport(gateClose: false, gatePairingCancel: true)
+        let replacement = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(connection: connection(), transports: [current, replacement])
+        defer { harness.cleanUp() }
+        let controller = try await makePairingReady(in: harness, transport: current)
+        harness.state.confirmReplacement()
+        let creating = await eventually { harness.state.pairing?.state == .creating }
+        XCTAssertTrue(creating)
+        let identity = ObjectIdentifier(controller)
+        let writesBefore = harness.secrets.writes(account: SettingsStore.connectionRecordAccount)
+
+        let blockedApply = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://new.example.com/ws",
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        let blockedReconnect = await harness.state.reconnect().value
+
+        XCTAssertEqual(blockedApply, .rejected(.pairingInProgress))
+        XCTAssertEqual(blockedReconnect, .rejected(.pairingInProgress))
+        XCTAssertEqual(harness.state.notice, ConnectionActionIssue.pairingInProgress.errorDescription)
+        XCTAssertEqual(harness.secrets.writes(account: SettingsStore.connectionRecordAccount), writesBefore)
+        XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(harness.state.pairing)), identity)
+        XCTAssertEqual(harness.factory.count(), 1)
+        let closeCount = await current.closes()
+        XCTAssertEqual(closeCount, 0)
+
+        let cancel = Task { await controller.cancel() }
+        let cancelling = await eventually { controller.state == .cancelling }
+        XCTAssertTrue(cancelling)
+        let cancellingReconnect = await harness.state.reconnect().value
+        XCTAssertEqual(cancellingReconnect, .rejected(.pairingInProgress))
+        await current.releasePairingCancel()
+        await cancel.value
+        XCTAssertEqual(controller.state, .ready)
+
+        let accepted = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://new.example.com/ws",
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        XCTAssertEqual(accepted, .accepted)
+        await replacement.waitForHello(token: AppStateTestToken.replacement)
+        XCTAssertEqual(harness.factory.count(), 2)
+        await harness.client.stop()
+    }
+
+    func testClearRemainsAnEmergencyRevokeWhilePairingIsCreating() async throws {
+        let current = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(connection: connection(), transports: [current])
+        defer { harness.cleanUp() }
+        let controller = try await makePairingReady(in: harness, transport: current)
+        harness.state.confirmReplacement()
+        let creating = await eventually { controller.state == .creating }
+        XCTAssertTrue(creating)
+
+        await harness.state.clearToken().value
+        XCTAssertNil(try harness.settings.connection())
+        let status = await harness.client.currentStatus()
+        XCTAssertEqual(status, .disconnected)
     }
 }
 

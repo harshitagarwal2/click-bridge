@@ -79,6 +79,7 @@ struct ClickBridgeApp: App {
 
 struct SettingsView: View {
     @ObservedObject var app: AppState
+    @State private var relayURL = ""
     @State private var token = ""
     @State private var showingReplacementConfirmation = false
     @State private var showingAdvanced = false
@@ -104,10 +105,7 @@ struct SettingsView: View {
 
             DisclosureGroup("Advanced legacy connection", isExpanded: $showingAdvanced) {
                 Section("Relay") {
-                    TextField("Relay URL", text: Binding(
-                        get: { app.settings.relayURLString },
-                        set: { app.settings.stageRelayURLDraft($0) }
-                    ), prompt: Text("wss://your-host/ws"))
+                    TextField("Relay URL", text: $relayURL, prompt: Text("wss://your-host/ws"))
                 }
                 Section("Mac token") {
                     SecureField("Paste MAC_TOKEN", text: $token)
@@ -123,6 +121,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .onAppear { relayURL = app.settings.relayURLString }
         .confirmationDialog(
             "Replace the paired phone?",
             isPresented: $showingReplacementConfirmation,
@@ -139,7 +138,17 @@ struct SettingsView: View {
 
     private var normalizedToken: String { token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     private var validToken: Bool { normalizedToken.count == 64 && normalizedToken.allSatisfy(\.isHexDigit) }
-    private func save() { app.saveToken(normalizedToken); token = "" }
+    private func save() {
+        let apply = app.applyConnectionSettings(
+            relayURLString: relayURL,
+            replacementMacToken: normalizedToken
+        )
+        Task { @MainActor in
+            guard await apply.value == .accepted else { return }
+            relayURL = app.settings.relayURLString
+            token = ""
+        }
+    }
 }
 
 private struct PairingSettingsView: View {

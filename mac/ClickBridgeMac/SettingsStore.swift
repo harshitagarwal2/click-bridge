@@ -151,37 +151,10 @@ final class SettingsStore: ObservableObject {
         storageError = nil
     }
 
-    // Transitional compatibility for AppState while Task 2 moves every caller
-    // onto the atomic URL+token apply boundary.
+    // Read-only compatibility for call sites that need only token presence.
+    // All mutations go through the authoritative connection record APIs.
     func macToken() throws -> String? {
         try connection()?.macToken
-    }
-
-    func saveMacToken(_ value: String) throws {
-        let validated = try ConnectionSettingsValidator.validate(
-            relayURLString: relayURLString,
-            replacementMacToken: value
-        )
-        guard case .replacement(let token) = validated.tokenInput else {
-            throw ConnectionSettingsValidationError.invalidReplacementToken
-        }
-        try saveConnection(
-            StoredConnection(
-                version: StoredConnection.currentVersion,
-                relayURLString: validated.relayURLString,
-                macToken: token
-            )
-        )
-    }
-
-    func clearMacToken() throws {
-        try clearConnection()
-    }
-
-    // Compile staging only. The current Settings view still owns a Binding;
-    // Task 2 replaces it with ConnectionSettingsDraft and removes this seam.
-    func stageRelayURLDraft(_ value: String) {
-        relayURLString = value
     }
 
     private func loadConnection() throws -> StoredConnection? {
