@@ -59,6 +59,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.mac
         INFOPLIST_KEY_LSUIElement: YES
+      configs:
+        Release:
+          ENABLE_APP_SANDBOX: true
+          ENABLE_HARDENED_RUNTIME: true
+          CODE_SIGN_ENTITLEMENTS: ClickBridgeMac/ClickBridgeMac-AppStore.entitlements
 
   ClickBridgeMacTests:
     type: bundle.unit-test
