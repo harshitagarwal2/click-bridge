@@ -36,13 +36,17 @@ final class PhonePairingPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.confirmationAccessibilityLabel?.contains("pair") == true)
     }
 
-    func testOnlyInFlightPairingPhasesCancelWhenAppBackgrounds() {
-        XCTAssertTrue(PhonePairingPresentation.shouldCancelOnBackground(.connecting))
-        XCTAssertTrue(PhonePairingPresentation.shouldCancelOnBackground(.awaitingApproval))
+    func testPairingPhasesSurviveBackgrounding() {
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.idle))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.connecting))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.claiming))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.awaitingApproval))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.awaitingActivation))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.awaitingCredential))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.active))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.cancelled))
         XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.failed))
+        XCTAssertFalse(PhonePairingPresentation.shouldCancelOnBackground(.replaced))
     }
 
     func testCredentialStagingCannotBeCancelledOrInteractivelyDismissed() {
