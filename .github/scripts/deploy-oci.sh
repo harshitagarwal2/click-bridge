@@ -31,10 +31,28 @@ path_mode() {
   stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null
 }
 
+required_phone_auth_contract() {
+  if [[ ! -e "$PHONE_AUTH_RECORD_HOST" ]]; then
+    printf '1\n'
+  elif grep -Eq '^\{"schemaVersion":1,' "$PHONE_AUTH_RECORD_HOST"; then
+    printf '1\n'
+  else
+    # Schema v2 and any unrecognized persisted authority require the newest
+    # fail-closed compatibility contract.
+    printf '2\n'
+  fi
+}
+
 release_supports_phone_auth_record() {
+  local required_contract="$2"
+  local declared_contract
   local directory
   local rendered
   directory="$(release_directory "$1")"
+  if ((required_contract >= 2)) &&
+     [[ ! -f "$directory/relay/scripts/smoke-relay-mac-only.mjs" ]]; then
+    return 1
+  fi
   if ! rendered="$(CLICK_BRIDGE_RELEASE="$1" CLICK_BRIDGE_SECRETS_FILE="$SHARED_ENV" docker compose \
     -p "${COMPOSE_PROJECT_NAME}-compat-check" \
     --env-file "$SHARED_ENV" \
@@ -42,7 +60,9 @@ release_supports_phone_auth_record() {
     config relay 2>/dev/null)"; then
     return 1
   fi
-  [[ "$(grep -Ec '^[[:space:]]+x-click-bridge-pairing-auth-contract: 1$' <<< "$rendered")" = 1 ]] &&
+  declared_contract="$(sed -nE 's/^[[:space:]]+x-click-bridge-pairing-auth-contract: ([1-9][0-9]*)$/\1/p' <<< "$rendered")"
+  [[ "$declared_contract" =~ ^[1-9][0-9]*$ ]] &&
+    ((declared_contract >= required_contract)) &&
     [[ "$(grep -Ec '^[[:space:]]+PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json$' <<< "$rendered")" = 1 ]] &&
     awk -v expected_source="$AUTH_DIRECTORY" '
       function reset_mount() {
@@ -127,14 +147,6 @@ validate_secret_schema() {
     [[ "$team_count" = 0 ]] ||
       die 'APPLE_TEAM_ID is only allowed when pairing is enabled'
   fi
-}
-
-phone_auth_record_is_rotated_or_uncertain() {
-  [[ -e "$PHONE_AUTH_RECORD_HOST" ]] || return 1
-  grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":[1-9][0-9]*,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
-    "$PHONE_AUTH_RECORD_HOST" ||
-    ! grep -Eq '^\{"schemaVersion":1,"activePhoneCredentialVersion":0,"activePhoneVerifier":"[0-9a-f]{64}"\}$' \
-      "$PHONE_AUTH_RECORD_HOST"
 }
 
 release_directory() {
@@ -224,6 +236,25 @@ start_release() {
   compose_release "$1" up -d --no-build --force-recreate
 }
 
+legacy_phone_token_is_active() {
+  local release="$1"
+  local status
+
+  if CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" docker run --rm \
+    --network none \
+    --env PHONE_TOKEN \
+    --volume "$PHONE_AUTH_RECORD_HOST:/auth/phone-auth.json:ro" \
+    node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 node -e \
+    'const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)'; then
+    return 0
+  else
+    status=$?
+  fi
+  [[ "$status" = 1 ]] && return 1
+  printf 'Unable to determine whether the legacy phone credential is active\n' >&2
+  return 2
+}
+
 verify_public_release() {
   local release="$1"
   local directory
@@ -246,18 +277,44 @@ verify_public_release() {
 
   [[ "$ready" = 1 ]] || return 1
 
-  CLICK_BRIDGE_RELEASE="$release" \
-    PHONE_TOKEN="$PHONE_TOKEN" \
-    MAC_TOKEN="$MAC_TOKEN" \
-    docker run --rm --network host \
-      --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
-    --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \
-    --env PHONE_TOKEN \
-    --env MAC_TOKEN \
-    --volume "$directory/relay:/workspace:ro" \
-    --workdir /tmp/smoke \
-    node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 sh -euc \
-    'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+  local legacy_phone_status=0
+  if legacy_phone_token_is_active "$release"; then
+    legacy_phone_status=0
+  else
+    legacy_phone_status=$?
+  fi
+
+  case "$legacy_phone_status" in
+    0)
+      CLICK_BRIDGE_RELEASE="$release" \
+        PHONE_TOKEN="$PHONE_TOKEN" \
+        MAC_TOKEN="$MAC_TOKEN" \
+        docker run --rm --network host \
+          --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
+        --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \
+        --env PHONE_TOKEN \
+        --env MAC_TOKEN \
+        --volume "$directory/relay:/workspace:ro" \
+        --workdir /tmp/smoke \
+        node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 sh -euc \
+        'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+      ;;
+    1)
+      CLICK_BRIDGE_RELEASE="$release" \
+        PHONE_TOKEN="$PHONE_TOKEN" \
+        MAC_TOKEN="$MAC_TOKEN" \
+        docker run --rm --network host \
+          --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \
+        --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \
+        --env PHONE_TOKEN \
+        --env MAC_TOKEN \
+        --volume "$directory/relay:/workspace:ro" \
+        --workdir /tmp/smoke \
+        node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 sh -euc \
+        'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 validate_git_release "$CLICK_BRIDGE_RELEASE"
@@ -306,8 +363,8 @@ if [[ -e "$PHONE_AUTH_RECORD_HOST" || -L "$PHONE_AUTH_RECORD_HOST" ]]; then
     die 'phone auth record must have mode 0600'
 fi
 release_directory "$CLICK_BRIDGE_RELEASE" >/dev/null
-if phone_auth_record_is_rotated_or_uncertain &&
-   ! release_supports_phone_auth_record "$CLICK_BRIDGE_RELEASE"; then
+REQUIRED_PHONE_AUTH_CONTRACT="$(required_phone_auth_contract)"
+if ! release_supports_phone_auth_record "$CLICK_BRIDGE_RELEASE" "$REQUIRED_PHONE_AUTH_CONTRACT"; then
   die 'refusing a pairing-incompatible release after phone credential rotation'
 fi
 
@@ -336,8 +393,8 @@ trap - EXIT INT TERM
 
 if ! start_release "$CLICK_BRIDGE_RELEASE" || ! verify_public_release "$CLICK_BRIDGE_RELEASE"; then
   if [[ -n "$CURRENT_RELEASE" ]]; then
-    if phone_auth_record_is_rotated_or_uncertain &&
-       ! release_supports_phone_auth_record "$CURRENT_RELEASE"; then
+    REQUIRED_PHONE_AUTH_CONTRACT="$(required_phone_auth_contract)"
+    if ! release_supports_phone_auth_record "$CURRENT_RELEASE" "$REQUIRED_PHONE_AUTH_CONTRACT"; then
       die 'automatic rollback refused: prior release is pairing-incompatible'
     fi
     printf 'Candidate failed after switch; restoring %s\n' "$CURRENT_RELEASE" >&2

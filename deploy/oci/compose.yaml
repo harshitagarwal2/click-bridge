@@ -1,6 +1,6 @@
 services:
   relay:
-    x-click-bridge-pairing-auth-contract: 1
+    x-click-bridge-pairing-auth-contract: 2
     build:
       context: ../..
       dockerfile: deploy/oci/Dockerfile
