@@ -1,19 +1,73 @@
 import Foundation
 import AppKit
 
+enum ConnectionActionIssue: Error, LocalizedError, Equatable, Sendable {
+    case pairingInProgress
+    case invalidRelayURL
+    case invalidReplacementToken
+    case missingToken
+    case keychainUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .pairingInProgress:
+            return "Finish or cancel phone pairing before changing connection settings."
+        case .invalidRelayURL:
+            return ConnectionSettingsValidationError.invalidRelayURL.localizedDescription
+        case .invalidReplacementToken:
+            return ConnectionSettingsValidationError.invalidReplacementToken.localizedDescription
+        case .missingToken:
+            return "Enter a Mac token before connecting."
+        case .keychainUnavailable:
+            return "The saved connection is unavailable. Try again."
+        }
+    }
+}
+
+enum ConnectionActionOutcome: Equatable, Sendable {
+    case accepted
+    case rejected(ConnectionActionIssue)
+}
+
 struct PairingActionPresentation: Equatable {
+    // Retained for the existing state contract; UI copy is `buttonTitle`.
     let title: String
+    let buttonTitle: String
+    let confirmationActionTitle: String
+    let warning: String
     let requiresReplacementConfirmation: Bool
 
     init(status: PairStatus?) {
-        let replacing = status?.requiresReplacementConfirmation == true
-        title = replacing ? "Replace Phone" : "Pair Phone"
-        requiresReplacementConfirmation = replacing
+        switch status?.enrollmentState {
+        case .legacy:
+            title = "Replace Phone"
+            buttonTitle = "Pair Phone"
+            confirmationActionTitle = "Pair Phone"
+            warning = "Approving the new phone invalidates older shared phone access."
+            requiresReplacementConfirmation = true
+        case .paired:
+            title = "Replace Phone"
+            buttonTitle = "Replace Phone…"
+            confirmationActionTitle = "Replace Phone"
+            warning = "The current phone stops working after you approve the new phone."
+            requiresReplacementConfirmation = true
+        case nil:
+            title = "Pair Phone"
+            buttonTitle = "Pair Phone"
+            confirmationActionTitle = "Pair Phone"
+            warning = "A matching code must be approved on this Mac."
+            requiresReplacementConfirmation = false
+        }
     }
 }
 
 @MainActor
 final class AppState: ObservableObject {
+    private struct PreparedConnection: Sendable {
+        let record: StoredConnection
+        let relayURL: URL
+    }
+
     @Published private(set) var connection: RelayClient.Status = .disconnected
     @Published private(set) var permission: PermissionState = .unknown
     @Published private(set) var lastResult = "—"
@@ -21,34 +75,25 @@ final class AppState: ObservableObject {
     @Published private(set) var pairing: PairingController?
     @Published private(set) var phoneManagement: PhoneManagementController?
     @Published private(set) var pairingAction = PairingActionPresentation(status: nil)
-    @Published private(set) var relaySetupRetryAvailable = false
 
     let settings: SettingsStore
     private let client: RelayClient
     private let processor: ActionProcessor
     private let permissionService: PostEventPermissionService
     private let activationNotifications: NotificationCenter
-    private let enroll: @Sendable () async throws -> DesktopEnrollment
     private var activationObserver: NSObjectProtocol?
     private var credentialRevision: UInt64 = 0
-    private var credentialTask: Task<Void, Never>?
-    private var credentialEligible = true
-    private var automaticEnrollmentAttempted = false
+    private var cancelCredentialTask: (() -> Void)?
     private var lastStatusSequence: UInt64 = 0
-
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
          permissionService: PostEventPermissionService,
          activationNotifications: NotificationCenter = .default,
-         initialNotice: String? = nil,
-         enroll: @escaping @Sendable () async throws -> DesktopEnrollment = {
-             try await SessionEnrollmentService.enroll()
-         }) {
+         initialNotice: String? = nil) {
         self.settings = settings
         self.client = client
         self.processor = processor
         self.permissionService = permissionService
         self.activationNotifications = activationNotifications
-        self.enroll = enroll
         notice = initialNotice
         permission = permissionService.isGranted() ? .ready : .required
         activationObserver = activationNotifications.addObserver(
@@ -59,7 +104,7 @@ final class AppState: ObservableObject {
             Task { @MainActor in self?.refreshPermission() }
         }
         let initialCredentialRevision = beginCredentialOperation()
-        credentialTask = Task { [weak self, client, processor, settings] in
+        let bootstrapTask = Task { [weak self, client, processor, settings] in
             await client.setStatusHandler { [weak self] event in
                 Task { @MainActor in
                     await self?.handleStatusEvent(event)
@@ -82,29 +127,111 @@ final class AppState: ObservableObject {
                   !Task.isCancelled else { return }
             await self.publishState()
             guard initialCredentialRevision == self.credentialRevision, !Task.isCancelled else { return }
-            self.connect(credentialRevision: initialCredentialRevision, allowAutomaticEnrollment: true)
+            await self.connectPersistedConfiguration(credentialRevision: initialCredentialRevision)
         }
+        cancelCredentialTask = { bootstrapTask.cancel() }
     }
 
     deinit {
-        credentialTask?.cancel()
+        cancelCredentialTask?()
         if let activationObserver { activationNotifications.removeObserver(activationObserver) }
     }
 
     var remoteToggleEnabled: Bool { true }
 
+#if DEBUG
+    var credentialRevisionForTesting: UInt64 { credentialRevision }
+    var lastStatusSequenceForTesting: UInt64 { lastStatusSequence }
+#endif
+
     @discardableResult
-    func reconnect() -> Task<Void, Never> {
+    func reconnect() -> Task<ConnectionActionOutcome, Never> {
+        if connectionChangesAreBlocked {
+            return rejectedTask(.pairingInProgress)
+        }
+        let prepared: PreparedConnection
+        do {
+            prepared = try preparedStoredConnection()
+        } catch let issue as ConnectionActionIssue {
+            return rejectedTask(issue, detail: storageDetail(for: issue))
+        } catch {
+            return rejectedTask(.keychainUnavailable, detail: settings.storageError)
+        }
         let revision = beginCredentialOperation()
-        return connect(credentialRevision: revision)
+        notice = "Reconnecting…"
+        return connect(prepared, credentialRevision: revision)
     }
 
     @discardableResult
-    func retryRelaySetup() -> Task<Void, Never> {
+    func applyConnectionSettings(
+        relayURLString: String,
+        replacementMacToken: String
+    ) -> Task<ConnectionActionOutcome, Never> {
+        if connectionChangesAreBlocked {
+            return rejectedTask(.pairingInProgress)
+        }
+
+        let validated: ValidatedConnectionSettings
+        do {
+            validated = try ConnectionSettingsValidator.validate(
+                relayURLString: relayURLString,
+                replacementMacToken: replacementMacToken
+            )
+        } catch ConnectionSettingsValidationError.invalidRelayURL {
+            return rejectedTask(.invalidRelayURL)
+        } catch ConnectionSettingsValidationError.invalidReplacementToken {
+            return rejectedTask(.invalidReplacementToken)
+        } catch {
+            return rejectedTask(.invalidRelayURL)
+        }
+
+        let resolvedToken: String
+        switch validated.tokenInput {
+        case .replacement(let token):
+            resolvedToken = token
+        case .reuseStored:
+            let stored: StoredConnection
+            do {
+                guard let connection = try settings.connection() else {
+                    return rejectedTask(.missingToken)
+                }
+                stored = connection
+            } catch {
+                return rejectedTask(.keychainUnavailable, detail: settings.storageError)
+            }
+            do {
+                let resolved = try ConnectionSettingsValidator.validate(
+                    relayURLString: validated.relayURLString,
+                    replacementMacToken: stored.macToken
+                )
+                guard case .replacement(let token) = resolved.tokenInput else {
+                    return rejectedTask(.missingToken)
+                }
+                resolvedToken = token
+            } catch ConnectionSettingsValidationError.invalidReplacementToken {
+                return rejectedTask(.invalidReplacementToken)
+            } catch {
+                return rejectedTask(.invalidRelayURL)
+            }
+        }
+
+        let record = StoredConnection(
+            version: StoredConnection.currentVersion,
+            relayURLString: validated.relayURLString,
+            macToken: resolvedToken
+        )
+        do {
+            try settings.saveConnection(record)
+        } catch {
+            return rejectedTask(.keychainUnavailable, detail: settings.storageError)
+        }
+
         let revision = beginCredentialOperation()
-        credentialEligible = true
-        relaySetupRetryAvailable = false
-        return enrollAndConnect(credentialRevision: revision, automaticRecoveryUsed: true)
+        notice = "Settings saved. Reconnecting…"
+        return connect(
+            PreparedConnection(record: record, relayURL: validated.relayURL),
+            credentialRevision: revision
+        )
     }
 
     func publishState() async {
@@ -143,40 +270,32 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func saveToken(_ token: String) -> Task<Void, Never> {
-        let revision = beginCredentialOperation()
-        do {
-            try settings.saveMacToken(token)
-            credentialEligible = true
-            notice = "Relay enrollment saved."
-            return connect(credentialRevision: revision)
-        }
-        catch {
-            credentialEligible = false
-            notice = settings.storageError
-            let task = Task { _ = await client.clearConfigurationAndStop(credentialRevision: revision) }
-            credentialTask = task
-            return task
-        }
+    func saveToken(_ token: String) -> Task<ConnectionActionOutcome, Never> {
+        applyConnectionSettings(
+            relayURLString: settings.relayURLString,
+            replacementMacToken: token
+        )
     }
 
     @discardableResult
-    func clearToken() -> Task<Void, Never> {
+    func clearToken() -> Task<ConnectionActionOutcome, Never> {
         let revision = beginCredentialOperation()
-        credentialEligible = false
         var persistenceError: String?
-        do { try settings.clearMacToken() }
+        do { try settings.clearConnection() }
         catch { persistenceError = settings.storageError }
+        let outcome: ConnectionActionOutcome = persistenceError == nil
+            ? .accepted
+            : .rejected(.keychainUnavailable)
 
         let task = Task {
-            guard revision == credentialRevision, !Task.isCancelled else { return }
+            guard revision == credentialRevision, !Task.isCancelled else { return outcome }
             let cleared = await client.clearConfigurationAndStop(credentialRevision: revision)
-            guard cleared else { return }
-            guard revision == credentialRevision, !Task.isCancelled else { return }
-            notice = persistenceError ?? "Relay enrollment cleared."
+            guard cleared else { return outcome }
+            guard revision == credentialRevision, !Task.isCancelled else { return outcome }
+            notice = persistenceError ?? "Token cleared."
+            return outcome
         }
-        credentialTask = task
-        return task
+        return track(task)
     }
 
     private func beginCredentialOperation() -> UInt64 {
@@ -189,21 +308,8 @@ final class AppState: ObservableObject {
               event.sequence > lastStatusSequence else { return }
         lastStatusSequence = event.sequence
         connection = event.status
-        if event.cause == .authenticationRejected {
-            recoverAfterAuthenticationRejection()
-            return
-        }
-        if event.status == .connected {
-            relaySetupRetryAvailable = false
-            do {
-                try settings.clearAutomaticRecoveryMarker()
-            } catch {
-                notice = settings.storageError
-            }
-        }
-        if let pairing {
-            await pairing.refreshStatus(capabilityAvailable: event.status == .connected)
-        }
+        guard let pairing else { return }
+        await pairing.refreshStatus(capabilityAvailable: event.status == .connected)
         guard event.credentialRevision == credentialRevision,
               event.sequence == lastStatusSequence else { return }
     }
@@ -218,149 +324,104 @@ final class AppState: ObservableObject {
         }
     }
 
+    private var connectionChangesAreBlocked: Bool {
+        pairing?.blocksConnectionChanges == true
+    }
+
+    private func preparedStoredConnection() throws -> PreparedConnection {
+        guard let stored = try settings.connection() else {
+            throw ConnectionActionIssue.missingToken
+        }
+        let validated: ValidatedConnectionSettings
+        do {
+            validated = try ConnectionSettingsValidator.validate(
+                relayURLString: stored.relayURLString,
+                replacementMacToken: stored.macToken
+            )
+        } catch ConnectionSettingsValidationError.invalidRelayURL {
+            throw ConnectionActionIssue.invalidRelayURL
+        } catch ConnectionSettingsValidationError.invalidReplacementToken {
+            throw ConnectionActionIssue.invalidReplacementToken
+        }
+        guard case .replacement(let token) = validated.tokenInput else {
+            throw ConnectionActionIssue.missingToken
+        }
+        return PreparedConnection(
+            record: StoredConnection(
+                version: StoredConnection.currentVersion,
+                relayURLString: validated.relayURLString,
+                macToken: token
+            ),
+            relayURL: validated.relayURL
+        )
+    }
+
+    private func connectPersistedConfiguration(credentialRevision revision: UInt64) async {
+        let prepared: PreparedConnection
+        do {
+            prepared = try preparedStoredConnection()
+        } catch let issue as ConnectionActionIssue {
+            if notice == nil { notice = storageDetail(for: issue) ?? issue.localizedDescription }
+            return
+        } catch {
+            if notice == nil { notice = settings.storageError ?? ConnectionActionIssue.keychainUnavailable.localizedDescription }
+            return
+        }
+        _ = await configure(prepared, credentialRevision: revision)
+    }
+
     @discardableResult
     private func connect(
-        credentialRevision revision: UInt64,
-        allowAutomaticEnrollment: Bool = false
-    ) -> Task<Void, Never> {
-        let task = Task {
-            do { try Task.checkCancellation() }
-            catch { return }
-            guard revision == credentialRevision else { return }
-            guard credentialEligible else {
-                await client.clearConfigurationAndStop(credentialRevision: revision)
-                return
-            }
-            let record: DesktopEnrollmentRecord?
-            do {
-                record = try settings.enrollment()
-            } catch {
-                guard revision == credentialRevision, !Task.isCancelled else { return }
-                credentialEligible = false
-                await client.clearConfigurationAndStop(credentialRevision: revision)
-                guard revision == credentialRevision, !Task.isCancelled else { return }
-                notice = settings.storageError
-                return
-            }
-            if let record {
-                await configureAndStart(record, credentialRevision: revision)
-                return
-            }
-
-            guard allowAutomaticEnrollment, !automaticEnrollmentAttempted else {
-                relaySetupRetryAvailable = true
-                notice = "Relay setup needs attention. Retry setup to create a new private session."
-                await client.clearConfigurationAndStop(credentialRevision: revision)
-                return
-            }
-            automaticEnrollmentAttempted = true
-            await performEnrollment(
-                credentialRevision: revision,
-                automaticRecoveryUsed: settings.hasPartialLegacyEnrollment
-            )
-        }
-        credentialTask = task
-        return task
-    }
-
-    private func enrollAndConnect(
-        credentialRevision revision: UInt64,
-        automaticRecoveryUsed: Bool
-    ) -> Task<Void, Never> {
-        let task = Task {
-            await performEnrollment(
-                credentialRevision: revision,
-                automaticRecoveryUsed: automaticRecoveryUsed
-            )
-        }
-        credentialTask = task
-        return task
-    }
-
-    private func performEnrollment(
-        credentialRevision revision: UInt64,
-        automaticRecoveryUsed: Bool
-    ) async {
-        notice = automaticRecoveryUsed
-            ? "Replacing the private relay session…"
-            : "Creating your private relay session…"
-        do {
-            let enrollment = try await enroll()
-            guard revision == credentialRevision, credentialEligible, !Task.isCancelled else { return }
-            let record = try settings.saveEnrollment(
-                enrollment,
-                automaticRecoveryUsed: automaticRecoveryUsed
-            )
-            guard revision == credentialRevision, credentialEligible, !Task.isCancelled else { return }
-            notice = automaticRecoveryUsed
-                ? "Private relay session replaced."
-                : "Private relay session created."
-            relaySetupRetryAvailable = false
-            await configureAndStart(record, credentialRevision: revision)
-        } catch {
-            guard revision == credentialRevision, !Task.isCancelled else { return }
-            if settings.storageError != nil {
-                credentialEligible = false
-            }
-            await client.clearConfigurationAndStop(credentialRevision: revision)
-            guard revision == credentialRevision, !Task.isCancelled else { return }
-            relaySetupRetryAvailable = true
-            notice = settings.storageError ?? error.localizedDescription
-        }
-    }
-
-    private func configureAndStart(
-        _ record: DesktopEnrollmentRecord,
+        _ prepared: PreparedConnection,
         credentialRevision revision: UInt64
-    ) async {
-        guard revision == credentialRevision, credentialEligible else { return }
+    ) -> Task<ConnectionActionOutcome, Never> {
+        let task = Task { [weak self] in
+            guard let self else { return ConnectionActionOutcome.accepted }
+            return await self.configure(prepared, credentialRevision: revision)
+        }
+        return track(task)
+    }
+
+    private func configure(
+        _ prepared: PreparedConnection,
+        credentialRevision revision: UInt64
+    ) async -> ConnectionActionOutcome {
+        guard revision == credentialRevision, !Task.isCancelled else { return .accepted }
         do {
-            let relayURL = try RelayEndpoint.validated(record.relayURL, allowLocalSimulator: false)
-            let pairing = PairingController(transport: client, relayURL: relayURL)
-            self.pairing = pairing
-            phoneManagement = PhoneManagementController(transport: client)
-            pairingAction = PairingActionPresentation(status: nil)
             let configured = try await client.configure(
-                urlString: record.relayURL,
-                token: record.macToken,
+                urlString: prepared.record.relayURLString,
+                token: prepared.record.macToken,
                 allowLocalSimulator: false,
                 credentialRevision: revision
             )
-            guard configured else { return }
-            try Task.checkCancellation()
-            guard revision == credentialRevision, credentialEligible else { return }
+            guard configured, revision == credentialRevision, !Task.isCancelled else { return .accepted }
+            pairing = PairingController(transport: client, relayURL: prepared.relayURL)
+            phoneManagement = PhoneManagementController(transport: client)
+            pairingAction = PairingActionPresentation(status: nil)
             await client.start(credentialRevision: revision)
         } catch {
-            guard revision == credentialRevision, !Task.isCancelled else { return }
-            notice = "Saved relay enrollment is invalid: \(error.localizedDescription)"
-            relaySetupRetryAvailable = true
+            // The pair was validated before this task and, for Apply, is already
+            // authoritative. A later transport failure must not roll it back or
+            // report a false successful connection.
         }
+        return .accepted
     }
 
-    private func recoverAfterAuthenticationRejection() {
-        let record: DesktopEnrollmentRecord
-        do {
-            guard let stored = try settings.enrollment() else {
-                relaySetupRetryAvailable = true
-                notice = "Relay authentication failed. Retry setup to create a new private session."
-                return
-            }
-            record = stored
-        } catch {
-            credentialEligible = false
-            relaySetupRetryAvailable = false
-            notice = settings.storageError
-            return
-        }
+    private func rejectedTask(
+        _ issue: ConnectionActionIssue,
+        detail: String? = nil
+    ) -> Task<ConnectionActionOutcome, Never> {
+        notice = detail ?? issue.localizedDescription
+        return Task { .rejected(issue) }
+    }
 
-        guard !record.automaticRecoveryUsed else {
-            relaySetupRetryAvailable = true
-            notice = "Automatic relay recovery was rejected. Retry setup when you are ready."
-            return
-        }
+    private func storageDetail(for issue: ConnectionActionIssue) -> String? {
+        issue == .keychainUnavailable ? settings.storageError : nil
+    }
 
-        let revision = beginCredentialOperation()
-        relaySetupRetryAvailable = false
-        _ = enrollAndConnect(credentialRevision: revision, automaticRecoveryUsed: true)
+    @discardableResult
+    private func track<Success>(_ task: Task<Success, Never>) -> Task<Success, Never> {
+        cancelCredentialTask = { task.cancel() }
+        return task
     }
 }

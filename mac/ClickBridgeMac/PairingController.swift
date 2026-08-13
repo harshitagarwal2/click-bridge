@@ -10,6 +10,13 @@ enum PairingLinkError: Error, Equatable {
     case invalidReference
 }
 
+enum PairingInvitationDestination {
+    case nativeApp
+    case browser
+}
+
+typealias PairingInvitationURLResolver = @MainActor () -> URL?
+
 enum PairingLink {
     static func make(relayURL: URL, reference: String) throws -> URL {
         guard relayURL.scheme == "wss",
@@ -165,6 +172,14 @@ final class PairingController: ObservableObject {
         }
     }
 
+    var blocksConnectionChanges: Bool {
+        Self.blocksConnectionChanges(in: state)
+    }
+
+    var preventsInteractiveDismissal: Bool {
+        blocksConnectionChanges
+    }
+
     private struct SendOwnership {
         let operation: UInt64
         let requestID: String?
@@ -185,27 +200,32 @@ final class PairingController: ObservableObject {
     }
 
     func refreshStatus(capabilityAvailable: Bool) async {
+        let cancellationUncertain = state == .cancelling || state == .cancelFailed
         guard capabilityAvailable else {
             self.capabilityAvailable = false
-            enrollment = nil
-            retryAction = .none
-            reset(to: .unavailable)
+            if cancellationUncertain {
+                markCancellationUncertain()
+            } else {
+                enrollment = nil
+                retryAction = .none
+                reset(to: .unavailable)
+            }
             return
         }
         self.capabilityAvailable = true
         enrollment = nil
-        retryAction = .none
+        retryAction = cancellationUncertain ? .status : .none
         let identifier = requestID()
         currentRequestID = identifier
         currentClaimID = nil
-        let ownership = beginSend(in: .checkingStatus)
+        let ownership = beginSend(in: cancellationUncertain ? .cancelFailed : .checkingStatus)
         do {
             try await transport.sendPairing(.pairStatusRequest(PairStatusRequest(requestId: identifier)))
             guard owns(ownership) else { return }
         } catch {
             guard owns(ownership) else { return }
             retryAction = .status
-            reset(to: .failed)
+            reset(to: cancellationUncertain ? .cancelFailed : .failed)
         }
     }
 
@@ -224,7 +244,7 @@ final class PairingController: ObservableObject {
     func regenerate() async {
         guard capabilityAvailable else { return }
         switch (state, retryAction) {
-        case (.failed, .status), (.cancelFailed, .status):
+        case (.failed, .status), (.cancelling, .status), (.cancelFailed, .status):
             await refreshStatus(capabilityAvailable: true)
         case (.failed, .create), (.expired, .create):
             await createInvitation()
@@ -283,14 +303,51 @@ final class PairingController: ObservableObject {
         do {
             try await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
             guard owns(ownership) else { return }
-            retryAction = .none
-            reset(to: .ready)
+            retryAction = .status
         } catch {
             guard owns(ownership) else { return }
-            enrollment = nil
-            retryAction = .status
-            reset(to: .cancelFailed)
+            markCancellationUncertain()
         }
+    }
+
+    func invitationURL(
+        for expected: Invitation,
+        destination: PairingInvitationDestination
+    ) -> URL? {
+        guard case .invitation(let current) = state,
+              current == expected,
+              now() < current.expiresAt,
+              let canonical = try? PairingLink.validateInvitation(current.url) else {
+            return nil
+        }
+        switch destination {
+        case .nativeApp:
+            return canonical
+        case .browser:
+            return try? PairingLink.makeWebInvitation(from: canonical)
+        }
+    }
+
+    func invitationURLResolver(
+        for expected: Invitation,
+        destination: PairingInvitationDestination
+    ) -> PairingInvitationURLResolver {
+        { [weak self] in
+            self?.invitationURL(for: expected, destination: destination)
+        }
+    }
+
+    @discardableResult
+    func copyInvitation(
+        _ expected: Invitation,
+        destination: PairingInvitationDestination,
+        to pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        guard let invitation = invitationURL(for: expected, destination: destination) else {
+            return false
+        }
+        pasteboard.clearContents()
+        return pasteboard.setString(invitation.absoluteString, forType: .string)
     }
 
     @discardableResult
@@ -298,52 +355,39 @@ final class PairingController: ObservableObject {
         _ expected: Invitation,
         to pasteboard: NSPasteboard = .general
     ) -> Bool {
-        guard case .invitation(let current) = state,
-              current == expected,
-              now() < current.expiresAt,
-              let webInvitation = try? PairingLink.makeWebInvitation(from: current.url) else {
-            return false
-        }
-        pasteboard.clearContents()
-        return pasteboard.setString(webInvitation.absoluteString, forType: .string)
+        copyInvitation(expected, destination: .browser, to: pasteboard)
     }
 
     func refreshExpiry() async {
         let expiresAt: Date?
-        let canRegenerateInvitation: Bool
         switch state {
         case .invitation(let invitation):
             expiresAt = invitation.expiresAt
-            canRegenerateInvitation = true
         case .approval(let approval):
             expiresAt = approval.expiresAt
-            canRegenerateInvitation = false
         default:
             expiresAt = nil
-            canRegenerateInvitation = false
         }
         guard let expiresAt, now() >= expiresAt else { return }
-        if let requestID = currentRequestID {
-            let ownership = beginSend(in: .cancelling)
-            do {
-                try await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
-                guard owns(ownership) else { return }
-            } catch {
-                guard owns(ownership) else { return }
-                enrollment = nil
-                retryAction = .status
-                reset(to: .cancelFailed)
-                return
-            }
+        guard let requestID = currentRequestID else {
+            markCancellationUncertain()
+            return
         }
-        retryAction = canRegenerateInvitation ? .create : .startAgain
-        reset(to: .expired)
+        let ownership = beginSend(in: .cancelling)
+        do {
+            try await transport.sendPairing(.pairCancel(PairCancel(requestId: requestID)))
+            guard owns(ownership) else { return }
+            retryAction = .status
+        } catch {
+            guard owns(ownership) else { return }
+            markCancellationUncertain()
+        }
     }
 
     func receive(_ message: WireMessage) async {
         switch message {
         case .pairStatus(let status)
-            where state == .checkingStatus && status.requestId == currentRequestID:
+            where canAcceptStatus && status.requestId == currentRequestID:
             enrollment = status
             retryAction = .none
             reset(to: .ready)
@@ -372,8 +416,13 @@ final class PairingController: ObservableObject {
                 && completed.requestId == currentRequestID && completed.claimId == currentClaimID:
             retryAction = .none
             reset(to: .completed(activePhoneCredentialVersion: completed.activePhoneCredentialVersion))
-        case .pairFailed(let failed)
-            where failed.requestId == currentRequestID:
+        case .pairFailed(let failed) where state == .cancelling:
+            guard failed.requestId == currentRequestID else {
+                markCancellationUncertain()
+                return
+            }
+            receivePairingFailure(failed)
+        case .pairFailed(let failed) where failed.requestId == currentRequestID:
             receivePairingFailure(failed)
         default:
             break
@@ -447,20 +496,48 @@ final class PairingController: ObservableObject {
             default:
                 reset(to: .failed)
             }
-        case .cancelling
-            where failed.claimId == nil || failed.claimId == currentClaimID:
-            if failed.reason == .cancelled {
+        case .cancelling:
+            if failed.claimId == currentClaimID, failed.reason == .cancelled {
                 retryAction = .none
                 reset(to: .ready)
             } else {
-                enrollment = nil
-                retryAction = .status
-                reset(to: .cancelFailed)
+                markCancellationUncertain()
             }
         default:
             break
         }
     }
+
+    private var canAcceptStatus: Bool {
+        state == .checkingStatus || state == .cancelFailed
+    }
+
+    private func markCancellationUncertain() {
+        enrollment = nil
+        retryAction = .status
+        reset(to: .cancelFailed)
+    }
+
+    static func blocksConnectionChanges(in state: State) -> Bool {
+        switch state {
+        case .creating, .invitation, .approval, .approving, .denying, .cancelling, .cancelFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+#if DEBUG
+    func forceBlockedConnectionStateForTesting(_ state: State) {
+        precondition(Self.blocksConnectionChanges(in: state))
+        transition(to: state)
+    }
+
+    func clearBlockedConnectionStateForTesting() {
+        precondition(blocksConnectionChanges)
+        reset(to: .ready)
+    }
+#endif
 
     private func reset(to state: State) {
         operationEpoch &+= 1

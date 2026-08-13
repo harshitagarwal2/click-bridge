@@ -22,16 +22,18 @@ menu-bar receiver.
    have the operator bootstrap its relay connection, grant macOS Accessibility
    access, and turn on **Remote control enabled** from the menu-bar item.
 3. **Pair a phone:** on the connected Mac, open **Settings…** and choose
-   **Pair Phone**. If a phone is already enrolled, choose **Replace Phone** and
-   confirm. Scan the QR code with the iPhone app, or use **Copy Invitation** or
-   **Share…** to send the single-use HTTPS link to a phone anywhere on the
-   internet. Confirm that both devices show the same six-digit code, then
-   approve on the Mac. The phone user never enters the relay WSS URL or a token.
-4. **PWA fallback:** without the native app, choose **Copy PWA Invitation** on
-   the Mac and open that HTTPS link on the phone. It uses the same single-use
-   invitation and Mac approval, but opens `/pair/web` so Universal Links cannot
+   **Pair Phone**. If a phone is already enrolled, choose **Replace Phone…** and
+   confirm. Scan the nearby QR code with the iPhone app, or choose **Share Secure
+   Setup Link…** to send the HTTPS link to a phone anywhere on the internet.
+   The invitation is single-use and expires after five minutes. Compare the
+   six-digit code on both devices and approve it on the Mac; do not approve a
+   mismatch. The phone user never enters the relay WSS URL or a token.
+4. **Browser fallback:** without the native app, use **Other Ways to Connect →
+   Copy Browser Invitation Link** on the Mac and open that HTTPS link on the
+   phone. It uses the same single-use, five-minute invitation and Mac owner code
+   comparison and approval, but opens `/pair/web` so Universal Links cannot
    divert it into the native app. Disconnect or background the native app before
-   using the PWA; only one phone client can be live.
+   using the browser; only one phone client can be live.
 5. Wait for **Ready**, place the Mac pointer over the intended target, then use
    one phone trigger. One accepted logical action becomes three left-button
    down/up pairs; it is not one physical click and the phone supplies no cursor
@@ -77,8 +79,9 @@ different from each other.
   force-recreate the active relay container, pass the public HTTPS/WSS smoke,
   then update both clients to match.
 - **Mac receiver:** `MAC_TOKEN` is in Keychain; relay URL and remote toggle are
-  in UserDefaults. **Settings → Save** replaces and reconnects; **Clear** removes
-  the token and disconnects.
+  in UserDefaults. **Settings → Save & Reconnect** applies the advanced
+  connection changes and reconnects; **Remove Saved Credential…** removes the
+  token and disconnects after confirmation.
 - **Native iOS:** `PHONE_TOKEN` is in Keychain; relay URL is in UserDefaults.
   Enter a replacement in Settings; leave it blank to retain the saved token.
 - **PWA:** `PHONE_TOKEN` is in that browser profile's localStorage. Use
