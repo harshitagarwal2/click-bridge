@@ -24,7 +24,8 @@ public static class RelayEndpoint
         {
             throw new RelayEndpointException(RelayEndpointErrorKind.InvalidScheme);
         }
-        if (uri.AbsolutePath != "/ws")
+        if (uri.AbsolutePath != "/ws" && !System.Text.RegularExpressions.Regex.IsMatch(
+                uri.AbsolutePath, "^/ws/[A-Za-z0-9_-]{22}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
         {
             throw new RelayEndpointException(RelayEndpointErrorKind.InvalidPath);
         }

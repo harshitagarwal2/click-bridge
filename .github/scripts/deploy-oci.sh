@@ -93,6 +93,7 @@ validate_secret_schema() {
   local domain_count=0
   local pairing_count=0
   local record_count=0
+  local session_record_count=0
   local team_count=0
   while IFS= read -r line || [[ -n "$line" ]]; do
     ((line_number += 1))
@@ -106,6 +107,7 @@ validate_secret_schema() {
       CLICK_BRIDGE_DOMAIN) ((domain_count += 1)); ((domain_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
       PAIRING_ENABLED) ((pairing_count += 1)); ((pairing_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
       PHONE_AUTH_RECORD) ((record_count += 1)); ((record_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
+      SESSION_RECORD) ((session_record_count += 1)); ((session_record_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
       APPLE_TEAM_ID) ((team_count += 1)); ((team_count == 1)) || die "$SHARED_ENV must define $key at most once" ;;
       *) die "$SHARED_ENV contains an unexpected key" ;;
     esac
@@ -285,6 +287,11 @@ PAIRING_ENABLED="$(sed -n 's/^PAIRING_ENABLED=//p' "$SHARED_ENV")"
 PHONE_AUTH_RECORD_CONTAINER="$(sed -n 's/^PHONE_AUTH_RECORD=//p' "$SHARED_ENV")"
 [[ "$PHONE_AUTH_RECORD_CONTAINER" = /var/lib/click-bridge/auth/phone-auth.json ]] ||
   die 'PHONE_AUTH_RECORD must use the persistent container path'
+SESSION_RECORD_CONTAINER="$(sed -n 's/^SESSION_RECORD=//p' "$SHARED_ENV")"
+if [[ -n "$SESSION_RECORD_CONTAINER" ]]; then
+  [[ "$SESSION_RECORD_CONTAINER" = /var/lib/click-bridge/auth/sessions.json ]] ||
+    die 'SESSION_RECORD must use the persistent container path'
+fi
 if [[ "$PAIRING_ENABLED" = 1 ]]; then
   APPLE_TEAM_ID="$(sed -n 's/^APPLE_TEAM_ID=//p' "$SHARED_ENV")"
   [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || die 'APPLE_TEAM_ID is invalid'

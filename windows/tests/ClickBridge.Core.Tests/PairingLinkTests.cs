@@ -26,6 +26,17 @@ public sealed class PairingLinkTests
     }
 
     [Fact]
+    public void SessionScopedRelayPreservesItsSessionInPairingUrl()
+    {
+        var session = "AbCdEfGhIjKlMnOpQrStUv";
+        var link = PairingLink.Make(new Uri($"wss://example.com/ws/{session}"), Reference);
+
+        Assert.Equal($"https://example.com/pair/{session}#v=1&r={Reference}", link.AbsoluteUri);
+        Assert.Equal($"https://example.com/pair/web/{session}#v=1&r={Reference}",
+            PairingLink.MakeWebInvitation(link).AbsoluteUri);
+    }
+
+    [Fact]
     public void ValidateInvitationRoundTripsWithMake()
     {
         var relay = new Uri("wss://example.com/ws");

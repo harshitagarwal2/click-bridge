@@ -6,6 +6,7 @@ struct StrictWireDecoder: Sendable {
     private static let uuid = try! NSRegularExpression(pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     private static let token = try! NSRegularExpression(pattern: "^[0-9a-f]{64}$")
     private static let confirmationCode = try! NSRegularExpression(pattern: "^[0-9]{3} [0-9]{3}$")
+    private static let deviceId = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]{16,64}$")
 
     func rejectBinary(_ data: Data) throws -> Never { throw WireError.binaryFrame }
 
@@ -161,6 +162,36 @@ struct StrictWireDecoder: Sendable {
         case "pair.claim", "pair.claimed.phone", "pair.credential", "pair.credential.ack",
              "pair.active", "pair.cancel.claim":
             throw WireError.messageNotAllowed
+        case "phone.list.request":
+            try exact(message, ["type", "v", "requestId"])
+            try uuid(message, "requestId")
+        case "phone.list":
+            try exact(message, ["type", "v", "requestId", "registryRevision", "phones"])
+            try uuid(message, "requestId")
+            _ = try safeNonNegativeInteger(message, "registryRevision")
+            guard let phones = message["phones"] as? [[String: Any]] else { throw WireError.invalidValue }
+            for phone in phones {
+                try exact(phone, ["credentialVersion", "deviceId", "label", "status"])
+                try deviceId(phone, "deviceId")
+                let label = try string(phone, "label")
+                guard (1...64).contains(label.utf8.count) else { throw WireError.invalidValue }
+                try oneOf(string(phone, "status"), ["active"])
+                _ = try safeNonNegativeInteger(phone, "credentialVersion")
+            }
+        case "phone.revoke.request":
+            try exact(message, ["type", "v", "requestId", "deviceId"])
+            try uuid(message, "requestId")
+            try deviceId(message, "deviceId")
+        case "phone.revoked":
+            try exact(message, ["type", "v", "requestId", "deviceId", "registryRevision"])
+            try uuid(message, "requestId")
+            try deviceId(message, "deviceId")
+            _ = try safeNonNegativeInteger(message, "registryRevision")
+        case "phone.revoke.failed":
+            try exact(message, ["type", "v", "requestId", "deviceId", "reason"])
+            try uuid(message, "requestId")
+            try deviceId(message, "deviceId")
+            try oneOf(string(message, "reason"), ["unknown_device", "already_revoked", "storage_failed"])
         default:
             throw WireError.unknownType(type)
         }
@@ -225,6 +256,10 @@ struct StrictWireDecoder: Sendable {
         guard Self.matches(Self.uuid, try string(message, key)) else { throw WireError.invalidValue }
     }
 
+    private func deviceId(_ message: [String: Any], _ key: String) throws {
+        guard Self.matches(Self.deviceId, try string(message, key)) else { throw WireError.invalidValue }
+    }
+
     private func permission(_ message: [String: Any]) throws {
         try oneOf(string(message, "permission"), ["ready", "required", "unknown"])
     }
@@ -261,6 +296,7 @@ struct StrictWireDecoder: Sendable {
         case (.mac, .heartbeatAck), (.mac, .actionRequest), (.mac, .timeSyncRequest), (.mac, .diagnosticsRequest): allowed = true
         case (.mac, .pairCreated), (.mac, .pairStatus), (.mac, .pairClaimedMac), (.mac, .pairCompleted),
              (.mac, .pairFailed): allowed = true
+        case (.mac, .phoneList), (.mac, .phoneRevoked), (.mac, .phoneRevokeFailed): allowed = true
         case (.phone, .helloOK(let hello)): allowed = hello.role == "phone"
         case (.phone, .heartbeatAck), (.phone, .state), (.phone, .relayAck), (.phone, .actionResult),
              (.phone, .timeSyncResponse), (.phone, .diagnosticsCounters): allowed = true

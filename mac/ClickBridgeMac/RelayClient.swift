@@ -1,6 +1,6 @@
 import Foundation
 
-enum WebSocketTransportError: Error, Equatable { case notConnected, binaryFrame }
+enum WebSocketTransportError: Error, Equatable { case notConnected, binaryFrame, authenticationRejected }
 
 protocol WebSocketTransport: Sendable {
     func connect(to url: URL) async throws
@@ -21,14 +21,28 @@ actor URLSessionWebSocketTransport: WebSocketTransport {
     }
     func sendText(_ text: String) async throws {
         guard let task else { throw WebSocketTransportError.notConnected }
-        try await task.send(.string(text))
+        do {
+            try await task.send(.string(text))
+        } catch {
+            if task.closeCode.rawValue == 4_005 {
+                throw WebSocketTransportError.authenticationRejected
+            }
+            throw error
+        }
     }
     func receiveText() async throws -> String {
         guard let task else { throw WebSocketTransportError.notConnected }
-        switch try await task.receive() {
-        case .string(let text): return text
-        case .data: throw WebSocketTransportError.binaryFrame
-        @unknown default: throw WebSocketTransportError.binaryFrame
+        do {
+            switch try await task.receive() {
+            case .string(let text): return text
+            case .data: throw WebSocketTransportError.binaryFrame
+            @unknown default: throw WebSocketTransportError.binaryFrame
+            }
+        } catch {
+            if task.closeCode.rawValue == 4_005 {
+                throw WebSocketTransportError.authenticationRejected
+            }
+            throw error
         }
     }
     func close() async {
@@ -47,7 +61,9 @@ enum RelayEndpoint {
         guard scheme == "wss" || (allowLocalSimulator && local && scheme == "ws") else {
             throw RelayEndpointError.invalidScheme
         }
-        guard url.path == "/ws" else { throw RelayEndpointError.invalidPath }
+        guard url.path == "/ws" || url.path.range(of: "^/ws/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil else {
+            throw RelayEndpointError.invalidPath
+        }
         guard url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
             throw RelayEndpointError.forbiddenComponents
         }
@@ -58,9 +74,19 @@ enum RelayEndpoint {
 actor RelayClient {
     enum Status: Equatable, Sendable { case disconnected, connecting, connected }
     struct StatusEvent: Sendable {
+        enum Cause: Equatable, Sendable { case authenticationRejected }
+
         let status: Status
         let credentialRevision: UInt64
         let sequence: UInt64
+        let cause: Cause?
+
+        init(status: Status, credentialRevision: UInt64, sequence: UInt64, cause: Cause? = nil) {
+            self.status = status
+            self.credentialRevision = credentialRevision
+            self.sequence = sequence
+            self.cause = cause
+        }
     }
     private struct CredentialMutation: Sendable {
         let revision: UInt64
@@ -102,6 +128,7 @@ actor RelayClient {
     private var statusHandler: (@Sendable (StatusEvent) -> Void)?
     private var resultHandler: (@Sendable (ActionResult) -> Void)?
     private var pairingHandler: (@Sendable (WireMessage) async -> Void)?
+    private var phoneManagementHandler: (@Sendable (WireMessage) async -> Void)?
 
     init(
         actionSink: any ActionRequestSink,
@@ -122,10 +149,22 @@ actor RelayClient {
     func setStatusHandler(_ handler: (@Sendable (StatusEvent) -> Void)?) { statusHandler = handler }
     func setResultHandler(_ handler: (@Sendable (ActionResult) -> Void)?) { resultHandler = handler }
     func setPairingHandler(_ handler: (@Sendable (WireMessage) async -> Void)?) { pairingHandler = handler }
+    func setPhoneManagementHandler(_ handler: (@Sendable (WireMessage) async -> Void)?) { phoneManagementHandler = handler }
     func currentStatus() -> Status { status }
 
     func sendPairing(_ message: WireMessage) async throws {
-        guard isPairingRequest(message), status == .connected,
+        try await sendMacRequest(message, allowed: isPairingRequest)
+    }
+
+    func sendPhoneManagement(_ message: WireMessage) async throws {
+        try await sendMacRequest(message, allowed: isPhoneManagementRequest)
+    }
+
+    private func sendMacRequest(
+        _ message: WireMessage,
+        allowed: (WireMessage) -> Bool
+    ) async throws {
+        guard allowed(message), status == .connected,
               authenticatedGeneration == generation, let socket = transport else {
             throw WebSocketTransportError.notConnected
         }
@@ -255,14 +294,15 @@ actor RelayClient {
         mutation.revision == highestCredentialOperation && mutation.epoch == credentialMutationEpoch
     }
 
-    private func setStatus(_ value: Status) {
-        guard status != value || statusCredentialRevision != highestCredentialOperation else { return }
+    private func setStatus(_ value: Status, cause: StatusEvent.Cause? = nil) {
+        guard cause != nil || status != value || statusCredentialRevision != highestCredentialOperation else { return }
         status = value
         statusCredentialRevision = highestCredentialOperation
         statusSequence &+= 1
         statusHandler?(StatusEvent(status: value,
                                    credentialRevision: highestCredentialOperation,
-                                   sequence: statusSequence))
+                                   sequence: statusSequence,
+                                   cause: cause))
     }
 
     private func openGeneration() {
@@ -286,7 +326,11 @@ actor RelayClient {
                     try await self.handle(text, generation: expected, socket: socket)
                 }
             } catch {
-                await self.generationFailed(expected, socket: socket)
+                if error as? WebSocketTransportError == .authenticationRejected {
+                    await self.authenticationRejected(expected, socket: socket)
+                } else {
+                    await self.generationFailed(expected, socket: socket)
+                }
             }
         }
     }
@@ -353,6 +397,9 @@ actor RelayClient {
         case .pairStatus, .pairCreated, .pairClaimedMac, .pairCompleted, .pairFailed:
             guard let pairingHandler else { return }
             await pairingHandler(message)
+        case .phoneList, .phoneRevoked, .phoneRevokeFailed:
+            guard let phoneManagementHandler else { return }
+            await phoneManagementHandler(message)
         default:
             throw WireError.messageNotAllowed
         }
@@ -420,6 +467,22 @@ actor RelayClient {
         await generationFailed(expected, socket: socket)
     }
 
+    private func authenticationRejected(_ expected: Int, socket: any WebSocketTransport) async {
+        guard running, expected == generation, authenticatedGeneration != expected else { return }
+
+        running = false
+        generation += 1
+        authenticatedGeneration = nil
+        receiveTask?.cancel(); receiveTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
+        pendingHeartbeat = nil
+        transport = nil
+        await socket.close()
+        setStatus(.disconnected, cause: .authenticationRejected)
+    }
+
     private func generationFailed(_ expected: Int, socket: any WebSocketTransport) async {
         guard running, expected == generation else { return }
 
@@ -465,6 +528,7 @@ actor RelayClient {
 }
 
 extension RelayClient: PairingTransport {}
+extension RelayClient: PhoneManagementTransport {}
 
 private extension WireMessage {
     var isHelloOK: Bool { if case .helloOK = self { return true }; return false }
@@ -473,6 +537,15 @@ private extension WireMessage {
 private func isPairingRequest(_ message: WireMessage) -> Bool {
     switch message {
     case .pairStatusRequest, .pairCreate, .pairCancel, .pairApprove, .pairDeny:
+        true
+    default:
+        false
+    }
+}
+
+private func isPhoneManagementRequest(_ message: WireMessage) -> Bool {
+    switch message {
+    case .phoneListRequest, .phoneRevokeRequest:
         true
     default:
         false

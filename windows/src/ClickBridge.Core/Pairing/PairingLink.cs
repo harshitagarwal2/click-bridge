@@ -17,7 +17,7 @@ public static class PairingLink
 
     public static Uri Make(Uri relayUrl, string reference)
     {
-        if (relayUrl.Scheme != "wss" || relayUrl.AbsolutePath != "/ws" ||
+        if (relayUrl.Scheme != "wss" || (relayUrl.AbsolutePath != "/ws" && !System.Text.RegularExpressions.Regex.IsMatch(relayUrl.AbsolutePath, "^/ws/[A-Za-z0-9_-]{22}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)) ||
             !string.IsNullOrEmpty(relayUrl.UserInfo) || !string.IsNullOrEmpty(relayUrl.Query) ||
             !string.IsNullOrEmpty(relayUrl.Fragment) || string.IsNullOrEmpty(relayUrl.Host))
         {
@@ -33,7 +33,7 @@ public static class PairingLink
             Scheme = "https",
             Host = relayUrl.Host,
             Port = relayUrl.Port,
-            Path = "/pair",
+            Path = relayUrl.AbsolutePath == "/ws" ? "/pair" : "/pair/" + relayUrl.AbsolutePath["/ws/".Length..],
             Fragment = $"v=1&r={reference}",
         };
         var link = builder.Uri;
@@ -47,7 +47,7 @@ public static class PairingLink
     public static Uri ValidateInvitation(Uri invitation)
     {
         var fragment = StripFragmentHash(invitation.Fragment);
-        if (invitation.Scheme != "https" || invitation.AbsolutePath != "/pair" ||
+        if (invitation.Scheme != "https" || (invitation.AbsolutePath != "/pair" && !System.Text.RegularExpressions.Regex.IsMatch(invitation.AbsolutePath, "^/pair/[A-Za-z0-9_-]{22}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)) ||
             !string.IsNullOrEmpty(invitation.UserInfo) || !string.IsNullOrEmpty(invitation.Query) ||
             string.IsNullOrEmpty(invitation.Host) || !fragment.StartsWith("v=1&r=", StringComparison.Ordinal))
         {
@@ -64,7 +64,7 @@ public static class PairingLink
             Scheme = "wss",
             Host = invitation.Host,
             Port = invitation.Port,
-            Path = "/ws",
+            Path = invitation.AbsolutePath == "/pair" ? "/ws" : "/ws/" + invitation.AbsolutePath["/pair/".Length..],
         };
         var canonical = Make(relayBuilder.Uri, reference);
         if (canonical.AbsoluteUri != invitation.AbsoluteUri)
@@ -82,7 +82,7 @@ public static class PairingLink
             Scheme = canonical.Scheme,
             Host = canonical.Host,
             Port = canonical.Port,
-            Path = "/pair/web",
+            Path = canonical.AbsolutePath == "/pair" ? "/pair/web" : "/pair/web/" + canonical.AbsolutePath["/pair/".Length..],
             Fragment = StripFragmentHash(canonical.Fragment),
         };
         var webInvitation = builder.Uri;

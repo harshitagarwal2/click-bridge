@@ -342,17 +342,10 @@ private struct DashboardView: View {
     }
 }
 
-private enum SettingsField: Hashable {
-    case relayURL
-    case token
-}
-
 private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: RelaySettingsDraft
-    @FocusState private var focusedField: SettingsField?
     @AccessibilityFocusState private var errorFocused: Bool
-    @State private var advancedLegacyExpanded = false
 
     let save: (_ relayURL: String, _ token: String) throws -> Void
     let pairAgain: () -> Void
@@ -391,48 +384,6 @@ private struct SettingsView: View {
                     }
                 }
 
-                Section {
-                    DisclosureGroup("Advanced Legacy", isExpanded: $advancedLegacyExpanded) {
-                        TextField("Relay WSS URL",
-                                  text: $draft.relayURL,
-                                  prompt: Text("wss://relay.example/ws"))
-                            .keyboardType(.URL)
-                            .textContentType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .submitLabel(.next)
-                            .focused($focusedField, equals: .relayURL)
-                            .onSubmit { focusedField = .token }
-                            .accessibilityLabel("Relay WSS URL")
-                            .accessibilityIdentifier("settings.relayURL")
-
-                        SecureField(draft.hasStoredToken ? "Replacement phone token" : "Phone token",
-                                    text: $draft.token)
-                            .keyboardType(.asciiCapable)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .submitLabel(.done)
-                            .focused($focusedField, equals: .token)
-                            .onSubmit {
-                                if draft.canSave { saveAndDismiss() }
-                            }
-                            .privacySensitive()
-                            .accessibilityLabel(draft.hasStoredToken
-                                ? "Replacement phone token, optional"
-                                : "Phone token")
-                            .accessibilityIdentifier("settings.token")
-
-                        Text(PhoneDeployment.pairingAvailabilityCopy)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        if draft.hasStoredToken {
-                            Text("Leave the token blank to keep the saved token.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
                 if let errorMessage = draft.errorMessage {
                     Section {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -444,7 +395,7 @@ private struct SettingsView: View {
                 }
 
                 Section("Usage") {
-                    Text("Only one phone can be active. Pairing again replaces this phone’s saved connection only after Mac approval succeeds.")
+                    Text("Each phone keeps its own connection. Add another phone by scanning a new code on that phone.")
                 }
             }
             .formStyle(.grouped)
@@ -455,15 +406,6 @@ private struct SettingsView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                         .accessibilityIdentifier("settings.cancel")
-                }
-                if AdvancedLegacySettingsPresentation.showsSaveButton(
-                    isExpanded: advancedLegacyExpanded
-                ) {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save", action: saveAndDismiss)
-                            .disabled(!draft.canSave)
-                            .accessibilityIdentifier("settings.save")
-                    }
                 }
             }
             .onChange(of: draft.errorMessage, initial: true) { _, errorMessage in

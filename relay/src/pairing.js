@@ -1,8 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 import {
-  CREDENTIAL_REPLACED_CLOSE_CODE,
-  CREDENTIAL_REPLACED_CLOSE_REASON,
   PAIRING_TTL_MS,
   PROTOCOL_VERSION,
 } from './constants.js';
@@ -29,53 +27,6 @@ function invitationVerifier(reference) {
   return bytes.length === 32 && bytes.toString('base64url') === reference ? sha256(bytes) : null;
 }
 
-/**
- * The shape `deauthorizeOlderPhones` hands back. server.js constructs these
- * detached snapshots and pairing.js validates and consumes them. This local
- * typedef documents the consumer boundary; runtime validation below remains
- * authoritative because this repository does not enable JS type checking. A
- * producer rename makes phoneSnapshot() return null and reconciliation fail
- * closed, which is safe and covered by tests.
- *
- * @typedef {object} DeauthorizedPhone
- * @property {object} connection      the frozen connection identity (server.js)
- * @property {number} generation      socket generation at deauthorization
- * @property {number} credentialVersion  the now-superseded credential version
- */
-
-/**
- * Defensively read a {@link DeauthorizedPhone} from an untrusted object.
- * @param {unknown} phone
- * @returns {Readonly<DeauthorizedPhone>|null} null if the shape does not hold
- */
-function phoneSnapshot(phone) {
-  if (phone === null || (typeof phone !== 'object' && typeof phone !== 'function')) return null;
-  let connection;
-  let generation;
-  let credentialVersion;
-  try {
-    connection = Reflect.getOwnPropertyDescriptor(phone, 'connection');
-    generation = Reflect.getOwnPropertyDescriptor(phone, 'generation');
-    credentialVersion = Reflect.getOwnPropertyDescriptor(phone, 'credentialVersion');
-  } catch {
-    return null;
-  }
-  if (!connection || !Object.hasOwn(connection, 'value') || !connection.value
-      || !generation || !Object.hasOwn(generation, 'value')
-      || !credentialVersion || !Object.hasOwn(credentialVersion, 'value')) {
-    return null;
-  }
-  if ((typeof connection.value !== 'object' || connection.value === null)
-      && typeof connection.value !== 'function') {
-    return null;
-  }
-  return Object.freeze({
-    connection: connection.value,
-    generation: generation.value,
-    credentialVersion: credentialVersion.value,
-  });
-}
-
 function failureForMac(session, reason) {
   const message = {
     type: 'pair.failed',
@@ -99,8 +50,6 @@ export class PairingCoordinator {
   #scheduler;
   #authStore;
   #emit;
-  #close;
-  #deauthorizeOlderPhones;
   #log;
   #mac = null;
   #session = null;
@@ -115,8 +64,6 @@ export class PairingCoordinator {
     scheduler,
     authStore,
     emit,
-    close,
-    deauthorizeOlderPhones,
     log = () => {},
   }) {
     this.#enabled = enabled;
@@ -126,11 +73,6 @@ export class PairingCoordinator {
     this.#scheduler = scheduler;
     this.#authStore = authStore;
     this.#emit = emit;
-    this.#close = close;
-    if (enabled && typeof deauthorizeOlderPhones !== 'function') {
-      throw new TypeError('deauthorizeOlderPhones is required when pairing is enabled');
-    }
-    this.#deauthorizeOlderPhones = deauthorizeOlderPhones;
     this.#log = log;
   }
 
@@ -393,20 +335,6 @@ export class PairingCoordinator {
     return session.activationPromise;
   }
 
-  allowsPhoneCredentialVersion(credentialVersion) {
-    if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) {
-      return false;
-    }
-    try {
-      const activeVersion = this.#authStore.snapshot().activePhoneCredentialVersion;
-      return Number.isSafeInteger(activeVersion)
-        && activeVersion >= 0
-        && credentialVersion === activeVersion;
-    } catch {
-      return false;
-    }
-  }
-
   disconnectClaimant(connection, generation) {
     if (!this.#enabled) return 'unsupported';
     if (this.#ended?.reason === 'cancelled'
@@ -459,46 +387,13 @@ export class PairingCoordinator {
     return 'ok';
   }
 
+  // Additive pairing: a new phone credential is committed alongside every
+  // existing one, so there is nothing here to revoke or close. This step
+  // stays in place (rather than being inlined at the call site) purely to
+  // preserve the idempotent-retry contract acknowledge() depends on: a
+  // retried ack after this returns true re-sends pair.completed instead of
+  // re-running activation.
   #reconcileCompletion(completed) {
-    let phones;
-    try {
-      phones = this.#deauthorizeOlderPhones({
-        credentialVersion: completed.credentialVersion,
-        exclude: completed.claimant,
-      });
-    } catch {
-      this.#log('pairing_phone_resolution_failed');
-      return false;
-    }
-    let snapshots = null;
-    try {
-      snapshots = Array.isArray(phones) ? Array.from(phones, phoneSnapshot) : null;
-    } catch {
-      this.#log('pairing_phone_resolution_failed');
-      return false;
-    }
-    if (!snapshots || !snapshots.every((phone) => phone
-        && Number.isSafeInteger(phone.generation) && phone.generation >= 0
-        && Number.isSafeInteger(phone.credentialVersion) && phone.credentialVersion >= 0
-        && phone.credentialVersion < completed.credentialVersion
-        && phone.connection !== completed.claimant.connection)) {
-      this.#log('pairing_phone_resolution_failed');
-      return false;
-    }
-    const closed = new Set();
-    for (const phone of snapshots) {
-      if (closed.has(phone.connection)) continue;
-      closed.add(phone.connection);
-      try {
-        this.#close(
-          phone.connection,
-          CREDENTIAL_REPLACED_CLOSE_CODE,
-          CREDENTIAL_REPLACED_CLOSE_REASON,
-        );
-      } catch {
-        this.#log('pairing_phone_revocation_failed');
-      }
-    }
     completed.reconciled = true;
     return true;
   }

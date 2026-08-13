@@ -22,6 +22,15 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(link.claimantWebSocketURL.absoluteString, "wss://relay.example/ws")
     }
 
+    func testParsesSessionScopedInvitationForItsOwnClaimantSocket() throws {
+        let session = "AbCdEfGhIjKlMnOpQrStUv"
+        let url = try XCTUnwrap(URL(string: "https://relay.example/pair/\(session)#v=1&r=\(reference)"))
+
+        let link = try PhonePairingLink.parse(url, expectedHost: "relay.example")
+
+        XCTAssertEqual(link.claimantWebSocketURL.absoluteString, "wss://relay.example/ws/\(session)")
+    }
+
     func testRejectsNoncanonicalOrSecretBearingPairingLinks() throws {
         let candidates = [
             "http://relay.example/pair#v=1&r=\(reference)",

@@ -5,8 +5,8 @@ namespace ClickBridge.Windows;
 
 /// <summary>
 /// Port of SettingsView + PairingSettingsView from mac/ClickBridgeMac/ClickBridgeApp.swift:
-/// the pairing section (QR / invitation / approval / recovery) plus the
-/// collapsible "Advanced legacy connection" fields (relay URL, MAC_TOKEN).
+/// the pairing section (QR / invitation / approval / recovery). Relay
+/// enrollment and credentials are managed internally by the app.
 /// </summary>
 public sealed class SettingsForm : Form
 {
@@ -19,17 +19,8 @@ public sealed class SettingsForm : Form
     private readonly Button _copyInvitationButton = new() { Text = "Copy Invitation", Visible = false, AutoSize = true };
     private readonly Button _copyPwaInvitationButton = new() { Text = "Copy PWA Invitation", Visible = false, AutoSize = true };
     private readonly Button _cancelInvitationButton = new() { Text = "Cancel", Visible = false, AutoSize = true };
-    private readonly Button _pairButton = new() { Text = "Pair Phone", AutoSize = true };
+    private readonly Button _pairButton = new() { Text = "Add Phone", AutoSize = true };
     private readonly Button _recoveryButton = new() { Visible = false, AutoSize = true };
-
-    private readonly CheckBox _advancedToggle = new() { Text = "Advanced legacy connection", AutoSize = true };
-    private readonly Panel _advancedPanel = new() { Visible = false, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-    private readonly TextBox _relayUrlBox = new() { Width = 360, PlaceholderText = "wss://your-host/ws" };
-    private readonly TextBox _tokenBox = new() { Width = 360, UseSystemPasswordChar = true };
-    private readonly Button _saveTokenButton = new() { Text = "Save", AutoSize = true };
-    private readonly Button _clearTokenButton = new() { Text = "Clear", AutoSize = true };
-    private readonly Label _tokenStatusLabel = new() { AutoSize = true };
-    private readonly Label _storageErrorLabel = new() { AutoSize = true, ForeColor = Color.Firebrick };
 
     public SettingsForm(AppState app)
     {
@@ -62,52 +53,19 @@ public sealed class SettingsForm : Form
         phoneLayout.Controls.Add(_recoveryButton);
         phoneGroup.Controls.Add(phoneLayout);
 
-        _advancedPanel.Controls.Add(BuildAdvancedLayout());
-
         root.Controls.Add(phoneGroup);
-        root.Controls.Add(_advancedToggle);
-        root.Controls.Add(_advancedPanel);
         Controls.Add(root);
 
-        _advancedToggle.CheckedChanged += (_, _) => _advancedPanel.Visible = _advancedToggle.Checked;
         _pairButton.Click += OnPairButtonClicked;
         _copyInvitationButton.Click += (_, _) => CopyCurrentInvitation();
         _copyPwaInvitationButton.Click += (_, _) => CopyPwaInvitation();
         _cancelInvitationButton.Click += (_, _) => _ = _subscribedPairing?.CancelAsync();
         _recoveryButton.Click += (_, _) => _ = _subscribedPairing?.RegenerateAsync();
-        _saveTokenButton.Click += OnSaveTokenClicked;
-        _clearTokenButton.Click += (_, _) => _ = _app.ClearTokenAsync();
-
         RefreshFromState();
-    }
-
-    private TableLayoutPanel BuildAdvancedLayout()
-    {
-        var layout = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-        layout.Controls.Add(new Label { Text = "Relay URL", AutoSize = true }, 0, 0);
-        layout.Controls.Add(_relayUrlBox, 1, 0);
-        layout.Controls.Add(new Label { Text = "Mac token", AutoSize = true }, 0, 1);
-        layout.Controls.Add(_tokenBox, 1, 1);
-        var tokenButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
-        tokenButtons.Controls.Add(_saveTokenButton);
-        tokenButtons.Controls.Add(_clearTokenButton);
-        layout.Controls.Add(tokenButtons, 1, 2);
-        layout.Controls.Add(_tokenStatusLabel, 1, 3);
-        layout.Controls.Add(_storageErrorLabel, 1, 4);
-        _relayUrlBox.Leave += (_, _) => _app.Settings.RelayUrlString = _relayUrlBox.Text;
-        return layout;
     }
 
     public void RefreshFromState()
     {
-        if (!string.Equals(_relayUrlBox.Text, _app.Settings.RelayUrlString, StringComparison.Ordinal) && !_relayUrlBox.Focused)
-        {
-            _relayUrlBox.Text = _app.Settings.RelayUrlString;
-        }
-        _tokenStatusLabel.Text = _app.Settings.HasToken ? "A token is stored." : "No token stored.";
-        _storageErrorLabel.Text = _app.Settings.StorageError ?? "";
-        _storageErrorLabel.Visible = _app.Settings.StorageError is { Length: > 0 };
-
         _pairButton.Text = _app.PairingAction.Title;
         _pairButton.Enabled = _app.Pairing?.State is PairingState.Ready;
         _pairButton.Visible = _app.Pairing is not null;
@@ -146,8 +104,8 @@ public sealed class SettingsForm : Form
             null => "Connect this Mac to the relay before pairing a phone.",
             PairingState.Unavailable => "Pairing is unavailable on this connection.",
             PairingState.CheckingStatus => "Checking phone enrollment…",
-            PairingState.Ready => "Ready to pair a phone.",
-            PairingState.ReplacementConfirmation => "Confirm phone replacement to continue.",
+            PairingState.Ready => "Ready to add a phone.",
+            PairingState.ReplacementConfirmation => "Ready to add a phone.",
             PairingState.Creating => "Creating invitation…",
             PairingState.InvitationState => "Scan with the phone you want to pair.",
             PairingState.ApprovalState => "Review the confirmation code.",
@@ -206,21 +164,7 @@ public sealed class SettingsForm : Form
 
     private async void OnPairButtonClicked(object? sender, EventArgs e)
     {
-        if (_app.PairingAction.RequiresReplacementConfirmation)
-        {
-            var confirmed = MessageBox.Show(
-                this,
-                "The currently enrolled phone will stop working after the new phone is approved.",
-                "Replace the paired phone?",
-                MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Warning) == DialogResult.OK;
-            if (!confirmed) return;
-            _app.ConfirmReplacement();
-        }
-        else
-        {
-            _app.BeginPairing();
-        }
+        _app.BeginPairing();
         await Task.CompletedTask;
     }
 
@@ -236,16 +180,4 @@ public sealed class SettingsForm : Form
         pairing.CopyWebInvitation(invitation.Invitation, new WindowsClipboard());
     }
 
-    private void OnSaveTokenClicked(object? sender, EventArgs e)
-    {
-        var normalized = _tokenBox.Text.Trim().ToLowerInvariant();
-        if (normalized.Length != 64 || !normalized.All(Uri.IsHexDigit))
-        {
-            MessageBox.Show(this, "MAC_TOKEN must be exactly 64 lowercase hexadecimal characters.", "Invalid token",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        _ = _app.SaveTokenAsync(normalized);
-        _tokenBox.Text = "";
-    }
 }

@@ -11,6 +11,8 @@ import { WebSocketServer } from 'ws';
 import {
   AUTH_TIMEOUT_MS,
   AUTHENTICATION_REJECTED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_REASON,
   MAX_MESSAGE_BYTES,
   MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
@@ -23,12 +25,18 @@ import {
 import { createSecurityHeaders } from './csp.js';
 import { encodeMessage, parseClientMessage, ProtocolError } from './protocol.js';
 import { RelayState } from './relay.js';
-import { createPhoneAuthStore } from './auth-store.js';
+import { AuthStoreError, AUTH_STORE_ERROR_CODES, createPhoneAuthStore } from './auth-store.js';
 import { PairingCoordinator } from './pairing.js';
+import { createSessionStore, SessionStoreError } from './session-store.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PUBLIC_DIR = join(HERE, '..', 'public');
 const DEFAULT_PHONE_AUTH_RECORD = '/var/lib/click-bridge/auth/phone-auth.json';
+const DEFAULT_SESSION_RECORD = '/var/lib/click-bridge/auth/sessions.json';
+const DEFAULT_SESSION_MAX_COUNT = 500;
+const DEFAULT_SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const SESSION_PATH = /^\/ws\/([A-Za-z0-9_-]{22})$/;
+const PAIR_PATH = /^\/pair(?:\/web)?\/([A-Za-z0-9_-]{22})$/;
 
 function parsePairingEnabled(value = '0') {
   if (value !== '0' && value !== '1') {
@@ -258,18 +266,23 @@ function constantTimeEquals(left, right) {
 
 function captureCredentialDescriptor(value) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  let descriptor;
+  let versionDescriptor;
+  let deviceDescriptor;
   try {
-    descriptor = Object.getOwnPropertyDescriptor(value, 'credentialVersion');
+    versionDescriptor = Object.getOwnPropertyDescriptor(value, 'credentialVersion');
+    deviceDescriptor = Object.getOwnPropertyDescriptor(value, 'deviceId');
   } catch {
     return null;
   }
-  if (!descriptor || Object.hasOwn(descriptor, 'get') || Object.hasOwn(descriptor, 'set')) {
+  if (!versionDescriptor || Object.hasOwn(versionDescriptor, 'get') || Object.hasOwn(versionDescriptor, 'set')
+      || !deviceDescriptor || Object.hasOwn(deviceDescriptor, 'get') || Object.hasOwn(deviceDescriptor, 'set')) {
     return null;
   }
-  const credentialVersion = descriptor.value;
-  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) return null;
-  return Object.freeze({ credentialVersion });
+  const credentialVersion = versionDescriptor.value;
+  const deviceId = deviceDescriptor.value;
+  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0
+      || typeof deviceId !== 'string' || deviceId.length === 0) return null;
+  return Object.freeze({ deviceId, credentialVersion });
 }
 
 function writeResponse(res, status, headers, body = '') {
@@ -286,6 +299,7 @@ export function createHttpHandler({
   // Returns a closed status value; the HTTP boundary owns all response text so
   // auth-store errors (which can include record paths) are never reflected.
   probePairingReadiness = () => 'unavailable',
+  createSession,
 }) {
   const securityHeaders = createSecurityHeaders(clickBridgeDomain);
   return async function handleHttp(req, res) {
@@ -297,8 +311,33 @@ export function createHttpHandler({
       return;
     }
 
+    if (pathname === '/v1/sessions') {
+      if (req.method !== 'POST') {
+        writeResponse(res, 405, { ...securityHeaders, Allow: 'POST' });
+        return;
+      }
+      if (!pairingEnabled || typeof createSession !== 'function') {
+        writeResponse(res, 404, securityHeaders);
+        return;
+      }
+      try {
+        const created = await createSession();
+        const body = Buffer.from(JSON.stringify(created));
+        writeResponse(res, 201, {
+          ...securityHeaders,
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Length': body.byteLength,
+          'Cache-Control': 'no-store',
+          'Referrer-Policy': 'no-referrer',
+        }, body);
+      } catch (error) {
+        const status = error instanceof SessionStoreError && error.code === 'capacity' ? 429 : 503;
+        writeResponse(res, status, { ...securityHeaders, 'Cache-Control': 'no-store' });
+      }
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      writeResponse(res, 405, { ...securityHeaders, Allow: 'GET, HEAD' });
+      writeResponse(res, 405, { ...securityHeaders, Allow: 'GET, HEAD, POST' });
       return;
     }
     if (pathname === '/healthz') {
@@ -350,7 +389,7 @@ export function createHttpHandler({
       }, req.method === 'HEAD' ? '' : payload);
       return;
     }
-    if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web')) {
+    if (pairingEnabled && (pathname === '/pair' || pathname === '/pair/web' || PAIR_PATH.test(pathname))) {
       try {
         const body = renderIndex(await readFile(join(publicDir, 'index.html')), true);
         writeResponse(res, 200, {
@@ -370,7 +409,7 @@ export function createHttpHandler({
         applinks: {
           details: [{
             appIDs: [`${appleTeamId}.com.clickbridge.phone`],
-            components: [{ '/': '/pair/web', exclude: true }, { '/': '/pair' }],
+            components: [{ '/': '/pair/web*', exclude: true }, { '/': '/pair*' }],
           }],
         },
       }));
@@ -432,6 +471,7 @@ export function attachWebSocketServer({
   maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
   performWebSocketUpgrade,
+  resolveRuntime,
 }) {
   validateAdmissionLimits(
     maxTotalWebSocketConnections,
@@ -443,7 +483,11 @@ export function attachWebSocketServer({
   }
   const credentialStore = authStore ?? Object.freeze({
     authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
-      ? Object.freeze({ credentialVersion: 0 }) : null,
+      ? Object.freeze({ deviceId: 'legacy-phone', credentialVersion: 0 }) : null,
+    isDeviceActive: (deviceId, credentialVersion) => deviceId === 'legacy-phone'
+      && credentialVersion === 0,
+    hasCredentialVersion: (credentialVersion) => credentialVersion === 0,
+    authenticateMacCredential: (credential) => constantTimeEquals(credential, macToken),
   });
   const pairingCoordinator = pairing ?? Object.freeze({
     acknowledge: async () => 'unsupported',
@@ -476,7 +520,13 @@ export function attachWebSocketServer({
     } catch {
       pathname = '';
     }
-    if (pathname !== '/ws') {
+    const runtime = resolveRuntime
+      ? resolveRuntime(pathname)
+      : (pathname === '/ws' ? Object.freeze({
+        state, authStore: credentialStore, pairing: pairingCoordinator,
+        authenticateMac: (token) => constantTimeEquals(token, macToken), authorizedPhones,
+      }) : null);
+    if (!runtime) {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
@@ -571,6 +621,7 @@ export function attachWebSocketServer({
       phase = 'committed';
       try {
         ws.__clickBridgeAdmission = admission;
+        ws.__clickBridgeRuntime = runtime;
         wss.emit('connection', ws, req);
       } catch {
         failAttempt('connection_callback_failure', ws, true);
@@ -610,8 +661,91 @@ export function attachWebSocketServer({
   };
   httpServer.on('upgrade', onUpgrade);
 
+  async function handlePhoneManagement(ws, authStoreForRuntime, stateForRuntime, message) {
+    const reply = (payload) => {
+      if (ws.readyState === ws.OPEN) ws.send(encode(payload));
+    };
+
+    if (message.type === 'phone.list.request') {
+      let snapshot;
+      try {
+        snapshot = authStoreForRuntime.snapshot();
+      } catch {
+        reply({
+          type: 'phone.list', v: PROTOCOL_VERSION, requestId: message.requestId,
+          registryRevision: 0, phones: [],
+        });
+        return;
+      }
+      reply({
+        type: 'phone.list',
+        v: PROTOCOL_VERSION,
+        requestId: message.requestId,
+        registryRevision: snapshot.registryRevision,
+        phones: snapshot.phones.map((phone) => ({
+          deviceId: phone.deviceId,
+          label: phone.label,
+          status: phone.status,
+          credentialVersion: phone.credentialVersion,
+        })),
+      });
+      return;
+    }
+
+    if (typeof authStoreForRuntime.revokePhone !== 'function') {
+      reply({
+        type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+        requestId: message.requestId, deviceId: message.deviceId, reason: 'storage_failed',
+      });
+      return;
+    }
+    const target = stateForRuntime.phonesByDevice.get(message.deviceId) ?? null;
+    let snapshot;
+    try {
+      snapshot = await authStoreForRuntime.revokePhone({ deviceId: message.deviceId });
+    } catch (error) {
+      let reason = 'storage_failed';
+      if (error instanceof AuthStoreError) {
+        if (error.code === AUTH_STORE_ERROR_CODES.UNKNOWN_DEVICE) reason = 'unknown_device';
+        else if (error.code === AUTH_STORE_ERROR_CODES.ALREADY_REVOKED) reason = 'already_revoked';
+      } else if (error?.code === 'unknown_device' || error?.code === 'already_revoked') {
+        reason = error.code;
+      }
+      reply({
+        type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+        requestId: message.requestId, deviceId: message.deviceId, reason,
+      });
+      return;
+    }
+    if (target) {
+      stateForRuntime.detachDevice(message.deviceId, target);
+      const targetWs = connections.get(target);
+      if (targetWs) {
+        closeWithDeadline(
+          targetWs, CREDENTIAL_REPLACED_CLOSE_CODE, CREDENTIAL_REPLACED_CLOSE_REASON,
+          terminalCloseDeadlineMs, scheduleTerminalClose,
+        );
+      }
+    }
+    reply({
+      type: 'phone.revoked', v: PROTOCOL_VERSION,
+      requestId: message.requestId, deviceId: message.deviceId,
+      registryRevision: snapshot.registryRevision,
+    });
+  }
+
   wss.on('connection', (ws) => {
     const admission = ws.__clickBridgeAdmission;
+    const runtime = ws.__clickBridgeRuntime;
+    if (!runtime) {
+      destroyRejectedWebSocket(ws);
+      return;
+    }
+    const activeState = runtime.state;
+    const activeAuthStore = runtime.authStore;
+    const activePairing = runtime.pairing;
+    const activeAuthenticateMac = runtime.authenticateMac;
+    const activeAuthorizedPhones = runtime.authorizedPhones;
     let role = null;
     let connection = null;
     let generation = 0;
@@ -664,7 +798,7 @@ export function attachWebSocketServer({
           const claimantGeneration = generation;
           const claimantClaimId = message.claimId;
           return Promise.resolve(
-            pairingCoordinator.acknowledge(connection, generation, message),
+            activePairing.acknowledge(connection, generation, message),
           ).then(() => {
             if (ownedOperation !== operationGeneration || ws.__clickBridgeTerminal) return;
             if (phase !== 'claimant' || connection !== claimantConnection
@@ -672,7 +806,7 @@ export function attachWebSocketServer({
                 || connection.claimId !== claimantClaimId) return;
           });
         } else {
-          pairingCoordinator.cancelByClaimant(connection, generation, message);
+          activePairing.cancelByClaimant(connection, generation, message);
         }
         return;
       }
@@ -698,14 +832,14 @@ export function attachWebSocketServer({
             phase = 'claimant';
             clearTimeout(authTimer);
             admission.releaseUnauthenticated();
-            pairingCoordinator.claim(connection, generation, message);
+            activePairing.claim(connection, generation, message);
             return;
         }
 
         let descriptor = null;
         if (message.role === 'phone') {
           try {
-            const candidate = credentialStore.authenticateCredential(message.token);
+            const candidate = activeAuthStore.authenticateCredential(message.token);
             if (candidate !== null) descriptor = captureCredentialDescriptor(candidate);
             if (candidate !== null && descriptor === null) {
               throw new TypeError('invalid credential descriptor');
@@ -717,8 +851,8 @@ export function attachWebSocketServer({
             );
             return;
           }
-        } else if (constantTimeEquals(message.token, macToken)) {
-          descriptor = Object.freeze({ credentialVersion: null });
+        } else if (activeAuthenticateMac(message.token)) {
+          descriptor = Object.freeze({ deviceId: null, credentialVersion: null });
         }
         if (!descriptor) {
           log.info?.(JSON.stringify({
@@ -744,14 +878,15 @@ export function attachWebSocketServer({
           id: ++nextConnectionId,
           role,
           generation,
+          deviceId: descriptor.deviceId,
           credentialVersion: descriptor.credentialVersion,
         });
         connections.set(connection, ws);
-        if (role === 'phone') authorizedPhones.add(connection);
-        state.replaceRole(role, connection);
-        if (role === 'mac') pairingCoordinator.macConnected(connection, generation);
+        if (role === 'phone') activeAuthorizedPhones.add(connection);
+        activeState.replaceRole(role, connection);
+        if (role === 'mac') activePairing.macConnected(connection, generation);
         ws.send(encode({ type: 'hello.ok', v: PROTOCOL_VERSION, role }));
-        state.publishState();
+        activeState.publishState();
         log.info?.(JSON.stringify({ event: 'authenticated', role }));
         return;
       }
@@ -775,7 +910,7 @@ export function attachWebSocketServer({
         return;
       }
       if (role === 'phone') {
-        state.handlePhoneMessage(connection, message);
+        activeState.handlePhoneMessage(connection, message);
       } else if (message.type.startsWith('pair.')) {
         if (!pairingEnabled) {
           const failure = {
@@ -787,18 +922,29 @@ export function attachWebSocketServer({
           return;
         }
         if (message.type === 'pair.status.request') {
-          pairingCoordinator.requestStatus(connection, generation, message);
+          activePairing.requestStatus(connection, generation, message);
         } else if (message.type === 'pair.create') {
-          pairingCoordinator.create(connection, generation, message);
+          activePairing.create(connection, generation, message);
         } else if (message.type === 'pair.cancel') {
-          pairingCoordinator.cancelByMac(connection, generation, message);
+          activePairing.cancelByMac(connection, generation, message);
         } else if (message.type === 'pair.approve') {
-          pairingCoordinator.approve(connection, generation, message);
+          activePairing.approve(connection, generation, message);
         } else {
-          pairingCoordinator.deny(connection, generation, message);
+          activePairing.deny(connection, generation, message);
         }
+      } else if (message.type.startsWith('phone.')) {
+        if (!pairingEnabled) {
+          ws.send(encode(message.type === 'phone.list.request'
+            ? { type: 'phone.list', v: PROTOCOL_VERSION, requestId: message.requestId, registryRevision: 0, phones: [] }
+            : {
+              type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+              requestId: message.requestId, deviceId: message.deviceId, reason: 'storage_failed',
+            }));
+          return;
+        }
+        return handlePhoneManagement(ws, activeAuthStore, activeState, message);
       } else {
-        state.handleMacMessage(connection, message);
+        activeState.handleMacMessage(connection, message);
       }
     };
 
@@ -870,11 +1016,11 @@ export function attachWebSocketServer({
       ws.__clickBridgePongTimer = null;
       if (connection) {
         connections.delete(connection);
-        authorizedPhones.delete(connection);
-        if (phase === 'claimant') pairingCoordinator.disconnectClaimant(connection, generation);
+        activeAuthorizedPhones.delete(connection);
+        if (phase === 'claimant') activePairing.disconnectClaimant(connection, generation);
         else {
-          state.detachIfCurrent(role, connection);
-          if (role === 'mac') pairingCoordinator.macDisconnected(connection, generation);
+          activeState.detachIfCurrent(role, connection);
+          if (role === 'mac') activePairing.macDisconnected(connection, generation);
         }
         log.info?.(JSON.stringify({ event: 'disconnected', role }));
       }
@@ -884,7 +1030,7 @@ export function attachWebSocketServer({
       pendingFrames.length = 0;
       ws.__clickBridgeTerminal = true;
       admission.releaseAll();
-      if (connection) authorizedPhones.delete(connection);
+      if (connection) activeAuthorizedPhones.delete(connection);
       log.info?.(JSON.stringify({
         event: 'socket_error', role: role ?? 'unauthenticated',
         code: typeof error?.code === 'string' ? error.code : 'socket_error',
@@ -942,6 +1088,10 @@ export function createServer({
   appleTeamId,
   phoneAuthRecord,
   authStore,
+  sessionRecord,
+  sessionStore,
+  sessionMaxCount = DEFAULT_SESSION_MAX_COUNT,
+  sessionTtlMs = DEFAULT_SESSION_TTL_MS,
   pairingOptions = {},
   maxTotalWebSocketConnections = MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   maxUnauthenticatedWebSocketConnections = MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
@@ -976,6 +1126,7 @@ export function createServer({
     ? createPhoneAuthStore({
       recordPath: phoneAuthRecord,
       initialPhoneToken: phoneToken,
+      initialMacToken: macToken,
       fs,
       crypto,
       log: () => redactedLog?.('phone_auth_store_failure'),
@@ -984,12 +1135,24 @@ export function createServer({
       async initialize() {},
       snapshot: () => Object.freeze({ activePhoneCredentialVersion: 0 }),
       authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
-        ? Object.freeze({ credentialVersion: 0 }) : null,
+        ? Object.freeze({ deviceId: 'legacy-phone', credentialVersion: 0 }) : null,
+      isDeviceActive: (deviceId, credentialVersion) => deviceId === 'legacy-phone'
+        && credentialVersion === 0,
+      hasCredentialVersion: (credentialVersion) => credentialVersion === 0,
+      authenticateMacCredential: (credential) => constantTimeEquals(credential, macToken),
       async activate() { throw new Error('durable auth store unavailable'); },
     }));
 
+  const persistentSessions = pairingIsEnabled && (sessionStore || sessionRecord)
+    ? (sessionStore ?? createSessionStore({
+    recordPath: sessionRecord,
+    fs,
+    crypto,
+    maxSessions: sessionMaxCount,
+    ttlMs: sessionTtlMs,
+    log: () => redactedLog?.('session_store_failure'),
+  })) : null;
   const connections = new Map();
-  const authorizedPhones = new Set();
   const emit = (connection, event) => {
     const ws = connections.get(connection);
     if (!ws) return false;
@@ -1006,53 +1169,56 @@ export function createServer({
   redactedLog = (event, detail = {}) => {
     log.info?.(JSON.stringify({ event, ...detail }));
   };
-  let state;
-  /**
-   * Revoke every phone still holding a superseded credential version.
-   * The returned objects keep the `{connection, generation,
-   * credentialVersion}` consumer contract validated by pairing.js's
-   * phoneSnapshot().
-   * @returns {Array<{connection: object, generation: number, credentialVersion: number}>}
-   */
-  const deauthorizeOlderPhones = ({ credentialVersion, exclude }) => {
-    const older = [];
-    for (const connection of [...authorizedPhones]) {
-      if (connection.role !== 'phone'
-          || connection === exclude.connection
-          || connection.credentialVersion >= credentialVersion) continue;
-      authorizedPhones.delete(connection);
-      state.detachIfCurrent('phone', connection);
-      older.push({
-        connection,
-        generation: connection.generation,
-        credentialVersion: connection.credentialVersion,
-      });
-    }
-    return older;
+  const runtimes = new Map();
+  const allStates = new Set();
+  const createRuntime = ({ id = 'legacy', authenticateMac, runtimeAuthStore }) => {
+    const authorizedPhones = new Set();
+    let state;
+    const pairing = new PairingCoordinator({
+      enabled: pairingIsEnabled,
+      now: pairingOptions.now ?? (() => Date.now()),
+      randomBytes: pairingOptions.randomBytes ?? randomBytes,
+      randomInt: pairingOptions.randomInt ?? randomInt,
+      scheduler: pairingOptions.scheduler ?? {
+        setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (timer) => clearTimeout(timer),
+      },
+      authStore: runtimeAuthStore,
+      emit: (connection, message) => emit(connection, { kind: 'message', message }),
+      log: redactedLog,
+    });
+    state = stateFactory({
+      ...stateOptions,
+      emit,
+      log: redactedLog,
+      authorizePhone: (connection) => authorizedPhones.has(connection)
+        && (typeof runtimeAuthStore.isDeviceActive !== 'function'
+          || runtimeAuthStore.isDeviceActive(connection.deviceId, connection.credentialVersion) === true),
+    });
+    allStates.add(state);
+    return Object.freeze({ id, authenticateMac, authStore: runtimeAuthStore,
+      authorizedPhones, pairing, state });
   };
-  const pairing = new PairingCoordinator({
-    enabled: pairingIsEnabled,
-    now: pairingOptions.now ?? (() => Date.now()),
-    randomBytes: pairingOptions.randomBytes ?? randomBytes,
-    randomInt: pairingOptions.randomInt ?? randomInt,
-    scheduler: pairingOptions.scheduler ?? {
-      setTimeout: (fn, ms) => setTimeout(fn, ms),
-      clearTimeout: (timer) => clearTimeout(timer),
-    },
-    authStore: credentialStore,
-    emit: (connection, message) => emit(connection, { kind: 'message', message }),
-    close: (connection, code, reason) => emit(connection, { kind: 'close', code, reason }),
-    deauthorizeOlderPhones,
-    log: redactedLog,
+  const legacyRuntime = createRuntime({
+    authenticateMac: (token) => typeof credentialStore.authenticateMacCredential === 'function'
+      ? credentialStore.authenticateMacCredential(token) : constantTimeEquals(token, macToken),
+    runtimeAuthStore: credentialStore,
   });
-  state = stateFactory({
-    ...stateOptions,
-    emit,
-    log: redactedLog,
-    authorizePhone: (connection) => authorizedPhones.has(connection)
-      && (!pairingIsEnabled
-        || pairing.allowsPhoneCredentialVersion(connection.credentialVersion) === true),
-  });
+  const resolveRuntime = (pathname) => {
+    if (pathname === '/ws') return legacyRuntime;
+    const matched = SESSION_PATH.exec(pathname);
+    if (!matched || !persistentSessions?.has(matched[1])) return null;
+    const id = matched[1];
+    let runtime = runtimes.get(id);
+    if (!runtime) {
+      runtime = createRuntime({
+        id,
+        authenticateMac: (token) => persistentSessions.authenticateMac(id, token),
+        runtimeAuthStore: persistentSessions.phoneAuthStore(id),
+      });
+      runtimes.set(id, runtime);
+    }
+    return runtime;
+  };
   const httpServer = http.createServer(createHttpHandler({
     publicDir,
     clickBridgeDomain,
@@ -1066,17 +1232,22 @@ export function createServer({
         return error?.code === 'persistence_failed' ? 'persistence_failed' : 'unavailable';
       }
     },
+    createSession: persistentSessions ? async () => {
+      const created = await persistentSessions.createSession();
+      return Object.freeze({ relayURL: `wss://${clickBridgeDomain}/ws/${created.id}`,
+        token: created.macToken });
+    } : undefined,
   }));
   httpServer.on('connection', (socket) => socket.setNoDelay?.(true));
   const attachment = attachWebSocketServer({
     httpServer,
-    state,
+    state: legacyRuntime.state,
     connections,
-    authorizedPhones,
+    authorizedPhones: legacyRuntime.authorizedPhones,
     phoneToken,
     macToken,
     authStore: credentialStore,
-    pairing,
+    pairing: legacyRuntime.pairing,
     pairingEnabled: pairingIsEnabled,
     clickBridgeDomain,
     log,
@@ -1089,15 +1260,17 @@ export function createServer({
     maxTotalWebSocketConnections,
     maxUnauthenticatedWebSocketConnections,
     performWebSocketUpgrade,
+    resolveRuntime,
   });
   let serverClosing = false;
 
   return {
     httpServer,
     wss: attachment.wss,
-    state,
+    state: legacyRuntime.state,
     listen: async (port, host) => {
       await credentialStore.initialize();
+      await persistentSessions?.initialize();
       if (serverClosing) throw new Error('server is closing');
       return new Promise((resolve, reject) => {
         const onError = (error) => reject(error);
@@ -1110,7 +1283,7 @@ export function createServer({
     },
     async close() {
       serverClosing = true;
-      state.dispose?.();
+      for (const state of allStates) state.dispose?.();
       await attachment.close();
       if (httpServer.listening) {
         await new Promise((resolve) => httpServer.close(resolve));
@@ -1132,6 +1305,9 @@ if (isMain) {
       pairingEnabled: process.env.PAIRING_ENABLED ?? '0',
       appleTeamId: process.env.APPLE_TEAM_ID,
       phoneAuthRecord: process.env.PHONE_AUTH_RECORD ?? DEFAULT_PHONE_AUTH_RECORD,
+      sessionRecord: process.env.SESSION_RECORD ?? DEFAULT_SESSION_RECORD,
+      sessionMaxCount: Number(process.env.SESSION_MAX_COUNT ?? DEFAULT_SESSION_MAX_COUNT),
+      sessionTtlMs: Number(process.env.SESSION_TTL_MS ?? DEFAULT_SESSION_TTL_MS),
     });
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be an integer from 1 through 65535');

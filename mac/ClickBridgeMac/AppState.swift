@@ -73,6 +73,7 @@ final class AppState: ObservableObject {
     @Published private(set) var lastResult = "—"
     @Published var notice: String?
     @Published private(set) var pairing: PairingController?
+    @Published private(set) var phoneManagement: PhoneManagementController?
     @Published private(set) var pairingAction = PairingActionPresentation(status: nil)
 
     let settings: SettingsStore
@@ -117,6 +118,9 @@ final class AppState: ObservableObject {
             }
             await client.setPairingHandler { [weak self] message in
                 await self?.receivePairing(message)
+            }
+            await client.setPhoneManagementHandler { [weak self] message in
+                await self?.phoneManagement?.receive(message)
             }
             await processor.setRemoteEnabled(settings.remoteEnabled)
             guard let self, initialCredentialRevision == self.credentialRevision,
@@ -392,6 +396,7 @@ final class AppState: ObservableObject {
             )
             guard configured, revision == credentialRevision, !Task.isCancelled else { return .accepted }
             pairing = PairingController(transport: client, relayURL: prepared.relayURL)
+            phoneManagement = PhoneManagementController(transport: client)
             pairingAction = PairingActionPresentation(status: nil)
             await client.start(credentialRevision: revision)
         } catch {

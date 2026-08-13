@@ -109,4 +109,10 @@ public sealed class SettingsStore
         }
         Changed?.Invoke();
     }
+
+    public void SaveEnrollment(string relayUrl, string token)
+    {
+        SaveMacToken(token);
+        RelayUrlString = relayUrl;
+    }
 }

@@ -21,7 +21,8 @@ struct PhonePairingLink: Equatable, Sendable {
               components.user == nil,
               components.password == nil,
               components.port == nil,
-              ["/pair", "/pair/web"].contains(components.path),
+              components.path == "/pair" || components.path == "/pair/web"
+                || components.path.range(of: "^/pair(?:/web)?/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil,
               components.query == nil,
               let fragment = components.fragment,
               fragment.hasPrefix("v=1&r="),
@@ -29,11 +30,11 @@ struct PhonePairingLink: Equatable, Sendable {
             throw PhonePairingLinkError.invalid
         }
         let reference = String(fragment.dropFirst(6))
+        let socketPath = components.path == "/pair" || components.path == "/pair/web" ? "/ws"
+            : "/ws/" + String(components.path.split(separator: "/").last!)
         guard canonicalReference(reference),
               raw == "https://\(expectedHost)\(components.path)#v=1&r=\(reference)",
-              let socketURL = canonicalClaimantWebSocketURL(
-                URL(string: "wss://\(expectedHost)/ws")
-              ) else {
+              let socketURL = canonicalClaimantWebSocketURL(URL(string: "wss://\(expectedHost)\(socketPath)")) else {
             throw PhonePairingLinkError.invalid
         }
         return Self(reference: reference, claimantWebSocketURL: socketURL)
@@ -48,10 +49,10 @@ struct PhonePairingLink: Equatable, Sendable {
               components.user == nil,
               components.password == nil,
               components.port == nil,
-              components.path == "/ws",
+              components.path == "/ws" || components.path.range(of: "^/ws/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil,
               components.query == nil,
               components.fragment == nil,
-              url.absoluteString == "wss://\(host)/ws" else {
+              url.absoluteString == "wss://\(host)\(components.path)" else {
             return nil
         }
         return url

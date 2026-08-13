@@ -1,8 +1,23 @@
 import { dirname } from 'node:path';
 
-const SCHEMA_VERSION = 1;
+import {
+  addPhone,
+  authenticatePhone,
+  bridgeSnapshot,
+  createBridgeRecord,
+  encodeBridgeRecord,
+  hasActiveCredentialVersion,
+  isPhoneActive,
+  latestCredentialVersion,
+  renamePhone,
+  revokePhone,
+  validateBridgeRecord,
+} from './bridge-registry.js';
+
+const SCHEMA_VERSION = 2;
+const LEGACY_SCHEMA_VERSION = 1;
 const HEX_64 = /^[0-9a-f]{64}$/;
-const RECORD_FIELDS = Object.freeze([
+const LEGACY_RECORD_FIELDS = Object.freeze([
   'activePhoneCredentialVersion',
   'activePhoneVerifier',
   'schemaVersion',
@@ -16,6 +31,9 @@ export const AUTH_STORE_ERROR_CODES = Object.freeze({
   STORAGE_FAILED: 'storage_failed',
   NOT_INITIALIZED: 'not_initialized',
   RECORD_INVALID: 'record_invalid',
+  CAPACITY: 'capacity',
+  UNKNOWN_DEVICE: 'unknown_device',
+  ALREADY_REVOKED: 'already_revoked',
 });
 
 export class AuthStoreError extends Error {
@@ -30,14 +48,6 @@ function authError(code, message) {
   return new AuthStoreError(code, message);
 }
 
-function immutableRecord(credentialVersion, verifier) {
-  return Object.freeze({
-    schemaVersion: SCHEMA_VERSION,
-    activePhoneCredentialVersion: credentialVersion,
-    activePhoneVerifier: verifier,
-  });
-}
-
 function validateVerifier(value) {
   if (typeof value !== 'string' || !HEX_64.test(value)) {
     throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone verifier');
@@ -45,13 +55,9 @@ function validateVerifier(value) {
   return value;
 }
 
-function validateVersion(value) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone credential version');
-  }
-  return value;
-}
-
+// Reads either an already-v2 bridge record, or a legacy (schemaVersion 1)
+// single-credential record for one-time migration. Callers distinguish the
+// two by checking `migratedFrom`.
 function parseRecord(text) {
   let value;
   try {
@@ -62,24 +68,32 @@ function parseRecord(text) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
-  if (Object.keys(value).sort().join('\0') !== RECORD_FIELDS.join('\0')) {
+  if (value.schemaVersion === SCHEMA_VERSION) {
+    try {
+      return { bridge: validateBridgeRecord(value), migratedFrom: null };
+    } catch {
+      throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
+    }
+  }
+  if (Object.keys(value).sort().join('\0') !== LEGACY_RECORD_FIELDS.join('\0')
+      || value.schemaVersion !== LEGACY_SCHEMA_VERSION
+      || !Number.isSafeInteger(value.activePhoneCredentialVersion)
+      || value.activePhoneCredentialVersion < 0
+      || typeof value.activePhoneVerifier !== 'string'
+      || !HEX_64.test(value.activePhoneVerifier)) {
     throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
   }
-  if (value.schemaVersion !== SCHEMA_VERSION) {
-    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
-  }
-  try {
-    return immutableRecord(
-      validateVersion(value.activePhoneCredentialVersion),
-      validateVerifier(value.activePhoneVerifier),
-    );
-  } catch {
-    throw authError(AUTH_STORE_ERROR_CODES.RECORD_INVALID, 'invalid auth record');
-  }
+  return {
+    bridge: null,
+    migratedFrom: {
+      credentialVersion: value.activePhoneCredentialVersion,
+      verifier: value.activePhoneVerifier,
+    },
+  };
 }
 
 function encodeRecord(record) {
-  return `${JSON.stringify(record)}\n`;
+  return encodeBridgeRecord(record);
 }
 
 function verifierForCredential(credential, crypto) {
@@ -100,7 +114,33 @@ async function verifyRecordMetadata(recordPath, fs) {
   }
 }
 
-export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto, log = () => {} }) {
+function mutationErrorCode(error) {
+  if (!(error instanceof RangeError)) return AUTH_STORE_ERROR_CODES.INVALID_INPUT;
+  if (error.message === 'active phone capacity reached') return AUTH_STORE_ERROR_CODES.CAPACITY;
+  if (error.message === 'phone unavailable: unknown_device') return AUTH_STORE_ERROR_CODES.UNKNOWN_DEVICE;
+  if (error.message === 'phone unavailable: already_revoked') return AUTH_STORE_ERROR_CODES.ALREADY_REVOKED;
+  return AUTH_STORE_ERROR_CODES.INVALID_INPUT;
+}
+
+function mutationErrorMessage(error) {
+  const code = mutationErrorCode(error);
+  if (code === AUTH_STORE_ERROR_CODES.CAPACITY) return 'active phone capacity reached';
+  if (code === AUTH_STORE_ERROR_CODES.UNKNOWN_DEVICE) return 'unknown phone device';
+  if (code === AUTH_STORE_ERROR_CODES.ALREADY_REVOKED) return 'phone already revoked';
+  return 'invalid phone registry mutation';
+}
+
+// This store backs both legacy /ws (a single bridge, its device list capped
+// at eight like every other bridge) and, via the same shape, is reused
+// wherever a single durable bridge record is needed outside the multi-bridge
+// session store. `initialMacToken` seeds the bridge's mac verifier; it has no
+// bearing on legacy /ws authentication itself, which still compares MAC_TOKEN
+// directly (see server.js) — the field exists only because every bridge
+// record requires one, and reusing that already-provisioned token avoids
+// inventing an unused secret.
+export function createPhoneAuthStore({
+  recordPath, initialPhoneToken, initialMacToken = initialPhoneToken, fs, crypto, log = () => {},
+}) {
   if (typeof recordPath !== 'string' || recordPath.length === 0) {
     throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid auth record path');
   }
@@ -175,11 +215,31 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     }
   }
 
+  function migratedBridge(legacy) {
+    return createBridgeRecord({
+      macVerifier: verifierForCredential(initialMacToken, crypto),
+      registryRevision: 1,
+      phones: [{
+        deviceId: crypto.randomBytes(16).toString('base64url'),
+        label: 'Legacy phone',
+        credentialVersion: legacy.credentialVersion,
+        verifier: legacy.verifier,
+        status: 'active',
+      }],
+    });
+  }
+
   async function initializeOnce() {
     if (current) return current;
     try {
       await verifyRecordMetadata(recordPath, fs);
-      current = parseRecord(await fs.readFile(recordPath, 'utf8'));
+      const parsed = parseRecord(await fs.readFile(recordPath, 'utf8'));
+      if (parsed.migratedFrom) {
+        current = migratedBridge(parsed.migratedFrom);
+        await persist(current);
+      } else {
+        current = parsed.bridge;
+      }
       return current;
     } catch (error) {
       if (error?.code === 'ENOENT') {
@@ -191,7 +251,17 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
       }
     }
 
-    const record = immutableRecord(0, verifierForCredential(initialPhoneToken, crypto));
+    const record = createBridgeRecord({
+      macVerifier: verifierForCredential(initialMacToken, crypto),
+      registryRevision: 1,
+      phones: [{
+        deviceId: crypto.randomBytes(16).toString('base64url'),
+        label: 'Phone',
+        credentialVersion: 0,
+        verifier: verifierForCredential(initialPhoneToken, crypto),
+        status: 'active',
+      }],
+    });
     await persist(record);
     current = record;
     return current;
@@ -208,29 +278,15 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     if (!current) {
       throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
     }
-    return current;
+    return bridgeSnapshot(current);
   }
 
   function authenticateCredential(credential) {
     assertUsable();
-    const record = current;
-    if (!record
-        || record.schemaVersion !== SCHEMA_VERSION
-        || !Number.isSafeInteger(record.activePhoneCredentialVersion)
-        || record.activePhoneCredentialVersion < 0
-        || typeof record.activePhoneVerifier !== 'string'
-        || !HEX_64.test(record.activePhoneVerifier)) {
-      return null;
-    }
+    if (!current) return null;
     try {
       const candidate = verifierForCredential(credential, crypto);
-      if (!crypto.timingSafeEqual(
-        Buffer.from(candidate, 'hex'),
-        Buffer.from(record.activePhoneVerifier, 'hex'),
-      )) {
-        return null;
-      }
-      return Object.freeze({ credentialVersion: record.activePhoneCredentialVersion });
+      return authenticatePhone(current, candidate, crypto);
     } catch {
       return null;
     }
@@ -241,6 +297,16 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
     return authenticateCredential(credential) !== null;
   }
 
+  function isDeviceActive(deviceId, credentialVersion) {
+    assertUsable();
+    return current !== null && isPhoneActive(current, deviceId, credentialVersion);
+  }
+
+  function hasCredentialVersion(credentialVersion) {
+    assertUsable();
+    return current !== null && hasActiveCredentialVersion(current, credentialVersion);
+  }
+
   async function activate(input) {
     assertUsable();
     const operation = activationQueue.then(async () => {
@@ -248,24 +314,72 @@ export function createPhoneAuthStore({ recordPath, initialPhoneToken, fs, crypto
         throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone auth activation');
       }
       const { expectedVersion, credentialVersion, verifier } = input;
-      const record = snapshot();
+      if (!current) {
+        throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
+      }
+      const record = current;
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
         throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid expected phone credential version');
       }
-      if (expectedVersion !== record.activePhoneCredentialVersion) {
+      if (expectedVersion !== latestCredentialVersion(record)) {
         throw authError(AUTH_STORE_ERROR_CODES.VERSION_CONFLICT, 'phone auth version conflict');
       }
       if (!Number.isSafeInteger(credentialVersion) || credentialVersion !== expectedVersion + 1) {
         throw authError(AUTH_STORE_ERROR_CODES.NEXT_VERSION_INVALID, 'phone credential must use next version');
       }
-      const next = immutableRecord(credentialVersion, validateVerifier(verifier));
+      let next;
+      try {
+        next = addPhone(record, {
+          deviceId: typeof input.deviceId === 'string'
+            ? input.deviceId : crypto.randomBytes(16).toString('base64url'),
+          label: typeof input.label === 'string' ? input.label : 'Phone',
+          credentialVersion,
+          verifier: validateVerifier(verifier),
+        });
+      } catch (error) {
+        if (error instanceof RangeError && error.message === 'active phone capacity reached') {
+          throw authError(AUTH_STORE_ERROR_CODES.CAPACITY, 'active phone capacity reached');
+        }
+        throw authError(AUTH_STORE_ERROR_CODES.INVALID_INPUT, 'invalid phone auth activation');
+      }
       await persist(next, record);
       current = next;
-      return next;
+      return bridgeSnapshot(next);
     });
     activationQueue = operation.catch(() => {});
     return operation;
   }
 
-  return Object.freeze({ initialize, snapshot, authenticateCredential, matchesCredential, activate });
+  async function mutate(operation) {
+    assertUsable();
+    const queued = activationQueue.then(async () => {
+      if (!current) throw authError(AUTH_STORE_ERROR_CODES.NOT_INITIALIZED, 'phone auth store not initialized');
+      const previous = current;
+      let next;
+      try {
+        next = operation(previous);
+      } catch (error) {
+        if (error instanceof AuthStoreError) throw error;
+        throw authError(mutationErrorCode(error), mutationErrorMessage(error));
+      }
+      await persist(next, previous);
+      current = next;
+      return bridgeSnapshot(next);
+    });
+    activationQueue = queued.catch(() => {});
+    return queued;
+  }
+
+  return Object.freeze({
+    initialize,
+    snapshot,
+    authenticateCredential,
+    matchesCredential,
+    activate,
+    isDeviceActive,
+    hasCredentialVersion,
+    addPhone: activate,
+    renamePhone: (input) => mutate((bridge) => renamePhone(bridge, input)),
+    revokePhone: (input) => mutate((bridge) => revokePhone(bridge, input)),
+  });
 }

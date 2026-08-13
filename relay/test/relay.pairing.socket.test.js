@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { WebSocket } from 'ws';
 
-import { CREDENTIAL_REPLACED_CLOSE_CODE, PROTOCOL_VERSION } from '../src/constants.js';
+import { PROTOCOL_VERSION } from '../src/constants.js';
 import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
 import { parseClientMessage } from '../src/protocol.js';
 import { createServer } from '../src/server.js';
@@ -29,20 +29,42 @@ const deployment = JSON.parse(readFileSync(join(
   '../../contracts/config/deployment.json',
 ), 'utf8'));
 
+const TEST_DEVICE_ID = 'test-phone';
+
+// Multi-device: activate() adds a new (token, deviceId, credentialVersion)
+// entry rather than replacing the existing one, mirroring bridge-registry.js
+// so socket-level tests can prove additive pairing keeps every prior phone
+// authenticated.
 function authStore() {
   let version = 0;
-  let token = PHONE_TOKEN;
+  let nextDeviceSeq = 1;
+  const phonesByToken = new Map([[PHONE_TOKEN, { deviceId: TEST_DEVICE_ID, credentialVersion: 0 }]]);
   return {
     initializeCalls: 0,
     async initialize() { this.initializeCalls += 1; },
     snapshot() { return { activePhoneCredentialVersion: version }; },
     authenticateCredential(candidate) {
-      return candidate === token ? Object.freeze({ credentialVersion: version }) : null;
+      const entry = phonesByToken.get(candidate);
+      return entry ? Object.freeze({ deviceId: entry.deviceId, credentialVersion: entry.credentialVersion }) : null;
+    },
+    isDeviceActive(deviceId, credentialVersion) {
+      for (const entry of phonesByToken.values()) {
+        if (entry.deviceId === deviceId && entry.credentialVersion === credentialVersion) return true;
+      }
+      return false;
+    },
+    hasCredentialVersion(credentialVersion) {
+      for (const entry of phonesByToken.values()) {
+        if (entry.credentialVersion === credentialVersion) return true;
+      }
+      return false;
     },
     async activate(input) {
       assert.equal(input.expectedVersion, version);
       version = input.credentialVersion;
-      token = NEXT_TOKEN;
+      const deviceId = `test-phone-${nextDeviceSeq}`;
+      nextDeviceSeq += 1;
+      phonesByToken.set(NEXT_TOKEN, { deviceId, credentialVersion: version });
     },
   };
 }
@@ -128,6 +150,18 @@ async function hello(client, role, token) {
   await client.open();
   client.send({ type: 'hello', v: PROTOCOL_VERSION, role, token });
   return client.wait((message) => message.type === 'hello.ok');
+}
+
+// Proves a connection is still open and its credential is still authorized:
+// a stale or revoked phone gets no heartbeat.ack because handlePhoneMessage
+// rejects it before the relay ever replies.
+async function stillAuthenticated(client) {
+  const sequence = Math.floor(Math.random() * 1_000_000);
+  client.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence });
+  // Match on sequence, not just type: peer().wait() also matches messages
+  // already sitting in the inbox, so a bare type match could resolve against
+  // an earlier heartbeat.ack when this helper is called more than once.
+  await client.wait((message) => message.type === 'heartbeat.ack' && message.sequence === sequence);
 }
 
 test('pairing flag is exact, defaults off, and enabled startup requires configuration', async () => {
@@ -246,7 +280,7 @@ test('enabled PWA routes expose pairing without duplicating the canonical index'
     assert.deepEqual(await response.json(), {
       applinks: { details: [{
         appIDs: [`${TEAM_ID}.${deployment.bundleId}`],
-        components: [{ '/': '/pair/web', exclude: true }, { '/': '/pair' }],
+        components: [{ '/': '/pair/web*', exclude: true }, { '/': '/pair*' }],
       }] },
     });
     const head = await fetch(`${base}/.well-known/apple-app-site-association`, {
@@ -442,7 +476,7 @@ test('auth initialization failure never binds and close during initialization ca
   await refused.close();
 });
 
-test('full pairing uses a dedicated claimant socket and rotates only after acknowledgement', async () => {
+test('full pairing adds a device without closing or rejecting the prior phone', async () => {
   const { server, url, store } = await boot();
   try {
     assert.equal(store.initializeCalls, 1);
@@ -471,8 +505,10 @@ test('full pairing uses a dedicated claimant socket and rotates only after ackno
     const offered = await claimant.wait((message) => message.type === 'pair.credential');
     assert.equal(offered.credential, NEXT_TOKEN);
 
-    const beforeAck = peer(url);
-    await hello(beforeAck, 'phone', PHONE_TOKEN);
+    // The old phone stays connected and authorized through the entire
+    // approval, well before the new device's credential is even acknowledged.
+    await stillAuthenticated(oldPhone);
+
     claimant.send({
       type: 'pair.credential.ack', v: 1, claimId: CLAIM_ID, credentialVersion: 1,
       proof: createHmac('sha256', Buffer.from(NEXT_TOKEN, 'hex'))
@@ -480,20 +516,26 @@ test('full pairing uses a dedicated claimant socket and rotates only after ackno
     });
     await claimant.wait((message) => message.type === 'pair.active');
     await mac.wait((message) => message.type === 'pair.completed');
-    assert.equal(await beforeAck.closed(), CREDENTIAL_REPLACED_CLOSE_CODE);
 
-    const oldRejected = peer(url);
-    await oldRejected.open();
-    oldRejected.send({ type: 'hello', v: 1, role: 'phone', token: PHONE_TOKEN });
-    assert.equal(await oldRejected.closed(), 4005);
+    // Additive: the old socket was never closed by the new pairing, and its
+    // credential still authenticates fresh connections (a same-device
+    // reconnect below takes over its own prior socket, per the normal
+    // single-current-socket-per-device rule — a different rule from the old
+    // cross-device close this test used to assert).
+    assert.equal(oldPhone.ws.readyState, oldPhone.ws.OPEN);
+    await stillAuthenticated(oldPhone);
+    const stillOld = peer(url);
+    await hello(stillOld, 'phone', PHONE_TOKEN);
     const current = peer(url);
     await hello(current, 'phone', NEXT_TOKEN);
+    await stillAuthenticated(stillOld);
+    await stillAuthenticated(current);
   } finally {
     await server.close();
   }
 });
 
-test('a phone authenticated while activation is pending is revoked before queued claimant work resumes', async () => {
+test('a phone authenticated while activation is pending is undisturbed once activation resumes', async () => {
   const store = authStore();
   let releaseActivation;
   let activationStarted;
@@ -531,6 +573,8 @@ test('a phone authenticated while activation is pending is revoked before queued
     });
     await activationEntered;
 
+    // A different phone connects with the still-active old credential while
+    // the new device's activation is in flight.
     const lateOldPhone = peer(url);
     await hello(lateOldPhone, 'phone', PHONE_TOKEN);
     claimant.send({ type: 'pair.cancel.claim', v: 1, claimId: CLAIM_ID });
@@ -538,7 +582,9 @@ test('a phone authenticated while activation is pending is revoked before queued
 
     await claimant.wait((message) => message.type === 'pair.active');
     await mac.wait((message) => message.type === 'pair.completed');
-    assert.equal(await lateOldPhone.closed(), CREDENTIAL_REPLACED_CLOSE_CODE);
+    // Additive: activation of the new device never touches lateOldPhone.
+    assert.equal(lateOldPhone.ws.readyState, lateOldPhone.ws.OPEN);
+    await stillAuthenticated(lateOldPhone);
     assert.equal(claimant.inbox.some((message) => message.type === 'pair.failed'), false);
   } finally {
     await server.close();

@@ -48,6 +48,12 @@ export const PAIRING_FAILURE_REASONS = Object.freeze([
   'replaced',
   'unsupported',
 ]);
+export const PHONE_ENTRY_STATUSES = Object.freeze(['active']);
+export const PHONE_REVOKE_FAILURE_REASONS = Object.freeze([
+  'unknown_device',
+  'already_revoked',
+  'storage_failed',
+]);
 
 export class ProtocolError extends Error {
   constructor(code, detail) {
@@ -63,6 +69,7 @@ const fail = (code, detail) => {
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const DEVICE_ID = /^[A-Za-z0-9_-]{16,64}$/;
 const PAIRING_REFERENCE = /^[A-Za-z0-9_-]{43}$/;
 const CONFIRMATION_CODE = /^[0-9]{3} [0-9]{3}$/;
 const encoder = new TextEncoder();
@@ -147,6 +154,12 @@ function enumField(message, key, values) {
 function uuidField(message, key) {
   const value = stringField(message, key);
   if (!UUID.test(value)) fail('invalid_uuid', key);
+  return value;
+}
+
+function deviceIdField(message, key = 'deviceId') {
+  const value = stringField(message, key);
+  if (!DEVICE_ID.test(value)) fail('invalid_device_id', key);
   return value;
 }
 
@@ -473,6 +486,55 @@ const TYPES = {
     },
   },
   'pair.failed': { validate: validatePairFailed },
+  'phone.list.request': {
+    validate(message) {
+      requireExactFields(message, ['type', 'v', 'requestId']);
+      uuidField(message, 'requestId');
+    },
+  },
+  'phone.list': {
+    validate(message) {
+      requireExactFields(message, ['type', 'v', 'requestId', 'registryRevision', 'phones']);
+      uuidField(message, 'requestId');
+      safeNonNegativeIntegerField(message, 'registryRevision');
+      if (!Array.isArray(message.phones)) fail('invalid_type', 'phones');
+      for (const phone of message.phones) {
+        if (typeof phone !== 'object' || phone === null || Array.isArray(phone)) {
+          fail('invalid_type', 'phones[]');
+        }
+        requireExactFields(phone, ['credentialVersion', 'deviceId', 'label', 'status']);
+        deviceIdField(phone);
+        if (typeof phone.label !== 'string' || phone.label.length < 1 || phone.label.length > 64) {
+          fail('invalid_value', 'phones[].label');
+        }
+        enumField(phone, 'status', PHONE_ENTRY_STATUSES);
+        safeNonNegativeIntegerField(phone, 'credentialVersion');
+      }
+    },
+  },
+  'phone.revoke.request': {
+    validate(message) {
+      requireExactFields(message, ['type', 'v', 'requestId', 'deviceId']);
+      uuidField(message, 'requestId');
+      deviceIdField(message);
+    },
+  },
+  'phone.revoked': {
+    validate(message) {
+      requireExactFields(message, ['type', 'v', 'requestId', 'deviceId', 'registryRevision']);
+      uuidField(message, 'requestId');
+      deviceIdField(message);
+      safeNonNegativeIntegerField(message, 'registryRevision');
+    },
+  },
+  'phone.revoke.failed': {
+    validate(message) {
+      requireExactFields(message, ['type', 'v', 'requestId', 'deviceId', 'reason']);
+      uuidField(message, 'requestId');
+      deviceIdField(message);
+      enumField(message, 'reason', PHONE_REVOKE_FAILURE_REASONS);
+    },
+  },
 };
 
 export const MESSAGE_TYPES = Object.freeze(Object.keys(TYPES));
@@ -484,7 +546,7 @@ const CLIENT_TYPES = Object.freeze({
   mac: new Set([
     'heartbeat.request', 'mac.state', 'action.result', 'diagnostics.counters',
     'time.sync.response', 'pair.status.request', 'pair.create', 'pair.cancel', 'pair.approve',
-    'pair.deny',
+    'pair.deny', 'phone.list.request', 'phone.revoke.request',
   ]),
 });
 
@@ -502,7 +564,7 @@ const SERVER_TYPES = Object.freeze({
   mac: new Set([
     'hello.ok', 'heartbeat.ack', 'action.request', 'diagnostics.request',
     'time.sync.request', 'pair.created', 'pair.status', 'pair.claimed.mac',
-    'pair.completed', 'pair.failed',
+    'pair.completed', 'pair.failed', 'phone.list', 'phone.revoked', 'phone.revoke.failed',
   ]),
 });
 

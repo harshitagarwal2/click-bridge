@@ -121,6 +121,18 @@ struct SettingsView: View {
                     .padding(.top, 4)
                 }
 
+                GroupBox("Paired Phones") {
+                    if let phoneManagement = app.phoneManagement {
+                        PhoneManagementView(controller: phoneManagement)
+                            .padding(.top, 4)
+                    } else {
+                        Text("Connect the relay above to manage paired phones.")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 4)
+                    }
+                }
+
                 DisclosureGroup("Advanced Connection", isExpanded: $showingAdvanced) {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Relay URL", text: $draft.relayURLString, prompt: Text("wss://your-host/ws"))

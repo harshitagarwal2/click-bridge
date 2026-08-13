@@ -20,7 +20,7 @@ typealias PairingInvitationURLResolver = @MainActor () -> URL?
 enum PairingLink {
     static func make(relayURL: URL, reference: String) throws -> URL {
         guard relayURL.scheme == "wss",
-              relayURL.path == "/ws",
+              relayURL.path == "/ws" || relayURL.path.range(of: "^/ws/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil,
               relayURL.user == nil,
               relayURL.password == nil,
               relayURL.query == nil,
@@ -34,7 +34,7 @@ enum PairingLink {
         components.scheme = "https"
         components.host = relayURL.host
         components.port = relayURL.port
-        components.path = "/pair"
+        components.path = relayURL.path == "/ws" ? "/pair" : "/pair/" + String(relayURL.path.dropFirst("/ws/".count))
         components.fragment = "v=1&r=\(reference)"
         guard let link = components.url, link.absoluteString.utf8.count <= 512 else {
             throw PairingLinkError.invalidRelayURL
@@ -44,7 +44,7 @@ enum PairingLink {
 
     static func validateInvitation(_ invitation: URL) throws -> URL {
         guard invitation.scheme == "https",
-              invitation.path == "/pair",
+              invitation.path == "/pair" || invitation.path.range(of: "^/pair/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil,
               invitation.user == nil,
               invitation.password == nil,
               invitation.query == nil,
@@ -60,7 +60,7 @@ enum PairingLink {
         relay.scheme = "wss"
         relay.host = invitation.host
         relay.port = invitation.port
-        relay.path = "/ws"
+        relay.path = invitation.path == "/pair" ? "/ws" : "/ws/" + String(invitation.path.dropFirst("/pair/".count))
         guard let relayURL = relay.url else { throw PairingLinkError.invalidRelayURL }
         let canonical = try make(relayURL: relayURL, reference: reference)
         guard canonical.absoluteString == invitation.absoluteString else {
@@ -75,7 +75,7 @@ enum PairingLink {
         components.scheme = canonical.scheme
         components.host = canonical.host
         components.port = canonical.port
-        components.path = "/pair/web"
+        components.path = canonical.path == "/pair" ? "/pair/web" : "/pair/web/" + String(canonical.path.dropFirst("/pair/".count))
         components.fragment = canonical.fragment
         guard let webInvitation = components.url,
               webInvitation.absoluteString.utf8.count <= 512 else {

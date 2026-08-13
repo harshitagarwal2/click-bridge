@@ -1,6 +1,6 @@
 const MAX_LINK_BYTES = 512;
 const LINK_FRAGMENT = /^#v=1&r=([A-Za-z0-9_-]{43})$/;
-const PAIRING_PATHS = new Set(['/pair', '/pair/web']);
+const PAIRING_PATH = /^\/pair(?:\/web)?(?:\/([A-Za-z0-9_-]{22}))?$/;
 const encoder = new TextEncoder();
 
 function isCanonicalReference(reference) {
@@ -26,13 +26,14 @@ export function parseAndClearPairingFragment(location, history, expectedHost) {
 
   const fragmentIndex = rawHref.indexOf('#');
   const preFragmentHref = fragmentIndex === -1 ? rawHref : rawHref.slice(0, fragmentIndex);
+  const pairingPath = PAIRING_PATH.exec(location.pathname);
   const canonicalHref = `https://${expectedHost}${location.pathname}`;
 
   if (encoder.encode(rawHref).byteLength > MAX_LINK_BYTES
     || preFragmentHref !== canonicalHref
     || location.protocol !== 'https:'
     || location.host !== expectedHost
-    || !PAIRING_PATHS.has(location.pathname)
+    || !pairingPath
     || location.search !== '') return null;
 
   const match = LINK_FRAGMENT.exec(rawFragment);
