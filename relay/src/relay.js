@@ -57,7 +57,11 @@ export class RelayState {
         this.#emit(previous, {
           kind: 'close', code: PHONE_TAKEN_OVER_CLOSE_CODE, reason: 'another phone took over',
         });
-        this.log('role_replaced', { role, deviceId });
+        this.log('role_replaced', {
+          role, deviceId,
+          previousConnectionId: previous.id,
+          replacementConnectionId: connection.id,
+        });
       }
       return previous;
     }
@@ -66,7 +70,11 @@ export class RelayState {
     this.macState = { remoteEnabled: false, permission: 'unknown' };
     if (previous && previous !== connection) {
       this.#emit(previous, { kind: 'close', code: 4000, reason: 'replaced' });
-      this.log('role_replaced', { role });
+      this.log('role_replaced', {
+        role,
+        previousConnectionId: previous.id,
+        replacementConnectionId: connection.id,
+      });
     }
     return previous ?? null;
   }

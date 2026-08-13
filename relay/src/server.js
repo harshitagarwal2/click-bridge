@@ -734,7 +734,7 @@ export function attachWebSocketServer({
     });
   }
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     const admission = ws.__clickBridgeAdmission;
     const runtime = ws.__clickBridgeRuntime;
     if (!runtime) {
@@ -753,6 +753,14 @@ export function attachWebSocketServer({
     let operationGeneration = 0;
     const pendingFrames = [];
     let processingFrames = false;
+    const forwardedFor = req?.headers?.['x-forwarded-for'];
+    const peerSource = (Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor)
+      ?.split(',')[0]?.trim()?.slice(0, 128)
+      || req?.socket?.remoteAddress?.slice(0, 128)
+      || 'unknown';
+    const userAgentHeader = req?.headers?.['user-agent'];
+    const peerClient = (Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader)
+      ?.slice(0, 256) || 'unknown';
     ws.__clickBridgePongTimer = null;
     const authTimer = scheduleAuthTimeout(() => {
       if (role === null) {
@@ -880,6 +888,8 @@ export function attachWebSocketServer({
           generation,
           deviceId: descriptor.deviceId,
           credentialVersion: descriptor.credentialVersion,
+          peerSource,
+          peerClient,
         });
         connections.set(connection, ws);
         if (role === 'phone') activeAuthorizedPhones.add(connection);
@@ -887,7 +897,10 @@ export function attachWebSocketServer({
         if (role === 'mac') activePairing.macConnected(connection, generation);
         ws.send(encode({ type: 'hello.ok', v: PROTOCOL_VERSION, role }));
         activeState.publishState();
-        log.info?.(JSON.stringify({ event: 'authenticated', role }));
+        log.info?.(JSON.stringify({
+          event: 'authenticated', role, connectionId: connection.id,
+          peerSource, peerClient,
+        }));
         return;
       }
 
@@ -1022,7 +1035,10 @@ export function attachWebSocketServer({
           activeState.detachIfCurrent(role, connection);
           if (role === 'mac') activePairing.macDisconnected(connection, generation);
         }
-        log.info?.(JSON.stringify({ event: 'disconnected', role }));
+        log.info?.(JSON.stringify({
+          event: 'disconnected', role, connectionId: connection.id,
+          peerSource, peerClient,
+        }));
       }
     });
     ws.on('error', (error) => {
