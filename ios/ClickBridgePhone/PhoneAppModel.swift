@@ -1,5 +1,6 @@
 import Observation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class PhoneClickIntentRouter {
@@ -77,6 +78,7 @@ final class PhoneAppModel {
     @ObservationIgnored private var pairingRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var pairingRecoveryGeneration: UInt64 = 0
     @ObservationIgnored private var pairingAttempt: PairingAttempt?
+    @ObservationIgnored private var pairingBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     convenience init(settings: PhoneSettingsStore,
                      volumeController: VolumeDeltaController,
@@ -127,6 +129,7 @@ final class PhoneAppModel {
         switch phase {
         case .active:
             sceneIsActive = true
+            endPairingBackgroundTask()
             if foregroundGeneration == nil { startActiveSession() }
             intentRouter.setAppActive(true)
         case .inactive:
@@ -136,6 +139,7 @@ final class PhoneAppModel {
             intentRouter.setAppActive(false)
             intentRouter.discardPendingRequest()
             endForegroundSession(reason: "background")
+            preservePairingDuringBackgroundIfNeeded()
             cancelPairingForBackgroundIfNeeded()
         @unknown default:
             sceneIsActive = false
@@ -365,11 +369,13 @@ final class PhoneAppModel {
         guard let attempt = pairingAttempt else { return }
         switch newState.phase {
         case .active:
+            endPairingBackgroundTask()
             pairingAttempt = nil
             clearTerminalConnectionForPromotedCredential()
             guard sceneIsActive, pairingRecoveryTask == nil else { return }
             startForegroundSession(connectTransport: false)
         case .cancelled, .failed, .replaced:
+            endPairingBackgroundTask()
             pairingAttempt = nil
             restorePriorForegroundSession(from: attempt)
         default:
@@ -380,9 +386,30 @@ final class PhoneAppModel {
     private func cancelPairingForBackgroundIfNeeded() {
         let recovering = pairingRecoveryTask != nil
         invalidatePairingRecovery()
-        if recovering || PhonePairingPresentation.shouldCancelOnBackground(pairingState.phase) {
+        if recovering {
             pairingClient?.cancel()
         }
+    }
+
+    private func preservePairingDuringBackgroundIfNeeded() {
+        guard pairingAttempt != nil, pairingBackgroundTask == .invalid else { return }
+        switch pairingState.phase {
+        case .connecting, .claiming, .awaitingApproval, .awaitingCredential, .awaitingActivation:
+            pairingBackgroundTask = UIApplication.shared.beginBackgroundTask(
+                withName: "ClickBridgePairing"
+            ) { [weak self] in
+                Task { @MainActor [weak self] in self?.endPairingBackgroundTask() }
+            }
+        default:
+            break
+        }
+    }
+
+    private func endPairingBackgroundTask() {
+        guard pairingBackgroundTask != .invalid else { return }
+        let task = pairingBackgroundTask
+        pairingBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
     }
 
     private func startActiveSession() {

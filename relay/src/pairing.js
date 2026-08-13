@@ -277,7 +277,10 @@ export class PairingCoordinator {
     if (this.#isActivating()) return 'activation_in_progress';
     if (this.#matchesEndedMac(message, 'cancelled', false)) return 'ok';
     if (!this.#session || this.#session.requestId !== message.requestId) return 'invalid_request';
-    this.#terminate('cancelled');
+    this.#terminate('cancelled', {
+      source: 'mac_frame',
+      phase: this.#phase(this.#session),
+    });
     return 'ok';
   }
 
@@ -296,7 +299,10 @@ export class PairingCoordinator {
         || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
     }
-    this.#terminate('cancelled');
+    this.#terminate('cancelled', {
+      source: 'claimant_frame',
+      phase: this.#phase(this.#session),
+    });
     return 'ok';
   }
 
@@ -347,7 +353,10 @@ export class PairingCoordinator {
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
     }
-    this.#terminate('cancelled');
+    this.#terminate('cancelled', {
+      source: 'claimant_disconnect',
+      phase: this.#phase(this.#session),
+    });
     return 'ok';
   }
 
@@ -461,7 +470,7 @@ export class PairingCoordinator {
       && this.#owns(this.#ended.mac, this.#mac.connection, this.#mac.generation);
   }
 
-  #terminate(reason) {
+  #terminate(reason, details = {}) {
     const session = this.#session;
     if (!session) return false;
     const mac = session.mac;
@@ -482,7 +491,7 @@ export class PairingCoordinator {
     if (mac && this.#owns(this.#mac, mac.connection, mac.generation)) {
       this.#send(mac.connection, macFailure);
     }
-    this.#log('pairing_terminated', { reason });
+    this.#log('pairing_terminated', { reason, ...details });
     return true;
   }
 
@@ -511,12 +520,18 @@ export class PairingCoordinator {
     return this.#session?.activationPromise != null;
   }
 
+  #phase(session) {
+    if (!session) return 'idle';
+    if (session.activationPromise) return 'activating';
+    if (session.pendingCredential) return 'awaiting_activation';
+    if (session.claimId) return 'awaiting_approval';
+    return 'invited';
+  }
+
   observe() {
     const session = this.#session;
     const phase = session
-      ? (session.activationPromise ? 'activating'
-        : (session.pendingCredential ? 'awaiting_activation'
-          : (session.claimId ? 'awaiting_approval' : 'invited')))
+      ? this.#phase(session)
       : (this.#completed ? (this.#completed.reconciled ? 'completed' : 'committed') : 'idle');
     return Object.freeze({
       phase,
