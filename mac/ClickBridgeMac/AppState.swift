@@ -63,6 +63,9 @@ final class AppState: ObservableObject {
     private var credentialRevision: UInt64 = 0
     private var cancelCredentialTask: (() -> Void)?
     private var lastStatusSequence: UInt64 = 0
+#if DEBUG
+    private var forcedBlockedConnectionStateForTesting: PairingController.State?
+#endif
 
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
          permissionService: PostEventPermissionService,
@@ -123,6 +126,20 @@ final class AppState: ObservableObject {
             return false
         }
     }
+
+#if DEBUG
+    var credentialRevisionForTesting: UInt64 { credentialRevision }
+    var lastStatusSequenceForTesting: UInt64 { lastStatusSequence }
+
+    func forceBlockedConnectionStateForTesting(_ state: PairingController.State) {
+        precondition(Self.blocksConnectionChanges(in: state))
+        forcedBlockedConnectionStateForTesting = state
+    }
+
+    func clearBlockedConnectionStateForTesting() {
+        forcedBlockedConnectionStateForTesting = nil
+    }
+#endif
 
     @discardableResult
     func reconnect() -> Task<ConnectionActionOutcome, Never> {
@@ -301,6 +318,11 @@ final class AppState: ObservableObject {
     }
 
     private var connectionChangesAreBlocked: Bool {
+#if DEBUG
+        if let forcedBlockedConnectionStateForTesting {
+            return Self.blocksConnectionChanges(in: forcedBlockedConnectionStateForTesting)
+        }
+#endif
         guard let pairing else { return false }
         return Self.blocksConnectionChanges(in: pairing.state)
     }

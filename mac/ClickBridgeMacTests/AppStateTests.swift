@@ -1135,6 +1135,84 @@ final class AppStateTests: XCTestCase {
         }
     }
 
+    func testBothPublicConnectionBoundariesAreMutationFreeInEveryBlockedPairingState() async throws {
+        let transport = AppStateTransport(gateClose: false)
+        let harness = try makeHarness(connection: connection(), transports: [transport])
+        defer { harness.cleanUp() }
+        await transport.waitForHello(token: AppStateTestToken.stored)
+        let statusPublished = await eventually { harness.state.connection == .connecting }
+        XCTAssertTrue(statusPublished)
+        let invitation = PairingController.Invitation(
+            url: URL(string: "https://example.com/pair#ref")!,
+            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        let approval = PairingController.Approval(
+            confirmationCode: "123456",
+            clientKind: .ios,
+            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        let blockedStates: [(name: String, state: PairingController.State)] = [
+            ("creating", .creating),
+            ("invitation", .invitation(invitation)),
+            ("approval", .approval(approval)),
+            ("approving", .approving),
+            ("denying", .denying),
+            ("cancelling", .cancelling),
+            ("cancelFailed", .cancelFailed)
+        ]
+        let controllerIdentity = ObjectIdentifier(try XCTUnwrap(harness.state.pairing))
+        let storedConnection = try XCTUnwrap(harness.settings.connection())
+        let recordWrites = harness.secrets.writes(account: SettingsStore.connectionRecordAccount)
+        let revision = harness.state.credentialRevisionForTesting
+        let statusSequence = harness.state.lastStatusSequenceForTesting
+        let appStatus = harness.state.connection
+        let clientStatus = await harness.client.currentStatus()
+        let factoryCount = harness.factory.count()
+        let closeCount = await transport.closes()
+
+        for blocked in blockedStates {
+            harness.state.forceBlockedConnectionStateForTesting(blocked.state)
+            let draft = ConnectionSettingsDraft(
+                appliedRelayURLString: storedConnection.relayURLString,
+                relayURLString: "wss://new.example.com/ws",
+                replacementMacToken: AppStateTestToken.replacement
+            )
+
+            let apply = await harness.state.applyConnectionSettings(
+                relayURLString: draft.relayURLString,
+                replacementMacToken: draft.replacementMacToken
+            ).value
+            let reconnect = await harness.state.reconnect().value
+            let currentClientStatus = await harness.client.currentStatus()
+            let currentCloseCount = await transport.closes()
+
+            XCTAssertEqual(apply, .rejected(.pairingInProgress), blocked.name)
+            XCTAssertEqual(reconnect, .rejected(.pairingInProgress), blocked.name)
+            XCTAssertEqual(draft.relayURLString, "wss://new.example.com/ws", blocked.name)
+            XCTAssertEqual(draft.replacementMacToken, AppStateTestToken.replacement, blocked.name)
+            XCTAssertEqual(
+                harness.secrets.writes(account: SettingsStore.connectionRecordAccount),
+                recordWrites,
+                blocked.name
+            )
+            XCTAssertEqual(try harness.settings.connection(), storedConnection, blocked.name)
+            XCTAssertEqual(harness.state.credentialRevisionForTesting, revision, blocked.name)
+            XCTAssertEqual(harness.state.lastStatusSequenceForTesting, statusSequence, blocked.name)
+            XCTAssertEqual(harness.state.connection, appStatus, blocked.name)
+            XCTAssertEqual(currentClientStatus, clientStatus, blocked.name)
+            XCTAssertEqual(harness.factory.count(), factoryCount, blocked.name)
+            XCTAssertEqual(currentCloseCount, closeCount, blocked.name)
+            XCTAssertEqual(
+                ObjectIdentifier(try XCTUnwrap(harness.state.pairing)),
+                controllerIdentity,
+                blocked.name
+            )
+        }
+
+        harness.state.clearBlockedConnectionStateForTesting()
+        await harness.client.stop()
+    }
+
     func testApplyAndReconnectBlockDuringPairingThenResumeAfterConfirmedCancellation() async throws {
         let current = AppStateTransport(gateClose: false, gatePairingCancel: true)
         let replacement = AppStateTransport(gateClose: false)
