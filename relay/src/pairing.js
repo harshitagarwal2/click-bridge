@@ -176,6 +176,7 @@ export class PairingCoordinator {
       if (this.#session === session) this.#terminate('expired');
     }, PAIRING_TTL_MS);
     this.#session = session;
+    this.#log('pairing_created', { phase: 'invited' });
     return 'ok';
   }
 
@@ -193,9 +194,18 @@ export class PairingCoordinator {
       const duplicate = session.claimId === message.claimId
         && session.sessionNonce === message.sessionNonce
         && verifier !== null
-        && sameHex(verifier, session.claimVerifier)
-        && this.#owns(session.claimant, connection, generation);
+        && sameHex(verifier, session.claimVerifier);
       if (duplicate) {
+        // A credential has already been issued, but it remains inert until
+        // this proof holder returns its HMAC acknowledgement. A transient
+        // socket loss may rebind only this exact claimant proof.
+        if (session.claimant === null && session.pendingCredential && !session.activationPromise) {
+          session.claimant = { connection, generation };
+          this.#log('pairing_claimant_resumed', { phase: this.#phase(session) });
+        } else if (!this.#owns(session.claimant, connection, generation)) {
+          this.#send(connection, failureForClaimant(message.claimId, 'used'));
+          return 'used';
+        }
         if (session.activationPromise) return 'activation_in_progress';
         if (session.pendingCredential) this.#sendCredential(session);
         else this.#sendClaimed(session);
@@ -219,6 +229,10 @@ export class PairingCoordinator {
     session.clientKind = message.clientKind;
     session.confirmationCode = String(confirmation).padStart(6, '0').replace(/^(...)/, '$1 ');
     this.#sendClaimed(session);
+    this.#log('pairing_claimed', {
+      clientKind: session.clientKind,
+      phase: this.#phase(session),
+    });
     return 'ok';
   }
 
@@ -256,6 +270,7 @@ export class PairingCoordinator {
     session.expectedVersion = snapshot.activePhoneCredentialVersion;
     session.credentialVersion = snapshot.activePhoneCredentialVersion + 1;
     this.#sendCredential(session);
+    this.#log('pairing_approved', { phase: this.#phase(session) });
     return 'ok';
   }
 
@@ -338,6 +353,7 @@ export class PairingCoordinator {
     }
     this.#clearTimer(session);
     session.activationPromise = this.#activate(session);
+    this.#log('pairing_activation_acknowledged', { phase: this.#phase(session) });
     return session.activationPromise;
   }
 
@@ -352,6 +368,11 @@ export class PairingCoordinator {
     }
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
+    }
+    if (this.#session.pendingCredential) {
+      this.#session.claimant = null;
+      this.#log('pairing_claimant_suspended', { phase: this.#phase(this.#session) });
+      return 'suspended';
     }
     this.#terminate('cancelled', {
       source: 'claimant_disconnect',
@@ -392,6 +413,7 @@ export class PairingCoordinator {
     this.#ended = null;
     this.#clearSecrets(session);
     if (!this.#reconcileCompletion(completed)) return 'reconciliation_failed';
+    this.#log('pairing_activated', { phase: 'completed' });
     this.#sendCompleted(completed);
     return 'ok';
   }

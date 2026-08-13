@@ -98,6 +98,32 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(subject.state.phase, .active)
     }
 
+    func testReclaimsIssuedCredentialAfterClaimantSocketDisconnectsBeforeActivation() throws {
+        let store = try makeStore()
+        let factory = FakePhoneWebSocketFactory()
+        let scheduler = FakePhoneScheduler()
+        let subject = makeSubject(store: store, factory: factory, scheduler: scheduler)
+        let link = try PhonePairingLink.parse(
+            XCTUnwrap(URL(string: "https://relay.example/pair#v=1&r=\(reference)")),
+            expectedHost: "relay.example"
+        )
+        subject.start(link)
+        let original = factory.sockets[0]
+        original.emitOpen()
+        original.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
+        original.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+
+        original.emitClose(FakePhoneWebSocketError.closed)
+
+        XCTAssertEqual(factory.sockets.count, 2)
+        let resumed = factory.sockets[1]
+        resumed.emitOpen()
+        XCTAssertTrue(resumed.sentTexts.contains { $0.contains(#""type":"pair.claim"#) })
+        resumed.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
+        XCTAssertTrue(resumed.sentTexts.contains { $0.contains(#""type":"pair.credential.ack"#) })
+        XCTAssertEqual(subject.state.phase, .awaitingActivation)
+    }
+
     func testFreshPairSurvivesBackgroundForegroundAndRelaunchWithNewConfiguration() throws {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         let secrets = PairingTestSecretStore()
@@ -319,7 +345,7 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertEqual(subject.state.phase, .replaced)
     }
 
-    func testAmbiguousDisconnectAfterStagingPreservesPendingCredential() throws {
+    func testAmbiguousDisconnectAfterStagingPreservesPendingCredentialAndResumes() throws {
         let store = try makeStore()
         let factory = FakePhoneWebSocketFactory()
         let scheduler = FakePhoneScheduler()
@@ -334,10 +360,17 @@ final class PhonePairingClientTests: XCTestCase {
         socket.emitText(#"{"type":"pair.claimed.phone","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","confirmationCode":"123 456","expiresAtUnixMs":1786579500000}"#)
         socket.emitText(#"{"type":"pair.credential","v":1,"claimId":"018f63f5-6f3d-7d21-88bc-9ef561f030de","credential":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","credentialVersion":1}"#)
 
+        // An abnormal close (1006 — the exact signature of an iOS background
+        // suspend killing the socket) during the approve -> acknowledge
+        // handoff must not discard the already-issued credential or report
+        // failure: the client transparently reopens the socket and rejoins
+        // instead (see testReclaimsIssuedCredentialAfterClaimantSocketDisconnectsBeforeActivation).
         socket.emitClose(code: 1006)
 
         XCTAssertEqual(try store.pendingPairingCredential(), .init(token: credential, version: 1))
-        XCTAssertEqual(subject.state.failure, "disconnected")
+        XCTAssertNil(subject.state.failure)
+        XCTAssertEqual(subject.state.phase, .awaitingActivation)
+        XCTAssertEqual(factory.sockets.count, 2)
     }
 
     func testRandomnessFailureStopsBeforeCreatingOrOpeningSocket() throws {

@@ -248,6 +248,27 @@ test('create emits a 32-byte invitation synchronously, then retains only its ver
   });
 });
 
+test('pairing logs safe lifecycle milestones without credentials or invitation material', async () => {
+  const h = harness();
+
+  connectAndCreate(h);
+  claim(h);
+  assert.equal(await approve(h), 'ok');
+  assert.equal(await acknowledge(h), 'ok');
+
+  assert.deepEqual(h.logs, [
+    ['pairing_created', { phase: 'invited' }],
+    ['pairing_claimed', { clientKind: 'ios', phase: 'awaiting_approval' }],
+    ['pairing_approved', { phase: 'awaiting_activation' }],
+    ['pairing_activation_acknowledged', { phase: 'activating' }],
+    ['pairing_activated', { phase: 'completed' }],
+  ]);
+  const rendered = JSON.stringify(h.logs);
+  assert.equal(rendered.includes(INVITATION), false);
+  assert.equal(rendered.includes(CREDENTIAL), false);
+  assert.equal(rendered.includes(SESSION_NONCE), false);
+});
+
 test('only the current authenticated Mac generation owns create and replacing an invite invalidates it once', () => {
   const h = harness();
   h.randomBuffers.push(Buffer.alloc(32, 0x61));
@@ -337,6 +358,28 @@ test('approval is claim-bound CAS and offers a next-version credential without a
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
   assert.equal(h.coordinator.claim(PHONE, 5, claimMessage()), 'ok');
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
+});
+
+test('an exact claimant proof rebinds an unacknowledged credential after disconnect without activation', () => {
+  const h = harness();
+  const resumed = Object.freeze({ id: 'resumed-claimant' });
+  connectAndCreate(h);
+  claim(h);
+  assert.equal(approve(h), 'ok');
+
+  assert.equal(h.coordinator.disconnectClaimant(PHONE, 5), 'suspended');
+  assert.equal(h.activateCalls(), 0);
+  assert.equal(h.coordinator.claim(resumed, 6, claimMessage()), 'ok');
+  assert.deepEqual(h.events.at(-1), {
+    connection: resumed,
+    message: {
+      type: 'pair.credential', v: 1, claimId: CLAIM_ID,
+      credential: CREDENTIAL, credentialVersion: 8,
+    },
+  });
+  assert.equal(h.coordinator.claim(Object.freeze({ id: 'attacker' }), 7, {
+    ...claimMessage(), sessionNonce: '55'.repeat(32),
+  }), 'used');
 });
 
 test('a connected replacement Mac cannot approve, deny, or cancel before capability opt-in', async () => {
