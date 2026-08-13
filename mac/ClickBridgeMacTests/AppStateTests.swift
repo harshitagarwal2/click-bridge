@@ -1107,34 +1107,6 @@ final class AppStateTests: XCTestCase {
         await harness.client.stop()
     }
 
-    func testConnectionChangeBlocklistIncludesEveryActivePairingState() {
-        let invitation = PairingController.Invitation(
-            url: URL(string: "https://example.com/pair#ref")!,
-            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
-        )
-        let approval = PairingController.Approval(
-            confirmationCode: "123456",
-            clientKind: .ios,
-            expiresAt: Date(timeIntervalSince1970: 2_000_000_000)
-        )
-        let blocked: [PairingController.State] = [
-            .creating,
-            .invitation(invitation),
-            .approval(approval),
-            .approving,
-            .denying,
-            .cancelling,
-            .cancelFailed
-        ]
-
-        for state in blocked {
-            XCTAssertTrue(AppState.blocksConnectionChanges(in: state), "expected \(state) to block")
-        }
-        for state in [PairingController.State.ready, .denied, .expired, .failed] {
-            XCTAssertFalse(AppState.blocksConnectionChanges(in: state), "expected \(state) to be safe")
-        }
-    }
-
     func testBothPublicConnectionBoundariesAreMutationFreeInEveryBlockedPairingState() async throws {
         let transport = AppStateTransport(gateClose: false)
         let harness = try makeHarness(connection: connection(), transports: [transport])
@@ -1169,9 +1141,10 @@ final class AppStateTests: XCTestCase {
         let clientStatus = await harness.client.currentStatus()
         let factoryCount = harness.factory.count()
         let closeCount = await transport.closes()
+        let pairing = try XCTUnwrap(harness.state.pairing)
 
         for blocked in blockedStates {
-            harness.state.forceBlockedConnectionStateForTesting(blocked.state)
+            pairing.forceBlockedConnectionStateForTesting(blocked.state)
             let draft = ConnectionSettingsDraft(
                 appliedRelayURLString: storedConnection.relayURLString,
                 relayURLString: "wss://new.example.com/ws",
@@ -1209,7 +1182,7 @@ final class AppStateTests: XCTestCase {
             )
         }
 
-        harness.state.clearBlockedConnectionStateForTesting()
+        pairing.clearBlockedConnectionStateForTesting()
         await harness.client.stop()
     }
 
@@ -1247,7 +1220,24 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(cancellingReconnect, .rejected(.pairingInProgress))
         await current.releasePairingCancel()
         await cancel.value
-        XCTAssertEqual(controller.state, .ready)
+        XCTAssertEqual(controller.state, .cancelling)
+        let stillBlocked = await harness.state.applyConnectionSettings(
+            relayURLString: "wss://new.example.com/ws",
+            replacementMacToken: AppStateTestToken.replacement
+        ).value
+        XCTAssertEqual(stillBlocked, .rejected(.pairingInProgress))
+        let sentMessages = await current.sentMessages()
+        let cancelRequestID = try XCTUnwrap(sentMessages.compactMap { text -> String? in
+            guard case .pairCancel(let cancel) = try? StrictWireDecoder().decodeText(text) else { return nil }
+            return cancel.requestId
+        }.last)
+        await current.push(try Wire.encode(PairFailed(
+            requestId: cancelRequestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
+        let cancellationConfirmed = await eventually { controller.state == .ready }
+        XCTAssertTrue(cancellationConfirmed)
 
         let accepted = await harness.state.applyConnectionSettings(
             relayURLString: "wss://new.example.com/ws",

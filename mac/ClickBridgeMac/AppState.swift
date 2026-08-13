@@ -63,10 +63,6 @@ final class AppState: ObservableObject {
     private var credentialRevision: UInt64 = 0
     private var cancelCredentialTask: (() -> Void)?
     private var lastStatusSequence: UInt64 = 0
-#if DEBUG
-    private var forcedBlockedConnectionStateForTesting: PairingController.State?
-#endif
-
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
          permissionService: PostEventPermissionService,
          activationNotifications: NotificationCenter = .default,
@@ -118,27 +114,9 @@ final class AppState: ObservableObject {
 
     var remoteToggleEnabled: Bool { true }
 
-    static func blocksConnectionChanges(in state: PairingController.State) -> Bool {
-        switch state {
-        case .creating, .invitation, .approval, .approving, .denying, .cancelling, .cancelFailed:
-            return true
-        default:
-            return false
-        }
-    }
-
 #if DEBUG
     var credentialRevisionForTesting: UInt64 { credentialRevision }
     var lastStatusSequenceForTesting: UInt64 { lastStatusSequence }
-
-    func forceBlockedConnectionStateForTesting(_ state: PairingController.State) {
-        precondition(Self.blocksConnectionChanges(in: state))
-        forcedBlockedConnectionStateForTesting = state
-    }
-
-    func clearBlockedConnectionStateForTesting() {
-        forcedBlockedConnectionStateForTesting = nil
-    }
 #endif
 
     @discardableResult
@@ -318,13 +296,7 @@ final class AppState: ObservableObject {
     }
 
     private var connectionChangesAreBlocked: Bool {
-#if DEBUG
-        if let forcedBlockedConnectionStateForTesting {
-            return Self.blocksConnectionChanges(in: forcedBlockedConnectionStateForTesting)
-        }
-#endif
-        guard let pairing else { return false }
-        return Self.blocksConnectionChanges(in: pairing.state)
+        pairing?.blocksConnectionChanges == true
     }
 
     private func preparedStoredConnection() throws -> PreparedConnection {
