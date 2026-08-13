@@ -2,5 +2,5 @@
 // Keep the marketing version aligned with the App Store Connect records.
 // GitHub TestFlight builds may override CURRENT_PROJECT_VERSION with the
 // explicitly approved, never-reused build selected for that upload.
-MARKETING_VERSION = 1.0
-CURRENT_PROJECT_VERSION = 1
+MARKETING_VERSION = 1.1
+CURRENT_PROJECT_VERSION = 2

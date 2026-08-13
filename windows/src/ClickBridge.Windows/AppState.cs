@@ -206,10 +206,14 @@ public sealed class AppState
             var storedToken = Settings.MacToken();
             if (string.IsNullOrEmpty(storedToken))
             {
-                if (revision != _credentialRevision || !_credentialEligible) return;
-                Notice = "Save MAC_TOKEN in Settings before connecting.";
+                Notice = "Creating your private relay session…";
                 RaiseChanged();
-                return;
+                var enrollment = await SessionEnrollmentService.EnrollAsync().ConfigureAwait(false);
+                if (revision != _credentialRevision || !_credentialEligible) return;
+                Settings.SaveEnrollment(enrollment.RelayUrl, enrollment.Token);
+                storedToken = enrollment.Token;
+                Notice = "Private relay session created.";
+                RaiseChanged();
             }
             token = storedToken;
         }

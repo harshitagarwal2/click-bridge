@@ -246,7 +246,7 @@ test('enabled PWA routes expose pairing without duplicating the canonical index'
     assert.deepEqual(await response.json(), {
       applinks: { details: [{
         appIDs: [`${TEAM_ID}.${deployment.bundleId}`],
-        components: [{ '/': '/pair/web', exclude: true }, { '/': '/pair' }],
+        components: [{ '/': '/pair/web*', exclude: true }, { '/': '/pair*' }],
       }] },
     });
     const head = await fetch(`${base}/.well-known/apple-app-site-association`, {

@@ -198,12 +198,16 @@ final class AppState: ObservableObject {
             }
             let token: String
             do {
-                guard let storedToken = try settings.macToken(), !storedToken.isEmpty else {
+                if let storedToken = try settings.macToken(), !storedToken.isEmpty {
+                    token = storedToken
+                } else {
+                    notice = "Creating your private relay session…"
+                    let enrollment = try await SessionEnrollmentService.enroll()
                     guard revision == credentialRevision, credentialEligible else { return }
-                    notice = "Save MAC_TOKEN in Settings before connecting."
-                    return
+                    try settings.saveEnrollment(enrollment)
+                    token = enrollment.token
+                    notice = "Private relay session created."
                 }
-                token = storedToken
             } catch {
                 guard revision == credentialRevision, !Task.isCancelled else { return }
                 credentialEligible = false

@@ -78,4 +78,9 @@ final class SettingsStore: ObservableObject {
             storageError = "Could not clear MAC_TOKEN: \(error.localizedDescription)"; throw error
         }
     }
+
+    func saveEnrollment(_ enrollment: DesktopEnrollment) throws {
+        try saveMacToken(enrollment.token)
+        relayURLString = enrollment.relayURL
+    }
 }

@@ -47,7 +47,9 @@ enum RelayEndpoint {
         guard scheme == "wss" || (allowLocalSimulator && local && scheme == "ws") else {
             throw RelayEndpointError.invalidScheme
         }
-        guard url.path == "/ws" else { throw RelayEndpointError.invalidPath }
+        guard url.path == "/ws" || url.path.range(of: "^/ws/[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil else {
+            throw RelayEndpointError.invalidPath
+        }
         guard url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
             throw RelayEndpointError.forbiddenComponents
         }

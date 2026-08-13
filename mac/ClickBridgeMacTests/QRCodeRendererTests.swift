@@ -38,6 +38,18 @@ final class QRCodeRendererTests: XCTestCase {
                        "https://relay.example:8443/pair#v=1&r=\(reference)")
     }
 
+    func testSessionScopedInvitationPreservesItsSessionInNativeAndWebLinks() throws {
+        let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        let session = "AbCdEfGhIjKlMnOpQrStUv"
+        let native = try PairingLink.make(
+            relayURL: URL(string: "wss://relay.example/ws/\(session)")!, reference: reference
+        )
+
+        XCTAssertEqual(native.absoluteString, "https://relay.example/pair/\(session)#v=1&r=\(reference)")
+        XCTAssertEqual(try PairingLink.makeWebInvitation(from: native).absoluteString,
+                       "https://relay.example/pair/web/\(session)#v=1&r=\(reference)")
+    }
+
     func testWebInvitationRejectsHostileOrNonCanonicalSources() {
         let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         let invalidLinks = [
