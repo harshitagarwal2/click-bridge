@@ -19,7 +19,7 @@ final class PhoneLifecycleTests: XCTestCase {
         XCTAssertFalse(PhonePairingPresentation(state: harness.model.pairingState).detail.contains(reference))
     }
 
-    func testBackgroundCancelsInFlightClaimant() throws {
+    func testBackgroundPreservesClaimantAwaitingMacApproval() throws {
         let harness = try Harness(token: nil, relayURL: "")
         let pairing = FakePairingCoordinator(state: .init(phase: .awaitingApproval,
                                                           confirmationCode: "123 456"))
@@ -27,7 +27,7 @@ final class PhoneLifecycleTests: XCTestCase {
 
         harness.model.scenePhaseChanged(.background)
 
-        XCTAssertEqual(pairing.cancelCount, 1)
+        XCTAssertEqual(pairing.cancelCount, 0)
     }
 
     func testBackgroundPreservesStagedPairingForForegroundRecovery() throws {
