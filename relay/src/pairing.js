@@ -176,7 +176,6 @@ export class PairingCoordinator {
       if (this.#session === session) this.#terminate('expired');
     }, PAIRING_TTL_MS);
     this.#session = session;
-    this.#log('pairing_created', { phase: 'invited' });
     return 'ok';
   }
 
@@ -220,10 +219,6 @@ export class PairingCoordinator {
     session.clientKind = message.clientKind;
     session.confirmationCode = String(confirmation).padStart(6, '0').replace(/^(...)/, '$1 ');
     this.#sendClaimed(session);
-    this.#log('pairing_claimed', {
-      clientKind: session.clientKind,
-      phase: this.#phase(session),
-    });
     return 'ok';
   }
 
@@ -261,7 +256,6 @@ export class PairingCoordinator {
     session.expectedVersion = snapshot.activePhoneCredentialVersion;
     session.credentialVersion = snapshot.activePhoneCredentialVersion + 1;
     this.#sendCredential(session);
-    this.#log('pairing_approved', { phase: this.#phase(session) });
     return 'ok';
   }
 
@@ -344,7 +338,6 @@ export class PairingCoordinator {
     }
     this.#clearTimer(session);
     session.activationPromise = this.#activate(session);
-    this.#log('pairing_activation_acknowledged', { phase: this.#phase(session) });
     return session.activationPromise;
   }
 
@@ -359,20 +352,6 @@ export class PairingCoordinator {
     }
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
-    }
-    const session = this.#session;
-    if (session.pendingCredential) {
-      // The credential was already dispatched to the claimant before the
-      // socket dropped — commonly an iOS background suspend during the
-      // approve -> acknowledge handoff. The phone independently recovers by
-      // reconnecting and presenting the credential as a bearer token (see
-      // PhonePairingClient.recoverPending), so commit it now instead of
-      // discarding the session: additive pairing makes this safe even if
-      // the phone never actually received the credential, since an unused
-      // credential entry grants no capability on its own.
-      this.#clearTimer(session);
-      session.activationPromise = this.#activate(session);
-      return session.activationPromise;
     }
     this.#terminate('cancelled', {
       source: 'claimant_disconnect',
@@ -413,7 +392,6 @@ export class PairingCoordinator {
     this.#ended = null;
     this.#clearSecrets(session);
     if (!this.#reconcileCompletion(completed)) return 'reconciliation_failed';
-    this.#log('pairing_activated', { phase: 'completed' });
     this.#sendCompleted(completed);
     return 'ok';
   }

@@ -265,15 +265,17 @@ final class PhoneSettingsStore {
         }
         let current = try readRecord()
         guard current.pending == nil else { throw PhonePairingCredentialStorageError.invalidState }
+        // The relay's credential version is a single counter shared by every
+        // enrolled phone, so it advances when *another* phone pairs too. Only
+        // require forward movement against whatever this phone already holds;
+        // demanding an exact successor (or exactly 1 for a fresh phone) makes
+        // pairing impossible as soon as the relay's counter runs ahead.
         if let activeVersion = current.active?.version, current.active?.provenance == .relay {
-            guard credential.version == activeVersion + 1 else {
+            guard credential.version > activeVersion else {
                 throw PhonePairingCredentialStorageError.invalidState
             }
-        } else if current.active == nil {
-            guard credential.version == 1 else { throw PhonePairingCredentialStorageError.invalidState }
-        } else {
+        } else if current.active != nil {
             guard current.active?.provenance == .unknown,
-                  credential.version == 1,
                   replacementAuthorization?.activeToken == current.active?.token,
                   replacementAuthorization?.activeVersion == current.active?.version,
                   replacementAuthorization?.generation == current.generation else {

@@ -248,27 +248,6 @@ test('create emits a 32-byte invitation synchronously, then retains only its ver
   });
 });
 
-test('pairing logs safe lifecycle milestones without credentials or invitation material', async () => {
-  const h = harness();
-
-  connectAndCreate(h);
-  claim(h);
-  assert.equal(await approve(h), 'ok');
-  assert.equal(await acknowledge(h), 'ok');
-
-  assert.deepEqual(h.logs, [
-    ['pairing_created', { phase: 'invited' }],
-    ['pairing_claimed', { clientKind: 'ios', phase: 'awaiting_approval' }],
-    ['pairing_approved', { phase: 'awaiting_activation' }],
-    ['pairing_activation_acknowledged', { phase: 'activating' }],
-    ['pairing_activated', { phase: 'completed' }],
-  ]);
-  const rendered = JSON.stringify(h.logs);
-  assert.equal(rendered.includes(INVITATION), false);
-  assert.equal(rendered.includes(CREDENTIAL), false);
-  assert.equal(rendered.includes(SESSION_NONCE), false);
-});
-
 test('only the current authenticated Mac generation owns create and replacing an invite invalidates it once', () => {
   const h = harness();
   h.randomBuffers.push(Buffer.alloc(32, 0x61));
@@ -358,26 +337,6 @@ test('approval is claim-bound CAS and offers a next-version credential without a
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
   assert.equal(h.coordinator.claim(PHONE, 5, claimMessage()), 'ok');
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
-});
-
-test('a claimant disconnect after approval commits the already-issued credential instead of discarding it', async () => {
-  const h = harness();
-  connectAndCreate(h);
-  claim(h);
-  assert.equal(approve(h), 'ok');
-
-  assert.equal(await h.coordinator.disconnectClaimant(PHONE, 5), 'ok');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.record().activePhoneCredentialVersion, 8);
-  assert.equal(h.events.some(({ message }) => message.type === 'pair.completed'
-    && message.activePhoneCredentialVersion === 8), true);
-  assert.equal(h.events.some(({ message }) => ['cancelled', 'expired', 'mac_offline'].includes(
-    message.reason,
-  )), false);
-
-  // A late duplicate claim from the same claimant is no longer meaningful:
-  // the session already completed and is not resumable.
-  assert.equal(h.coordinator.claim(PHONE, 6, claimMessage()), 'used');
 });
 
 test('a connected replacement Mac cannot approve, deny, or cancel before capability opt-in', async () => {
