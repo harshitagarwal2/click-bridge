@@ -101,7 +101,7 @@ Create and verify two App Store Connect records before the first upload:
 | iOS | Click Bridge | `com.clickbridge.phone` | `clickbridge-phone-20260812` | English (U.S.) |
 | macOS | Click Bridge | `com.clickbridge.mac` | `clickbridge-macos-2026` | English (U.S.) |
 
-The macOS App Store provisioning profile must include the App Sandbox entitlement for `com.clickbridge.mac`. The TestFlight lane adds `ClickBridgeMac-AppStore.entitlements` only through command-line Release overrides; the existing Developer ID/notarized macOS workflow remains unsandboxed.
+The macOS App Store provisioning profile must include the App Sandbox entitlement for `com.clickbridge.mac`. The macOS target includes `ClickBridgeMac-AppStore.entitlements` so Xcode Organizer uploads and the TestFlight lane both produce valid App Store archives. The Developer ID/notarized workflow explicitly disables the sandbox and clears that entitlement.
 
 The iOS and macOS workflows install XcodeGen 2.46.0 directly from the official `yonaskolb/XcodeGen` release asset and verify SHA-256 `4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806` before executing it. The macOS checksum file records only the ZIP basename, so it verifies from any download directory.
 

@@ -13,6 +13,7 @@
 		0AF990995FBCDB7C48BF092B /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = E427B3E24B1E47F3B1D5B4BB /* PrivacyInfo.xcprivacy */; };
 		0E6130C5D654CD1D32C584C7 /* heartbeat.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 1CC7996AD9138ACA6E88E8AD /* heartbeat.request.json */; };
 		12F3C8194F45ED55E157B82B /* wrong-version.json in Resources */ = {isa = PBXBuildFile; fileRef = 651607A833F331BB9AC2E04D /* wrong-version.json */; };
+		136DB518F98478559220B17B /* pre-tool-advisory-throttle.json in Resources */ = {isa = PBXBuildFile; fileRef = C04E3E47F8F336FFE8C0FB03 /* pre-tool-advisory-throttle.json */; };
 		14076C680E5DBA725DD1DD7C /* ActionProcessorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F56CF837ED2862327D252E /* ActionProcessorTests.swift */; };
 		14C1C879EF715C1CDD63C50F /* pair-short-reference.json in Resources */ = {isa = PBXBuildFile; fileRef = 0EFDEB81DCE1B707EB44AA75 /* pair-short-reference.json */; };
 		152F87276EBAE3EAA03978A0 /* WireMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FF6446CBBC7E496806FB0B1 /* WireMessageTests.swift */; };
@@ -184,6 +185,7 @@
 		BC13A7FC1C2E5B531D8ECC4E /* pair.cancel.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pair.cancel.json; sourceTree = "<group>"; };
 		BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		BF75BB6F8B483996B6D5A78F /* state.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = state.json; sourceTree = "<group>"; };
+		C04E3E47F8F336FFE8C0FB03 /* pre-tool-advisory-throttle.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pre-tool-advisory-throttle.json"; sourceTree = "<group>"; };
 		C22D37DF5D245A3ECC3429EB /* pair.cancel.claim.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pair.cancel.claim.json; sourceTree = "<group>"; };
 		C5C87318888A4C97AB2C66AF /* action.result.rejected.invalid-request.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.invalid-request.json"; sourceTree = "<group>"; };
 		C75DE6F36B7ACF90F7F36890 /* hello.ok.mac.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = hello.ok.mac.json; sourceTree = "<group>"; };
@@ -212,6 +214,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		03CE0F4FA483690E6D807061 /* state */ = {
+			isa = PBXGroup;
+			children = (
+				A4A6889A764C11AA3218542F /* sessions */,
+			);
+			path = state;
+			sourceTree = "<group>";
+		};
 		118434EB71E1D6E62EE66CF7 /* ClickBridgeMac */ = {
 			isa = PBXGroup;
 			children = (
@@ -325,6 +335,30 @@
 			name = contracts;
 			sourceTree = "<group>";
 		};
+		951B327226AB6495A5D8F10C /* .omc */ = {
+			isa = PBXGroup;
+			children = (
+				03CE0F4FA483690E6D807061 /* state */,
+			);
+			path = .omc;
+			sourceTree = "<group>";
+		};
+		A4A6889A764C11AA3218542F /* sessions */ = {
+			isa = PBXGroup;
+			children = (
+				C1128BB84E732F42E034340E /* 9bb7ef98-0fb3-4462-8912-bb62c800ef44 */,
+			);
+			path = sessions;
+			sourceTree = "<group>";
+		};
+		C1128BB84E732F42E034340E /* 9bb7ef98-0fb3-4462-8912-bb62c800ef44 */ = {
+			isa = PBXGroup;
+			children = (
+				C04E3E47F8F336FFE8C0FB03 /* pre-tool-advisory-throttle.json */,
+			);
+			path = "9bb7ef98-0fb3-4462-8912-bb62c800ef44";
+			sourceTree = "<group>";
+		};
 		C5826750CF3C25EFB1311C3E /* ClickBridgeMacTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -368,6 +402,7 @@
 				516FF0124E9165A938858B42 /* unknown-field.json */,
 				D1220599A04910F8983C78B1 /* wrong-role.json */,
 				651607A833F331BB9AC2E04D /* wrong-version.json */,
+				951B327226AB6495A5D8F10C /* .omc */,
 			);
 			path = invalid;
 			sourceTree = "<group>";
@@ -512,6 +547,7 @@
 				88E7F7603CA778F83FA4C858 /* pair.failed.mac-before-claim.json in Resources */,
 				C602BAB2642C97D794B73086 /* pair.status.json in Resources */,
 				B8F28F119CEE100DAA6EBC9D /* pair.status.request.json in Resources */,
+				136DB518F98478559220B17B /* pre-tool-advisory-throttle.json in Resources */,
 				F09E810664C28E35DC9A9DC7 /* relay.ack.json in Resources */,
 				D35F9F76FBF9F58AA6166F8A /* relay.ack.mac-offline.json in Resources */,
 				8F7517D8BD0DDBE6285D0DBB /* relay.ack.rejected-expired.json in Resources */,
@@ -590,7 +626,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ClickBridgeMac/ClickBridgeMac-AppStore.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = ClickBridgeMac/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -623,7 +662,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ClickBridgeMac/ClickBridgeMac-AppStore.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
 				INFOPLIST_FILE = ClickBridgeMac/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
