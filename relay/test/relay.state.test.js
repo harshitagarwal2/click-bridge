@@ -32,7 +32,10 @@ function harness({ start = 1_800_000_000_000, authorizePhone = () => true } = {}
     authorizePhone,
     log: (event, detail = {}) => logs.push({ event, detail }),
   });
-  const connection = (id) => Object.freeze({ id });
+  // deviceId defaults to id so most tests (one device per name) are
+  // unaffected; takeover tests pass a shared deviceId explicitly to model
+  // the same physical phone reconnecting on a new socket.
+  const connection = (id, deviceId = id) => Object.freeze({ id, deviceId });
   const messages = (conn, type) => events
     .filter((entry) => entry.connection === conn
       && entry.event.kind === 'message'
@@ -78,8 +81,11 @@ const posted = (actionId, now) => ({
 
 test('a displaced phone receives the terminal takeover close without clearing its replacement', () => {
   const h = harness();
-  const first = h.connection('phone-a');
-  const replacement = h.connection('phone-b');
+  // Same deviceId: this models one physical phone reconnecting on a new
+  // socket, not a second device — coexistence of distinct devices is
+  // covered separately below.
+  const first = h.connection('phone-a', 'device-1');
+  const replacement = h.connection('phone-b', 'device-1');
 
   h.state.replaceRole('phone', first);
   h.state.replaceRole('phone', replacement);
@@ -89,9 +95,39 @@ test('a displaced phone receives the terminal takeover close without clearing it
     event: { kind: 'close', code: 4004, reason: 'another phone took over' },
   });
   assert.equal(h.state.detachIfCurrent('phone', first), false);
-  assert.equal(h.state.phone, replacement);
+  assert.equal(h.state.phonesByDevice.get('device-1'), replacement);
   assert.equal(h.state.detachIfCurrent('phone', replacement), true);
-  assert.equal(h.state.phone, null);
+  assert.equal(h.state.phonesByDevice.get('device-1'), undefined);
+});
+
+test('two different devices stay connected together and each keeps its own routes', () => {
+  const h = harness();
+  const deviceOne = h.connection('phone-1', 'device-1');
+  const deviceTwo = h.connection('phone-2', 'device-2');
+  const mac = h.connection('mac');
+
+  h.state.replaceRole('phone', deviceOne);
+  h.state.replaceRole('phone', deviceTwo);
+  h.state.replaceRole('mac', mac);
+
+  // Neither connection was closed: adding a second device is not a takeover.
+  assert.equal(h.events.some((entry) => entry.event.kind === 'close'), false);
+  assert.equal(h.state.phonesByDevice.get('device-1'), deviceOne);
+  assert.equal(h.state.phonesByDevice.get('device-2'), deviceTwo);
+
+  h.state.publishState();
+  assert.equal(h.messages(deviceOne, 'state').length, 1);
+  assert.equal(h.messages(deviceTwo, 'state').length, 1);
+
+  const request = action(1_800_000_000_000);
+  h.state.handlePhoneMessage(deviceOne, request);
+  h.state.handleMacMessage(mac, posted(request.actionId, 1_800_000_000_050));
+  assert.equal(h.messages(deviceOne, 'action.result').length, 1);
+  assert.equal(h.messages(deviceTwo, 'action.result').length, 0);
+
+  assert.equal(h.state.detachDevice('device-1'), true);
+  assert.equal(h.state.phonesByDevice.has('device-1'), false);
+  assert.equal(h.state.phonesByDevice.get('device-2'), deviceTwo);
 });
 
 test('Mac replacement retains the existing reconnectable close contract', () => {
@@ -248,8 +284,8 @@ test('duplicate in-flight action is rejected and never forwarded twice', () => {
 
 test('result route belongs to the originating current phone, not its replacement', () => {
   const h = harness();
-  const first = h.connection('phone-a');
-  const replacement = h.connection('phone-b');
+  const first = h.connection('phone-a', 'device-1');
+  const replacement = h.connection('phone-b', 'device-1');
   const mac = h.connection('mac');
   h.state.replaceRole('phone', first);
   h.state.replaceRole('mac', mac);
@@ -335,8 +371,8 @@ test('diagnostic forwarding, counter routing, and expiry', () => {
 
 test('heartbeat works for either role and stale sockets have no side effects', () => {
   const h = harness();
-  const phoneA = h.connection('phone-a');
-  const phoneB = h.connection('phone-b');
+  const phoneA = h.connection('phone-a', 'device-1');
+  const phoneB = h.connection('phone-b', 'device-1');
   const mac = h.connection('mac');
   h.state.replaceRole('phone', phoneA);
   h.state.replaceRole('phone', phoneB);
@@ -381,7 +417,7 @@ test('phone disconnect drops every route it owns and dispose cancels timers', ()
   assert.equal(h.timers.size, 0);
 });
 
-test('routes retain only owner and timer metadata, never request bodies', () => {
+test('routes retain only owner, timer, and device metadata, never request bodies', () => {
   const h = harness();
   const phone = h.connection('phone');
   const mac = h.connection('mac');
@@ -389,5 +425,8 @@ test('routes retain only owner and timer metadata, never request bodies', () => 
   h.state.replaceRole('mac', mac);
   const request = action(1_800_000_000_000);
   h.state.handlePhoneMessage(phone, request);
-  assert.deepEqual(Object.keys(h.state.pendingActions.get(request.actionId)).sort(), ['owner', 'timer']);
+  assert.deepEqual(
+    Object.keys(h.state.pendingActions.get(request.actionId)).sort(),
+    ['deviceId', 'owner', 'timer'],
+  );
 });

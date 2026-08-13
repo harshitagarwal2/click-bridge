@@ -231,7 +231,7 @@ test('phone authentication closes the displaced phone with the terminal takeover
     const replacement = client(url);
     await authenticate(replacement, 'phone', PHONE_TOKEN);
     assert.equal(await first.closed(), 4004);
-    assert.notEqual(server.state.phone, null);
+    assert.equal(server.state.phonesByDevice.size, 1);
     replacement.send({ type: 'heartbeat.request', v: PROTOCOL_VERSION, sequence: 5 });
     assert.equal((await replacement.wait((m) => m.type === 'heartbeat.ack')).sequence, 5);
   } finally {

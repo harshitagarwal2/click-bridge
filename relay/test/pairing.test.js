@@ -3,14 +3,11 @@ import assert from 'node:assert/strict';
 import { createHash, createHmac } from 'node:crypto';
 
 import { AUTH_STORE_ERROR_CODES, AuthStoreError } from '../src/auth-store.js';
-import { CREDENTIAL_REPLACED_CLOSE_CODE } from '../src/constants.js';
 import { PairingCoordinator } from '../src/pairing.js';
 
 const MAC = Object.freeze({ id: 'mac' });
 const PHONE = Object.freeze({ id: 'claimant' });
 const OLD_PHONE = Object.freeze({ id: 'old-phone' });
-const REPLACEMENT_PHONE = Object.freeze({ id: 'replacement-phone' });
-const NEW_ACTIVE_PHONE = Object.freeze({ id: 'new-active-phone' });
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const CLAIM_ID = '22222222-2222-4222-8222-222222222222';
 const SESSION_NONCE = '33'.repeat(32);
@@ -57,12 +54,14 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+// Note: PairingCoordinator no longer takes `close` or `deauthorizeOlderPhones`
+// — additive pairing never revokes or closes another phone, so there is
+// nothing left for those to do. `closes` stays here (always empty) purely so
+// the many "nothing was closed" assertions below keep reading naturally.
 function harness({
   enabled = true,
   emitResult = true,
   activationGate = null,
-  closeError = null,
-  deauthorizationFailure = null,
   activePhoneCredentialVersion = 7,
 } = {}) {
   const clock = { value: 1_700_000_000_000 };
@@ -79,8 +78,6 @@ function harness({
   });
   let activateCalls = 0;
   let activationError = null;
-  let deauthorizationResult = deauthorizationFailure;
-  let authenticatedPhones = [{ connection: OLD_PHONE, generation: 4, credentialVersion: 7 }];
   const authStore = {
     snapshot: () => record,
     async activate({ expectedVersion, credentialVersion, verifier }) {
@@ -115,18 +112,6 @@ function harness({
       events.push({ connection, message: structuredClone(message) });
       return typeof emitResult === 'function' ? emitResult(connection, message) : emitResult;
     },
-    close: (connection, code, reason) => {
-      closes.push({ connection, code, reason });
-      if (closeError) throw closeError;
-    },
-    deauthorizeOlderPhones: ({ credentialVersion, exclude }) => {
-      if (deauthorizationResult instanceof Error) throw deauthorizationResult;
-      if (deauthorizationResult !== null) return deauthorizationResult;
-      const revoked = authenticatedPhones.filter((phone) => phone.credentialVersion < credentialVersion
-        && !(phone.connection === exclude.connection && phone.generation === exclude.generation));
-      authenticatedPhones = authenticatedPhones.filter((phone) => !revoked.includes(phone));
-      return revoked.map((phone) => ({ ...phone }));
-    },
     log: (...args) => logs.push(args),
   });
   return {
@@ -134,13 +119,6 @@ function harness({
     record: () => record,
     activateCalls: () => activateCalls,
     failActivation(error = new Error('disk failed')) { activationError = error; },
-    setAuthenticatedPhones(phones) { authenticatedPhones = phones; },
-    setDeauthorizationResult(result) { deauthorizationResult = result; },
-    phoneCanAct(connection, generation) {
-      const phone = authenticatedPhones.find((candidate) => candidate.connection === connection
-        && candidate.generation === generation);
-      return Boolean(phone && coordinator.allowsPhoneCredentialVersion(phone.credentialVersion));
-    },
   };
 }
 
@@ -411,7 +389,7 @@ test('a connected replacement Mac cannot approve, deny, or cancel before capabil
   }
 });
 
-test('exact credential-bound proof activates with CAS, clears secrets, then closes the old phone with 4006', async () => {
+test('exact credential-bound proof activates with CAS and clears secrets', async () => {
   const h = harness();
   connectAndCreate(h);
   claim(h);
@@ -438,12 +416,13 @@ test('exact credential-bound proof activates with CAS, clears secrets, then clos
       },
     },
   ]);
-  assert.deepEqual(h.closes, [{ connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced' }]);
+  // Additive: a successful pairing never closes anyone else.
+  assert.equal(h.closes.length, 0);
   assert.equal(JSON.stringify(h.coordinator).includes(CREDENTIAL), false);
   assert.equal(JSON.stringify(h.coordinator).includes(activationProof()), false);
 });
 
-test('wrong proof, stale claimant generation, and wrong version never activate or close the old phone', async () => {
+test('wrong proof, stale claimant generation, and wrong version never activate', async () => {
   for (const [generation, overrides] of [
     [6, {}],
     [5, { credentialVersion: 9 }],
@@ -456,7 +435,7 @@ test('wrong proof, stale claimant generation, and wrong version never activate o
     const result = await h.coordinator.acknowledge(PHONE, generation, {
       type: 'pair.credential.ack', v: 1, claimId: CLAIM_ID,
       credentialVersion: 8, proof: activationProof(), ...overrides,
-    }, OLD_PHONE);
+    });
     assert.notEqual(result, 'ok');
     assert.equal(h.activateCalls(), 0);
     assert.equal(h.record().activePhoneCredentialVersion, 7);
@@ -480,12 +459,10 @@ test('concurrent and duplicate acknowledgements activate once and recover lost f
   const duplicate = acknowledge(h);
   assert.deepEqual(await Promise.all([first, duplicate]), ['ok', 'ok']);
   assert.equal(h.activateCalls(), 1);
-  assert.equal(h.closes.length, 1);
 
   dropFinal = false;
   assert.equal(await acknowledge(h), 'ok');
   assert.equal(h.activateCalls(), 1);
-  assert.equal(h.closes.length, 1);
   assert.deepEqual(h.events.slice(-2).map(({ message }) => message.type), ['pair.active', 'pair.completed']);
 });
 
@@ -691,250 +668,6 @@ test('an unadvertised replacement Mac receives no durable pairing completion', a
   }]);
 });
 
-test('activation revokes the current old generation after persistence and excludes the new one', async () => {
-  const activationGate = deferred();
-  const h = harness({ activationGate });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-
-  const activation = acknowledge(h);
-  h.setAuthenticatedPhones([
-    { connection: REPLACEMENT_PHONE, generation: 9, credentialVersion: 7 },
-    { connection: NEW_ACTIVE_PHONE, generation: 10, credentialVersion: 8 },
-  ]);
-  activationGate.resolve();
-  assert.equal(await activation, 'ok');
-
-  assert.deepEqual(h.closes, [{
-    connection: REPLACEMENT_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
-  }]);
-  assert.equal(await acknowledge(h), 'ok');
-  assert.equal(h.closes.length, 1);
-});
-
-test('logical phone authorization is revoked before best-effort websocket close', async () => {
-  const h = harness({ closeError: new Error('socket close failed') });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-  assert.equal(h.phoneCanAct(OLD_PHONE, 4), true);
-
-  assert.equal(await acknowledge(h), 'ok');
-
-  assert.equal(h.phoneCanAct(OLD_PHONE, 4), false);
-  assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
-  }]);
-  assert.equal(h.logs.some(([name]) => name === 'pairing_phone_revocation_failed'), true);
-  assert.deepEqual(h.events.slice(-2).map(({ message }) => message.type), [
-    'pair.active', 'pair.completed',
-  ]);
-});
-
-test('durable activation remains unreconciled until logical deauthorization succeeds', async () => {
-  const h = harness({ deauthorizationFailure: new Error('relay state unavailable') });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-
-  assert.equal(await acknowledge(h), 'reconciliation_failed');
-  assert.equal(h.record().activePhoneCredentialVersion, 8);
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.phoneCanAct(OLD_PHONE, 4), false);
-  assert.equal(h.events.some(({ message }) => [
-    'pair.active', 'pair.completed',
-  ].includes(message.type)), false);
-  assert.equal(h.coordinator.observe().phase, 'committed');
-
-  h.randomBuffers.push(Buffer.alloc(32, 0x61));
-  const createdBeforeRetry = h.events.filter(({ message }) => message.type === 'pair.created').length;
-  assert.equal(h.coordinator.create(
-    MAC, 3, createMessage('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
-  ), 'activation_in_progress');
-  assert.equal(h.randomBuffers.length, 1);
-  assert.equal(
-    h.events.filter(({ message }) => message.type === 'pair.created').length,
-    createdBeforeRetry,
-  );
-  assert.equal(h.coordinator.observe().phase, 'committed');
-
-  h.setDeauthorizationResult(null);
-  assert.equal(await acknowledge(h), 'ok');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.coordinator.observe().phase, 'completed');
-  assert.deepEqual(h.events.slice(-2).map(({ message }) => message.type), [
-    'pair.active', 'pair.completed',
-  ]);
-});
-
-test('deauthorization captures own data descriptors once before any close', async () => {
-  const descriptorReads = new Map();
-  const values = {
-    connection: OLD_PHONE,
-    generation: 4,
-    credentialVersion: 7,
-  };
-  const phone = new Proxy({}, {
-    get() {
-      throw new Error('ordinary property reads are forbidden');
-    },
-    getOwnPropertyDescriptor(_target, property) {
-      descriptorReads.set(property, (descriptorReads.get(property) ?? 0) + 1);
-      if (!Object.hasOwn(values, property)) return undefined;
-      return {
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        value: values[property],
-      };
-    },
-  });
-  const h = harness({ deauthorizationFailure: [phone] });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-
-  assert.equal(await acknowledge(h), 'ok');
-  assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
-  }]);
-  assert.deepEqual(Object.fromEntries(descriptorReads), {
-    connection: 1, generation: 1, credentialVersion: 1,
-  });
-});
-
-test('accessor, inherited, claimant, and current phone entries fail closed before any close', async () => {
-  let getterCalls = 0;
-  const accessor = {};
-  Object.defineProperty(accessor, 'connection', {
-    configurable: true,
-    get() {
-      getterCalls += 1;
-      return OLD_PHONE;
-    },
-  });
-  Object.defineProperties(accessor, {
-    generation: { configurable: true, value: 4 },
-    credentialVersion: { configurable: true, value: 7 },
-  });
-  const inherited = Object.create({
-    connection: OLD_PHONE, generation: 4, credentialVersion: 7,
-  });
-  const invalidLists = [
-    Array(1),
-    [accessor],
-    [inherited],
-    [{ connection: PHONE, generation: 5, credentialVersion: 7 }],
-    [{ connection: NEW_ACTIVE_PHONE, generation: 10, credentialVersion: 8 }],
-    [
-      { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
-      accessor,
-    ],
-  ];
-  for (const phones of invalidLists) {
-    const h = harness({ deauthorizationFailure: phones });
-    connectAndCreate(h);
-    claim(h);
-    approve(h);
-    assert.equal(await acknowledge(h), 'reconciliation_failed');
-    assert.equal(h.closes.length, 0);
-  }
-  assert.equal(getterCalls, 0);
-});
-
-test('primitive connections invalidate the complete deauthorization result before any close', async () => {
-  for (const connection of ['old-phone', 42, Symbol('old-phone')]) {
-    const h = harness({
-      deauthorizationFailure: [
-        { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
-        { connection, generation: 5, credentialVersion: 7 },
-      ],
-    });
-    connectAndCreate(h);
-    claim(h);
-    approve(h);
-
-    assert.equal(await acknowledge(h), 'reconciliation_failed');
-    assert.equal(h.closes.length, 0);
-    assert.equal(h.events.some(({ message }) => [
-      'pair.active', 'pair.completed',
-    ].includes(message.type)), false);
-  }
-});
-
-test('claimant connection is never closed through a mismatched generation snapshot', async () => {
-  const h = harness({
-    deauthorizationFailure: [
-      { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
-      { connection: PHONE, generation: 999, credentialVersion: 7 },
-    ],
-  });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-
-  assert.equal(await acknowledge(h), 'reconciliation_failed');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.closes.length, 0);
-  assert.equal(h.events.some(({ message }) => [
-    'pair.active', 'pair.completed',
-  ].includes(message.type)), false);
-
-  h.setDeauthorizationResult(null);
-  assert.equal(await acknowledge(h), 'ok');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.coordinator.observe().phase, 'completed');
-});
-
-test('hostile deauthorization containers fail closed and remain retryable', async () => {
-  const hostile = new Proxy([], {
-    get(target, property, receiver) {
-      if (property === Symbol.iterator) throw new Error('iterator unavailable');
-      return Reflect.get(target, property, receiver);
-    },
-  });
-  const h = harness({ deauthorizationFailure: hostile });
-  connectAndCreate(h);
-  claim(h);
-  approve(h);
-
-  assert.equal(await acknowledge(h), 'reconciliation_failed');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.closes.length, 0);
-  assert.equal(h.events.some(({ message }) => [
-    'pair.active', 'pair.completed',
-  ].includes(message.type)), false);
-
-  h.setDeauthorizationResult(null);
-  assert.equal(await acknowledge(h), 'ok');
-  assert.equal(h.activateCalls(), 1);
-  assert.equal(h.coordinator.observe().phase, 'completed');
-});
-
-test('malformed deauthorization results cannot publish activation success', async () => {
-  for (const malformed of [
-    { not: 'an array' },
-    [
-      { connection: OLD_PHONE, generation: 4, credentialVersion: 7 },
-      { connection: REPLACEMENT_PHONE, generation: 'wrong', credentialVersion: 7 },
-    ],
-  ]) {
-    const h = harness({ deauthorizationFailure: malformed });
-    connectAndCreate(h);
-    claim(h);
-    approve(h);
-
-    assert.equal(await acknowledge(h), 'reconciliation_failed');
-    assert.equal(h.record().activePhoneCredentialVersion, 8);
-    assert.equal(h.phoneCanAct(OLD_PHONE, 4), false);
-    assert.equal(h.closes.length, 0);
-    assert.equal(h.events.some(({ message }) => [
-      'pair.active', 'pair.completed',
-    ].includes(message.type)), false);
-  }
-});
-
 test('activation completion is never sent to a disconnected historical Mac generation', async () => {
   const scenarios = [
     (h) => h.coordinator.macDisconnected(MAC, 3),
@@ -959,7 +692,7 @@ test('activation completion is never sent to a disconnected historical Mac gener
   }
 });
 
-test('terminal output failures cannot skip durable completion or old-generation revocation', async () => {
+test('terminal output failures cannot skip durable completion', async () => {
   const h = harness({
     emitResult: (_connection, message) => {
       if (message.type === 'pair.active') {
@@ -976,9 +709,7 @@ test('terminal output failures cannot skip durable completion or old-generation 
 
   assert.equal(await acknowledge(h), 'ok');
   assert.equal(h.record().activePhoneCredentialVersion, 8);
-  assert.deepEqual(h.closes, [{
-    connection: OLD_PHONE, code: CREDENTIAL_REPLACED_CLOSE_CODE, reason: 'credential_replaced',
-  }]);
+  assert.equal(h.closes.length, 0);
   assert.deepEqual(h.coordinator.observe(), {
     phase: 'completed', requestId: REQUEST_ID, claimId: CLAIM_ID,
     expiresAtUnixMs: null, hasInvitationVerifier: false, hasPendingCredential: false,
@@ -1080,14 +811,12 @@ test('credential versions remain monotonic across sequential activations', async
     .digest('hex');
   await h.coordinator.acknowledge(PHONE, 6, {
     type: 'pair.credential.ack', v: 1, claimId, credentialVersion: 9, proof,
-  }, OLD_PHONE);
+  });
   assert.equal(h.record().activePhoneCredentialVersion, 9);
 });
 
 test('pairing-disabled public calls return unsupported without consuming randomness or auth state', async () => {
   const h = harness({ enabled: false });
-  assert.equal(h.coordinator.allowsPhoneCredentialVersion(7), true);
-  assert.equal(h.coordinator.allowsPhoneCredentialVersion(6), false);
   h.coordinator.macConnected(MAC, 3);
   assert.equal(h.coordinator.requestStatus(MAC, 3, statusMessage()), 'unsupported');
   assert.equal(h.coordinator.create(MAC, 3, createMessage()), 'unsupported');

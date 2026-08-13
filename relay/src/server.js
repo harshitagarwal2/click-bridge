@@ -11,6 +11,8 @@ import { WebSocketServer } from 'ws';
 import {
   AUTH_TIMEOUT_MS,
   AUTHENTICATION_REJECTED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_CODE,
+  CREDENTIAL_REPLACED_CLOSE_REASON,
   MAX_MESSAGE_BYTES,
   MAX_TOTAL_WEBSOCKET_CONNECTIONS,
   MAX_UNAUTHENTICATED_WEBSOCKET_CONNECTIONS,
@@ -23,7 +25,7 @@ import {
 import { createSecurityHeaders } from './csp.js';
 import { encodeMessage, parseClientMessage, ProtocolError } from './protocol.js';
 import { RelayState } from './relay.js';
-import { createPhoneAuthStore } from './auth-store.js';
+import { AuthStoreError, AUTH_STORE_ERROR_CODES, createPhoneAuthStore } from './auth-store.js';
 import { PairingCoordinator } from './pairing.js';
 import { createSessionStore, SessionStoreError } from './session-store.js';
 
@@ -264,18 +266,23 @@ function constantTimeEquals(left, right) {
 
 function captureCredentialDescriptor(value) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  let descriptor;
+  let versionDescriptor;
+  let deviceDescriptor;
   try {
-    descriptor = Object.getOwnPropertyDescriptor(value, 'credentialVersion');
+    versionDescriptor = Object.getOwnPropertyDescriptor(value, 'credentialVersion');
+    deviceDescriptor = Object.getOwnPropertyDescriptor(value, 'deviceId');
   } catch {
     return null;
   }
-  if (!descriptor || Object.hasOwn(descriptor, 'get') || Object.hasOwn(descriptor, 'set')) {
+  if (!versionDescriptor || Object.hasOwn(versionDescriptor, 'get') || Object.hasOwn(versionDescriptor, 'set')
+      || !deviceDescriptor || Object.hasOwn(deviceDescriptor, 'get') || Object.hasOwn(deviceDescriptor, 'set')) {
     return null;
   }
-  const credentialVersion = descriptor.value;
-  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) return null;
-  return Object.freeze({ credentialVersion });
+  const credentialVersion = versionDescriptor.value;
+  const deviceId = deviceDescriptor.value;
+  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0
+      || typeof deviceId !== 'string' || deviceId.length === 0) return null;
+  return Object.freeze({ deviceId, credentialVersion });
 }
 
 function writeResponse(res, status, headers, body = '') {
@@ -476,7 +483,11 @@ export function attachWebSocketServer({
   }
   const credentialStore = authStore ?? Object.freeze({
     authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
-      ? Object.freeze({ credentialVersion: 0 }) : null,
+      ? Object.freeze({ deviceId: 'legacy-phone', credentialVersion: 0 }) : null,
+    isDeviceActive: (deviceId, credentialVersion) => deviceId === 'legacy-phone'
+      && credentialVersion === 0,
+    hasCredentialVersion: (credentialVersion) => credentialVersion === 0,
+    authenticateMacCredential: (credential) => constantTimeEquals(credential, macToken),
   });
   const pairingCoordinator = pairing ?? Object.freeze({
     acknowledge: async () => 'unsupported',
@@ -650,6 +661,79 @@ export function attachWebSocketServer({
   };
   httpServer.on('upgrade', onUpgrade);
 
+  async function handlePhoneManagement(ws, authStoreForRuntime, stateForRuntime, message) {
+    const reply = (payload) => {
+      if (ws.readyState === ws.OPEN) ws.send(encode(payload));
+    };
+
+    if (message.type === 'phone.list.request') {
+      let snapshot;
+      try {
+        snapshot = authStoreForRuntime.snapshot();
+      } catch {
+        reply({
+          type: 'phone.list', v: PROTOCOL_VERSION, requestId: message.requestId,
+          registryRevision: 0, phones: [],
+        });
+        return;
+      }
+      reply({
+        type: 'phone.list',
+        v: PROTOCOL_VERSION,
+        requestId: message.requestId,
+        registryRevision: snapshot.registryRevision,
+        phones: snapshot.phones.map((phone) => ({
+          deviceId: phone.deviceId,
+          label: phone.label,
+          status: phone.status,
+          credentialVersion: phone.credentialVersion,
+        })),
+      });
+      return;
+    }
+
+    if (typeof authStoreForRuntime.revokePhone !== 'function') {
+      reply({
+        type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+        requestId: message.requestId, deviceId: message.deviceId, reason: 'storage_failed',
+      });
+      return;
+    }
+    const target = stateForRuntime.phonesByDevice.get(message.deviceId) ?? null;
+    let snapshot;
+    try {
+      snapshot = await authStoreForRuntime.revokePhone({ deviceId: message.deviceId });
+    } catch (error) {
+      let reason = 'storage_failed';
+      if (error instanceof AuthStoreError) {
+        if (error.code === AUTH_STORE_ERROR_CODES.UNKNOWN_DEVICE) reason = 'unknown_device';
+        else if (error.code === AUTH_STORE_ERROR_CODES.ALREADY_REVOKED) reason = 'already_revoked';
+      } else if (error?.code === 'unknown_device' || error?.code === 'already_revoked') {
+        reason = error.code;
+      }
+      reply({
+        type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+        requestId: message.requestId, deviceId: message.deviceId, reason,
+      });
+      return;
+    }
+    if (target) {
+      stateForRuntime.detachDevice(message.deviceId, target);
+      const targetWs = connections.get(target);
+      if (targetWs) {
+        closeWithDeadline(
+          targetWs, CREDENTIAL_REPLACED_CLOSE_CODE, CREDENTIAL_REPLACED_CLOSE_REASON,
+          terminalCloseDeadlineMs, scheduleTerminalClose,
+        );
+      }
+    }
+    reply({
+      type: 'phone.revoked', v: PROTOCOL_VERSION,
+      requestId: message.requestId, deviceId: message.deviceId,
+      registryRevision: snapshot.registryRevision,
+    });
+  }
+
   wss.on('connection', (ws) => {
     const admission = ws.__clickBridgeAdmission;
     const runtime = ws.__clickBridgeRuntime;
@@ -768,7 +852,7 @@ export function attachWebSocketServer({
             return;
           }
         } else if (activeAuthenticateMac(message.token)) {
-          descriptor = Object.freeze({ credentialVersion: null });
+          descriptor = Object.freeze({ deviceId: null, credentialVersion: null });
         }
         if (!descriptor) {
           log.info?.(JSON.stringify({
@@ -794,6 +878,7 @@ export function attachWebSocketServer({
           id: ++nextConnectionId,
           role,
           generation,
+          deviceId: descriptor.deviceId,
           credentialVersion: descriptor.credentialVersion,
         });
         connections.set(connection, ws);
@@ -847,6 +932,17 @@ export function attachWebSocketServer({
         } else {
           activePairing.deny(connection, generation, message);
         }
+      } else if (message.type.startsWith('phone.')) {
+        if (!pairingEnabled) {
+          ws.send(encode(message.type === 'phone.list.request'
+            ? { type: 'phone.list', v: PROTOCOL_VERSION, requestId: message.requestId, registryRevision: 0, phones: [] }
+            : {
+              type: 'phone.revoke.failed', v: PROTOCOL_VERSION,
+              requestId: message.requestId, deviceId: message.deviceId, reason: 'storage_failed',
+            }));
+          return;
+        }
+        return handlePhoneManagement(ws, activeAuthStore, activeState, message);
       } else {
         activeState.handleMacMessage(connection, message);
       }
@@ -1030,6 +1126,7 @@ export function createServer({
     ? createPhoneAuthStore({
       recordPath: phoneAuthRecord,
       initialPhoneToken: phoneToken,
+      initialMacToken: macToken,
       fs,
       crypto,
       log: () => redactedLog?.('phone_auth_store_failure'),
@@ -1038,7 +1135,11 @@ export function createServer({
       async initialize() {},
       snapshot: () => Object.freeze({ activePhoneCredentialVersion: 0 }),
       authenticateCredential: (credential) => constantTimeEquals(credential, phoneToken)
-        ? Object.freeze({ credentialVersion: 0 }) : null,
+        ? Object.freeze({ deviceId: 'legacy-phone', credentialVersion: 0 }) : null,
+      isDeviceActive: (deviceId, credentialVersion) => deviceId === 'legacy-phone'
+        && credentialVersion === 0,
+      hasCredentialVersion: (credentialVersion) => credentialVersion === 0,
+      authenticateMacCredential: (credential) => constantTimeEquals(credential, macToken),
       async activate() { throw new Error('durable auth store unavailable'); },
     }));
 
@@ -1073,18 +1174,6 @@ export function createServer({
   const createRuntime = ({ id = 'legacy', authenticateMac, runtimeAuthStore }) => {
     const authorizedPhones = new Set();
     let state;
-    const deauthorizeOlderPhones = ({ credentialVersion, exclude }) => {
-      const older = [];
-      for (const connection of [...authorizedPhones]) {
-        if (connection.role !== 'phone' || connection === exclude.connection
-            || connection.credentialVersion >= credentialVersion) continue;
-        authorizedPhones.delete(connection);
-        state.detachIfCurrent('phone', connection);
-        older.push({ connection, generation: connection.generation,
-          credentialVersion: connection.credentialVersion });
-      }
-      return older;
-    };
     const pairing = new PairingCoordinator({
       enabled: pairingIsEnabled,
       now: pairingOptions.now ?? (() => Date.now()),
@@ -1095,8 +1184,6 @@ export function createServer({
       },
       authStore: runtimeAuthStore,
       emit: (connection, message) => emit(connection, { kind: 'message', message }),
-      close: (connection, code, reason) => emit(connection, { kind: 'close', code, reason }),
-      deauthorizeOlderPhones,
       log: redactedLog,
     });
     state = stateFactory({
@@ -1104,14 +1191,16 @@ export function createServer({
       emit,
       log: redactedLog,
       authorizePhone: (connection) => authorizedPhones.has(connection)
-        && (!pairingIsEnabled || pairing.allowsPhoneCredentialVersion(connection.credentialVersion) === true),
+        && (typeof runtimeAuthStore.isDeviceActive !== 'function'
+          || runtimeAuthStore.isDeviceActive(connection.deviceId, connection.credentialVersion) === true),
     });
     allStates.add(state);
     return Object.freeze({ id, authenticateMac, authStore: runtimeAuthStore,
       authorizedPhones, pairing, state });
   };
   const legacyRuntime = createRuntime({
-    authenticateMac: (token) => constantTimeEquals(token, macToken),
+    authenticateMac: (token) => typeof credentialStore.authenticateMacCredential === 'function'
+      ? credentialStore.authenticateMacCredential(token) : constantTimeEquals(token, macToken),
     runtimeAuthStore: credentialStore,
   });
   const resolveRuntime = (pathname) => {

@@ -110,6 +110,13 @@ function parseCanonical(raw) {
         : parsePairingServerMessage(raw, {
           state: 'claiming', claimId: message.claimId, generation: 1, activeGeneration: 1,
         });
+    case 'phone.list.request':
+    case 'phone.revoke.request':
+      return parseClientMessage(raw, 'mac');
+    case 'phone.list':
+    case 'phone.revoked':
+    case 'phone.revoke.failed':
+      return parseServerMessage(raw, 'mac');
     default:
       throw new Error(`fixture has unknown type ${message.type}`);
   }

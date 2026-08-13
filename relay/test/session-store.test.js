@@ -43,7 +43,10 @@ test('session store creates independent durable desktop and phone credentials', 
       credentialVersion: 1,
       verifier: crypto.createHash('sha256').update(Buffer.alloc(32, 1)).digest('hex'),
     });
-    assert.deepEqual(auth.authenticateCredential('01'.repeat(32)), { credentialVersion: 1 });
+    const descriptor = auth.authenticateCredential('01'.repeat(32));
+    assert.equal(descriptor.credentialVersion, 1);
+    assert.equal(typeof descriptor.deviceId, 'string');
+    assert.notEqual(descriptor.deviceId.length, 0);
     assert.equal(store.phoneAuthStore(second.id).authenticateCredential('01'.repeat(32)), null);
   });
 });

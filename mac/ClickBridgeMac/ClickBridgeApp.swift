@@ -70,12 +70,21 @@ struct ClickBridgeApp: App {
 
 struct SettingsView: View {
     @ObservedObject var app: AppState
-    @State private var token = ""
     @State private var showingReplacementConfirmation = false
-    @State private var showingAdvanced = false
 
     var body: some View {
         Form {
+            Section("Relay") {
+                Text("Relay setup is managed automatically for this Mac.")
+                    .foregroundStyle(.secondary)
+                if app.relaySetupRetryAvailable {
+                    Button("Retry Relay Setup") { app.retryRelaySetup() }
+                }
+                if let error = app.settings.storageError {
+                    Text(error).font(.caption)
+                }
+            }
+
             Section("Phone") {
                 if let pairing = app.pairing {
                     PairingSettingsView(controller: pairing)
@@ -93,24 +102,12 @@ struct SettingsView: View {
                 .disabled(app.pairing?.state != .ready)
             }
 
-            DisclosureGroup("Advanced legacy connection", isExpanded: $showingAdvanced) {
-                Section("Relay") {
-                    TextField("Relay URL", text: Binding(
-                        get: { app.settings.relayURLString },
-                        set: { app.settings.relayURLString = $0 }
-                    ), prompt: Text("wss://your-host/ws"))
-                }
-                Section("Mac token") {
-                    SecureField("Paste MAC_TOKEN", text: $token)
-                        .privacySensitive()
-                        .accessibilityLabel("Mac token")
-                    HStack {
-                        Button("Save") { save() }.disabled(!validToken)
-                        Button("Clear") { app.clearToken() }
-                    }
-                    Text(app.settings.hasToken ? "A token is stored." : "No token stored.")
-                        .font(.caption)
-                    if let error = app.settings.storageError { Text(error).font(.caption) }
+            Section("Paired Phones") {
+                if let phoneManagement = app.phoneManagement {
+                    PhoneManagementView(controller: phoneManagement)
+                } else {
+                    Text("Connect this Mac to the relay to manage paired phones.")
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -127,10 +124,6 @@ struct SettingsView: View {
         .padding(20)
         .frame(width: 460)
     }
-
-    private var normalizedToken: String { token.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-    private var validToken: Bool { normalizedToken.count == 64 && normalizedToken.allSatisfy(\.isHexDigit) }
-    private func save() { app.saveToken(normalizedToken); token = "" }
 }
 
 private struct PairingSettingsView: View {
@@ -275,6 +268,85 @@ private struct PairingApprovalView: View {
             try? await Task.sleep(for: .seconds(remaining))
             guard !Task.isCancelled else { return }
             await refreshExpiry()
+        }
+    }
+}
+
+private struct PhoneManagementView: View {
+    @ObservedObject var controller: PhoneManagementController
+    @State private var pendingRevokeDeviceId: String?
+
+    var body: some View {
+        Group {
+            if controller.isLoading && controller.phones.isEmpty {
+                ProgressView("Loading paired phones…")
+            } else if controller.phones.isEmpty {
+                Text("No phones are paired.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(controller.phones) { phone in
+                    HStack {
+                        Text(phone.label)
+                        Spacer()
+                        if isRevoking(phone.deviceId) {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("Remove", role: .destructive) {
+                                pendingRevokeDeviceId = phone.deviceId
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { Task { await controller.refresh() } }
+        .confirmationDialog(
+            "Remove this phone?",
+            isPresented: Binding(
+                get: { pendingRevokeDeviceId != nil },
+                set: { presented in if !presented { pendingRevokeDeviceId = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let deviceId = pendingRevokeDeviceId {
+                    Task { await controller.revoke(deviceId: deviceId) }
+                }
+                pendingRevokeDeviceId = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRevokeDeviceId = nil }
+        } message: {
+            Text("This phone will no longer be able to send clicks to this Mac.")
+        }
+        .alert(
+            "Couldn't remove phone",
+            isPresented: Binding(
+                get: { revokeFailed },
+                set: { presented in if !presented { controller.dismissRevokeFailure() } }
+            )
+        ) {
+            Button("OK") { controller.dismissRevokeFailure() }
+        } message: {
+            Text(revokeFailureMessage)
+        }
+    }
+
+    private func isRevoking(_ deviceId: String) -> Bool {
+        if case .revoking(let revokingId) = controller.revokeState { return revokingId == deviceId }
+        return false
+    }
+
+    private var revokeFailed: Bool {
+        if case .failed = controller.revokeState { return true }
+        return false
+    }
+
+    private var revokeFailureMessage: String {
+        guard case .failed(_, let reason) = controller.revokeState else { return "" }
+        switch reason {
+        case .unknownDevice: return "That phone is no longer in the registry."
+        case .alreadyRevoked: return "That phone was already removed."
+        case .storageFailed: return "The relay couldn't save this change. Try again."
         }
     }
 }

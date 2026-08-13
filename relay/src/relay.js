@@ -38,7 +38,7 @@ export class RelayState {
     this.skewToleranceMs = skewToleranceMs;
     this.authorizePhone = authorizePhone;
 
-    this.phone = null;
+    this.phonesByDevice = new Map();
     this.mac = null;
     this.macState = { remoteEnabled: false, permission: 'unknown' };
     this.pendingActions = new Map();
@@ -48,16 +48,24 @@ export class RelayState {
 
   replaceRole(role, connection) {
     this.#assertRole(role);
-    const previous = this[role];
-    this[role] = connection;
-    if (role === 'mac') {
-      this.macState = { remoteEnabled: false, permission: 'unknown' };
+    if (role === 'phone') {
+      const deviceId = this.#phoneDeviceId(connection);
+      const previous = this.phonesByDevice.get(deviceId) ?? null;
+      this.phonesByDevice.set(deviceId, connection);
+      if (previous && previous !== connection) {
+        this.#dropOwnedRoutes(previous);
+        this.#emit(previous, {
+          kind: 'close', code: PHONE_TAKEN_OVER_CLOSE_CODE, reason: 'another phone took over',
+        });
+        this.log('role_replaced', { role, deviceId });
+      }
+      return previous;
     }
+    const previous = this.mac;
+    this.mac = connection;
+    this.macState = { remoteEnabled: false, permission: 'unknown' };
     if (previous && previous !== connection) {
-      const close = role === 'phone'
-        ? { code: PHONE_TAKEN_OVER_CLOSE_CODE, reason: 'another phone took over' }
-        : { code: 4000, reason: 'replaced' };
-      this.#emit(previous, { kind: 'close', ...close });
+      this.#emit(previous, { kind: 'close', code: 4000, reason: 'replaced' });
       this.log('role_replaced', { role });
     }
     return previous ?? null;
@@ -65,34 +73,48 @@ export class RelayState {
 
   detachIfCurrent(role, connection) {
     this.#assertRole(role);
-    if (this[role] !== connection) return false;
-    this[role] = null;
     if (role === 'phone') {
+      const deviceId = this.#phoneDeviceId(connection);
+      if (this.phonesByDevice.get(deviceId) !== connection) return false;
+      this.phonesByDevice.delete(deviceId);
       this.#dropOwnedRoutes(connection);
-    } else {
-      this.macState = { remoteEnabled: false, permission: 'unknown' };
-      this.publishState();
+      return true;
     }
+    if (this.mac !== connection) return false;
+    this.mac = null;
+    this.macState = { remoteEnabled: false, permission: 'unknown' };
+    this.publishState();
     return true;
   }
 
   publishState() {
-    return this.#send(this.phone, {
+    const message = {
       type: 'state',
       v: PROTOCOL_VERSION,
       macOnline: this.mac !== null,
       remoteEnabled: this.macState.remoteEnabled,
       permission: this.macState.permission,
-    });
+    };
+    let sent = false;
+    for (const [deviceId, phone] of this.phonesByDevice) {
+      if (!this.authorizePhone(phone)) {
+        this.detachDevice(deviceId, phone);
+        continue;
+      }
+      sent = this.#send(phone, message) || sent;
+    }
+    return sent;
   }
 
   handlePhoneMessage(connection, message) {
-    if (connection !== this.phone) {
+    const deviceId = this.#phoneDeviceId(connection);
+    if (this.phonesByDevice.get(deviceId) !== connection) {
       this.log('stale_socket_message', { role: 'phone', type: message.type });
       return 'ignored';
     }
     if (!this.authorizePhone(connection)) {
       this.log('stale_phone_credential', { type: message.type });
+      this.detachDevice(deviceId, connection);
       return 'ignored';
     }
     switch (message.type) {
@@ -213,7 +235,9 @@ export class RelayState {
       return 'ignored';
     }
     this.#removeRoute(map, id, entry);
-    if (entry.owner !== this.phone) {
+    if (this.phonesByDevice.get(entry.deviceId) !== entry.owner
+        || !this.authorizePhone(entry.owner)) {
+      this.detachDevice(entry.deviceId, entry.owner);
       this.log(`${routeType}_for_replaced_phone`, { id });
       return 'ignored';
     }
@@ -221,7 +245,7 @@ export class RelayState {
   }
 
   #addRoute(map, id, owner, routeType) {
-    const entry = { owner, timer: null };
+    const entry = { owner, deviceId: this.#phoneDeviceId(owner), timer: null };
     entry.timer = this.schedule(() => {
       if (map.get(id) === entry) map.delete(id);
       this.log('route_expired', { routeType, id });
@@ -246,6 +270,14 @@ export class RelayState {
     }
   }
 
+  detachDevice(deviceId, expectedConnection = null) {
+    const connection = this.phonesByDevice.get(deviceId);
+    if (!connection || (expectedConnection && connection !== expectedConnection)) return false;
+    this.phonesByDevice.delete(deviceId);
+    this.#dropOwnedRoutes(connection);
+    return true;
+  }
+
   #send(connection, message) {
     if (!connection) return false;
     return this.#emit(connection, { kind: 'message', message });
@@ -265,6 +297,14 @@ export class RelayState {
 
   #assertRole(role) {
     if (!VALID_ROLES.has(role)) throw new TypeError(`invalid role: ${role}`);
+  }
+
+  #phoneDeviceId(connection) {
+    if (connection && (typeof connection === 'object' || typeof connection === 'function')
+        && typeof connection.deviceId === 'string' && connection.deviceId.length > 0) {
+      return connection.deviceId;
+    }
+    return connection;
   }
 
   dispose() {

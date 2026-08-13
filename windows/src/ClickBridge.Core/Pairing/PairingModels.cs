@@ -41,7 +41,7 @@ public sealed record PairingActionPresentation(string Title, bool RequiresReplac
 {
     public static PairingActionPresentation From(PairStatus? status)
     {
-        var replacing = status?.RequiresReplacementConfirmation == true;
-        return new PairingActionPresentation(replacing ? "Replace Phone" : "Pair Phone", replacing);
+        _ = status;
+        return new PairingActionPresentation("Add Phone", false);
     }
 }

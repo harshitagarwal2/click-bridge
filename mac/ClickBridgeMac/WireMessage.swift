@@ -42,6 +42,12 @@ enum PairingFailureReason: String, Codable, Sendable {
     case invalidRequest = "invalid_request"
     case replaced, unsupported
 }
+enum PhoneEntryStatus: String, Codable, Sendable { case active }
+enum PhoneRevokeFailureReason: String, Codable, Sendable {
+    case unknownDevice = "unknown_device"
+    case alreadyRevoked = "already_revoked"
+    case storageFailed = "storage_failed"
+}
 
 struct Hello: Codable, Equatable, Sendable { var type = "hello"; var v = 1; var role: String; var token: String }
 struct HelloOK: Codable, Equatable, Sendable { var type = "hello.ok"; var v = 1; var role: String }
@@ -114,6 +120,26 @@ struct PairFailed: Codable, Equatable, Sendable {
     var type = "pair.failed"; var v = 1; var requestId: String?; var claimId: String?
     var reason: PairingFailureReason
 }
+struct PhoneListRequest: Codable, Equatable, Sendable {
+    var type = "phone.list.request"; var v = 1; var requestId: String
+}
+struct PhoneListEntry: Codable, Equatable, Sendable {
+    var deviceId: String; var label: String; var status: PhoneEntryStatus; var credentialVersion: Int
+}
+struct PhoneList: Codable, Equatable, Sendable {
+    var type = "phone.list"; var v = 1; var requestId: String
+    var registryRevision: Int; var phones: [PhoneListEntry]
+}
+struct PhoneRevokeRequest: Codable, Equatable, Sendable {
+    var type = "phone.revoke.request"; var v = 1; var requestId: String; var deviceId: String
+}
+struct PhoneRevoked: Codable, Equatable, Sendable {
+    var type = "phone.revoked"; var v = 1; var requestId: String; var deviceId: String; var registryRevision: Int
+}
+struct PhoneRevokeFailed: Codable, Equatable, Sendable {
+    var type = "phone.revoke.failed"; var v = 1; var requestId: String; var deviceId: String
+    var reason: PhoneRevokeFailureReason
+}
 
 private protocol WireEncodingValidatable {
     func validateForWireEncoding() throws
@@ -153,6 +179,18 @@ private enum PairingWireEncoding {
               bytes.enumerated().allSatisfy({ index, byte in
                   index == 3 || (48...57).contains(byte)
               }) else { throw WireError.invalidValue }
+    }
+
+    static func deviceId(_ value: String) throws {
+        guard (16...64).contains(value.count),
+              value.unicodeScalars.allSatisfy({
+                  (65...90).contains($0.value) || (97...122).contains($0.value)
+                      || (48...57).contains($0.value) || $0 == "-" || $0 == "_"
+              }) else { throw WireError.invalidValue }
+    }
+
+    static func label(_ value: String) throws {
+        guard (1...64).contains(value.utf8.count) else { throw WireError.invalidValue }
     }
 
     static func reference(_ value: String) throws {
@@ -262,6 +300,51 @@ extension PairFailed: WireEncodingValidatable {
     }
 }
 
+extension PhoneListRequest: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "phone.list.request", version: v)
+        try PairingWireEncoding.uuid(requestId)
+    }
+}
+
+extension PhoneList: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "phone.list", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.nonNegativeSafeInteger(registryRevision)
+        for phone in phones {
+            try PairingWireEncoding.deviceId(phone.deviceId)
+            try PairingWireEncoding.label(phone.label)
+            try PairingWireEncoding.nonNegativeSafeInteger(phone.credentialVersion)
+        }
+    }
+}
+
+extension PhoneRevokeRequest: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "phone.revoke.request", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.deviceId(deviceId)
+    }
+}
+
+extension PhoneRevoked: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "phone.revoked", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.deviceId(deviceId)
+        try PairingWireEncoding.nonNegativeSafeInteger(registryRevision)
+    }
+}
+
+extension PhoneRevokeFailed: WireEncodingValidatable {
+    fileprivate func validateForWireEncoding() throws {
+        try PairingWireEncoding.envelope(type: type, expectedType: "phone.revoke.failed", version: v)
+        try PairingWireEncoding.uuid(requestId)
+        try PairingWireEncoding.deviceId(deviceId)
+    }
+}
+
 enum WireMessage: Equatable, Codable, Sendable {
     case hello(Hello), helloOK(HelloOK)
     case heartbeatRequest(HeartbeatRequest), heartbeatAck(HeartbeatAck)
@@ -273,6 +356,8 @@ enum WireMessage: Equatable, Codable, Sendable {
     case pairStatus(PairStatus), pairCancel(PairCancel)
     case pairClaimedMac(PairClaimedMac), pairApprove(PairApprove), pairDeny(PairDeny)
     case pairCompleted(PairCompleted), pairFailed(PairFailed)
+    case phoneListRequest(PhoneListRequest), phoneList(PhoneList)
+    case phoneRevokeRequest(PhoneRevokeRequest), phoneRevoked(PhoneRevoked), phoneRevokeFailed(PhoneRevokeFailed)
 
     private enum CodingKeys: String, CodingKey { case type }
     private struct Kind: Decodable { let type: String }
@@ -303,6 +388,11 @@ enum WireMessage: Equatable, Codable, Sendable {
         case "pair.deny": self = .pairDeny(try PairDeny(from: decoder))
         case "pair.completed": self = .pairCompleted(try PairCompleted(from: decoder))
         case "pair.failed": self = .pairFailed(try PairFailed(from: decoder))
+        case "phone.list.request": self = .phoneListRequest(try PhoneListRequest(from: decoder))
+        case "phone.list": self = .phoneList(try PhoneList(from: decoder))
+        case "phone.revoke.request": self = .phoneRevokeRequest(try PhoneRevokeRequest(from: decoder))
+        case "phone.revoked": self = .phoneRevoked(try PhoneRevoked(from: decoder))
+        case "phone.revoke.failed": self = .phoneRevokeFailed(try PhoneRevokeFailed(from: decoder))
         default: throw WireError.unknownType(kind)
         }
     }
@@ -332,6 +422,11 @@ enum WireMessage: Equatable, Codable, Sendable {
         case .pairDeny(let value): try value.encode(to: encoder)
         case .pairCompleted(let value): try value.encode(to: encoder)
         case .pairFailed(let value): try value.encode(to: encoder)
+        case .phoneListRequest(let value): try value.encode(to: encoder)
+        case .phoneList(let value): try value.encode(to: encoder)
+        case .phoneRevokeRequest(let value): try value.encode(to: encoder)
+        case .phoneRevoked(let value): try value.encode(to: encoder)
+        case .phoneRevokeFailed(let value): try value.encode(to: encoder)
         }
     }
 }
@@ -349,6 +444,11 @@ extension WireMessage: WireEncodingValidatable {
         case .pairDeny(let value): try value.validateForWireEncoding()
         case .pairCompleted(let value): try value.validateForWireEncoding()
         case .pairFailed(let value): try value.validateForWireEncoding()
+        case .phoneListRequest(let value): try value.validateForWireEncoding()
+        case .phoneList(let value): try value.validateForWireEncoding()
+        case .phoneRevokeRequest(let value): try value.validateForWireEncoding()
+        case .phoneRevoked(let value): try value.validateForWireEncoding()
+        case .phoneRevokeFailed(let value): try value.validateForWireEncoding()
         default: break
         }
     }

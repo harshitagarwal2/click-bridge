@@ -40,6 +40,8 @@ targets:
     type: application
     platform: macOS
     sources:
+      # Enrollment storage is source-discovered with the rest of the app so
+      # regenerated projects cannot omit the atomic Keychain record type.
       - path: ClickBridgeMac
     info:
       path: ClickBridgeMac/Info.plist
