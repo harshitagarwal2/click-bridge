@@ -1,1 +1,0 @@
-{"kind":"message","parser":"client","role":null,"message":{"type":"hello","v":2,"role":"phone","token":"1111111111111111111111111111111111111111111111111111111111111111"},"expectedError":"unsupported_version"}

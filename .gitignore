@@ -28,3 +28,8 @@ benchmarks/*.csv
 _to_delete/
 .omx/
 .omc/
+
+# .NET (windows/)
+windows/**/bin/
+windows/**/obj/
+

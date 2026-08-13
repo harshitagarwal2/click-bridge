@@ -1,1 +1,0 @@
-{"kind":"message","parser":"client","role":"mac","message":{"type":"pair.create","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030e1","pairingVersion":1,"credential":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"expectedError":"unknown_field"}

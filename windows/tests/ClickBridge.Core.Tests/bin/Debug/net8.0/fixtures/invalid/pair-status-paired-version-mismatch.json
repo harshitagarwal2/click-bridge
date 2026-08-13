@@ -1,1 +1,0 @@
-{"kind":"message","parser":"server","role":"mac","message":{"type":"pair.status","v":1,"requestId":"018f63f5-6f3d-7d21-88bc-9ef561f030e0","enrollmentState":"paired","activePhoneCredentialVersion":0},"expectedError":"invalid_value"}
