@@ -81,7 +81,7 @@ public sealed class SettingsForm : Form
         RefreshFromState();
     }
 
-    private Control BuildAdvancedLayout()
+    private TableLayoutPanel BuildAdvancedLayout()
     {
         var layout = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
         layout.Controls.Add(new Label { Text = "Relay URL", AutoSize = true }, 0, 0);

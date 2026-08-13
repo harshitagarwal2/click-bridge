@@ -571,7 +571,7 @@ public sealed class RelayClient : IPairingTransport
                 if (!IsAuthenticated(expected)) return;
                 await OriginateHeartbeatAsync(expected, socket, ct).ConfigureAwait(false);
             }
-        });
+        }, ct);
     }
 
     private bool IsCurrent(int expected)
@@ -621,7 +621,7 @@ public sealed class RelayClient : IPairingTransport
                 return;
             }
             await HeartbeatTimedOutAsync(sentSequence, expected, socket).ConfigureAwait(false);
-        });
+        }, ct);
     }
 
     private async Task HeartbeatTimedOutAsync(int expectedSequence, int expected, IWebSocketTransport socket)
