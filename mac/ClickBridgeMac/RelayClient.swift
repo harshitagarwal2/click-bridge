@@ -1,6 +1,8 @@
 import Foundation
 
-enum WebSocketTransportError: Error, Equatable { case notConnected, binaryFrame, authenticationRejected }
+enum WebSocketTransportError: Error, Equatable {
+    case notConnected, binaryFrame, roleReplaced, authenticationRejected
+}
 
 protocol WebSocketTransport: Sendable {
     func connect(to url: URL) async throws
@@ -24,9 +26,7 @@ actor URLSessionWebSocketTransport: WebSocketTransport {
         do {
             try await task.send(.string(text))
         } catch {
-            if task.closeCode.rawValue == 4_005 {
-                throw WebSocketTransportError.authenticationRejected
-            }
+            if let terminal = Self.terminalError(for: task.closeCode.rawValue) { throw terminal }
             throw error
         }
     }
@@ -39,15 +39,21 @@ actor URLSessionWebSocketTransport: WebSocketTransport {
             @unknown default: throw WebSocketTransportError.binaryFrame
             }
         } catch {
-            if task.closeCode.rawValue == 4_005 {
-                throw WebSocketTransportError.authenticationRejected
-            }
+            if let terminal = Self.terminalError(for: task.closeCode.rawValue) { throw terminal }
             throw error
         }
     }
     func close() async {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+    }
+
+    private static func terminalError(for closeCode: Int) -> WebSocketTransportError? {
+        switch closeCode {
+        case 4_000: .roleReplaced
+        case 4_005: .authenticationRejected
+        default: nil
+        }
     }
 }
 
@@ -74,7 +80,7 @@ enum RelayEndpoint {
 actor RelayClient {
     enum Status: Equatable, Sendable { case disconnected, connecting, connected }
     struct StatusEvent: Sendable {
-        enum Cause: Equatable, Sendable { case authenticationRejected }
+        enum Cause: Equatable, Sendable { case roleReplaced, authenticationRejected }
 
         let status: Status
         let credentialRevision: UInt64
@@ -326,7 +332,9 @@ actor RelayClient {
                     try await self.handle(text, generation: expected, socket: socket)
                 }
             } catch {
-                if error as? WebSocketTransportError == .authenticationRejected {
+                if error as? WebSocketTransportError == .roleReplaced {
+                    await self.roleReplaced(expected, socket: socket)
+                } else if error as? WebSocketTransportError == .authenticationRejected {
                     await self.authenticationRejected(expected, socket: socket)
                 } else {
                     await self.generationFailed(expected, socket: socket)
@@ -481,6 +489,33 @@ actor RelayClient {
         transport = nil
         await socket.close()
         setStatus(.disconnected, cause: .authenticationRejected)
+    }
+
+    private func roleReplaced(_ expected: Int, socket: any WebSocketTransport) async {
+        guard running, expected == generation else { return }
+
+        running = false
+        generation += 1
+        let authorization = authenticatedActionAuthorization
+        let activatingAuthorization = authorizationActivationTask
+        authenticatedGeneration = nil
+        authenticatedActionAuthorization = nil
+        authorizationActivationTask = nil
+        receiveTask?.cancel(); receiveTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
+        heartbeatTask?.cancel(); heartbeatTask = nil
+        heartbeatTimeoutTask?.cancel(); heartbeatTimeoutTask = nil
+        pendingHeartbeat = nil
+        transport = nil
+        if let authorization { await actionSink.revokeAuthorizationLease(authorization) }
+        if let activatingAuthorization {
+            let activatingLease = await activatingAuthorization.value
+            if activatingLease != authorization {
+                await actionSink.revokeAuthorizationLease(activatingLease)
+            }
+        }
+        await socket.close()
+        setStatus(.disconnected, cause: .roleReplaced)
     }
 
     private func generationFailed(_ expected: Int, socket: any WebSocketTransport) async {
