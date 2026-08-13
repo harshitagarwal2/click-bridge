@@ -25,9 +25,8 @@ settings:
     # Signing defaults live in Config/Base.xcconfig so its optional
     # Local.xcconfig include can override them for a stable local identity.
     CODE_SIGN_STYLE: Manual
-    # App Sandbox is deliberately absent. CGEvent.post IS sandbox-compatible;
-    # staying unsandboxed is a simplicity choice for a personal build, not a
-    # technical requirement.
+    # Debug stays unsandboxed for local development. Release archives override
+    # these defaults with the App Store entitlement set below.
     ENABLE_HARDENED_RUNTIME: NO
     ENABLE_APP_SANDBOX: NO
     CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
@@ -59,6 +58,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clickbridge.mac
         INFOPLIST_KEY_LSUIElement: YES
+      configs:
+        Release:
+          CODE_SIGN_ENTITLEMENTS: ClickBridgeMac/ClickBridgeMac-AppStore.entitlements
+          ENABLE_APP_SANDBOX: YES
+          ENABLE_HARDENED_RUNTIME: YES
 
   ClickBridgeMacTests:
     type: bundle.unit-test
