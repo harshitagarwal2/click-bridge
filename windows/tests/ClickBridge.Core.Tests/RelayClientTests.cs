@@ -6,8 +6,28 @@ using Xunit;
 
 namespace ClickBridge.Core.Tests;
 
-public sealed class RelayClientTests
+/// <summary>
+/// Implements IAsyncLifetime so every test's RelayClient is stopped in
+/// DisposeAsync — without this, each test's heartbeat/receive-loop
+/// background tasks (some sitting on a real 20s Task.Delay) leak past the
+/// test's own lifetime and starve the thread pool for the rest of the
+/// suite, which showed up as flaky timeouts in unrelated tests under
+/// parallel xUnit execution.
+/// </summary>
+public sealed class RelayClientTests : IAsyncLifetime
 {
+    private RelayClient? _client;
+
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        if (_client is not null)
+        {
+            await _client.StopAsync().ConfigureAwait(false);
+        }
+    }
+
     private sealed class FakeTransport : IWebSocketTransport
     {
         private readonly Channel<string> _incoming = Channel.CreateUnbounded<string>();
@@ -80,7 +100,7 @@ public sealed class RelayClientTests
     {
         var transport = new FakeTransport();
         var sink = new FakeActionSink();
-        var client = new RelayClient(sink, sink, makeTransport: () => transport);
+        var client = _client = new RelayClient(sink, sink, makeTransport: () => transport);
 
         RelayClient.Status? connectedStatus = null;
         client.SetStatusHandler(evt =>
@@ -112,7 +132,7 @@ public sealed class RelayClientTests
     {
         var transport = new FakeTransport();
         var sink = new FakeActionSink();
-        var client = new RelayClient(sink, sink, makeTransport: () => transport);
+        var client = _client = new RelayClient(sink, sink, makeTransport: () => transport);
         ActionResult? observedResult = null;
         client.SetResultHandler(result => observedResult = result);
 
@@ -147,7 +167,7 @@ public sealed class RelayClientTests
         var transport = new FakeTransport();
         var sink = new FakeActionSink();
         // Instant "sleep" so reconnect backoff doesn't slow the test down.
-        var client = new RelayClient(sink, sink, makeTransport: () => transport,
+        var client = _client = new RelayClient(sink, sink, makeTransport: () => transport,
             sleep: (_, _) => Task.CompletedTask);
 
         var statuses = new List<RelayClient.Status>();
