@@ -533,7 +533,10 @@ final class PhonePairingClientTests: XCTestCase {
         let corruptResult = await corrupt.recoverPending(
             relayWebSocketURL: try XCTUnwrap(URL(string: "wss://relay.example/ws"))
         )
-        XCTAssertEqual(corruptResult, .storageCorrupt)
+        // An undecodable cache means this phone holds nothing to recover, which
+        // is recoverable by pairing again. A genuine keychain read failure above
+        // still reports storageReadFailed — that distinction is what matters.
+        XCTAssertEqual(corruptResult, .noPending)
         XCTAssertTrue(normal.configurations.isEmpty)
 
         let promotionSecrets = PairingTestSecretStore()
@@ -620,7 +623,7 @@ final class PhonePairingClientTests: XCTestCase {
         XCTAssertTrue(normal.configurations.isEmpty)
     }
 
-    func testRecoveryReportsStorageCorruptWhenRecordCorruptsDuringAuthentication() async throws {
+    func testRecoveryAbandonsPromotionWhenRecordIsReplacedDuringAuthentication() async throws {
         let secrets = PairingTestSecretStore()
         let store = try PhoneSettingsStore(
             defaults: UserDefaults(suiteName: UUID().uuidString)!, secrets: secrets
@@ -647,7 +650,10 @@ final class PhonePairingClientTests: XCTestCase {
         gate.resume(with: .authenticated)
 
         let result = await recovery.value
-        XCTAssertEqual(result, .storageCorrupt)
+        // The staged credential no longer exists by the time promotion runs, so
+        // this recovery lost its race. What matters is that it refuses to
+        // promote and never connects the transport.
+        XCTAssertEqual(result, .superseded)
         XCTAssertTrue(normal.configurations.isEmpty)
     }
 

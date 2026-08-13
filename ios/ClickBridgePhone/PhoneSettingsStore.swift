@@ -263,8 +263,11 @@ final class PhoneSettingsStore {
         guard let relayWebSocketURL = PhonePairingLink.canonicalClaimantWebSocketURL(relayWebSocketURL) else {
             throw PhonePairingCredentialStorageError.invalidState
         }
+        // A pending slot left over from an attempt that never finished must not
+        // veto the next one: the relay has already issued this credential, and
+        // an abandoned pending credential is inert. Overwrite it rather than
+        // wedging pairing until the app is reinstalled.
         let current = try readRecord()
-        guard current.pending == nil else { throw PhonePairingCredentialStorageError.invalidState }
         // The relay's credential version is a single counter shared by every
         // enrolled phone, so it advances when *another* phone pairs too. Only
         // require forward movement against whatever this phone already holds;
@@ -351,11 +354,16 @@ final class PhoneSettingsStore {
                 pending: nil
             )
         }
+        // The relay is the authority on which credentials exist; this record is
+        // only a local cache of one of them. An unreadable cache therefore means
+        // "this phone holds nothing", not "this phone is broken" — discarding it
+        // costs a re-pair, whereas failing closed permanently bricks secure
+        // storage on every later launch with no in-app way out.
         guard let data = raw.data(using: .utf8),
               let record = try? JSONDecoder().decode(StoredPhoneCredentialRecord.self, from: data),
               record.schema == 1,
               validRecord(record) else {
-            throw PhonePairingCredentialStorageError.corruptState
+            return .init(schema: 1, active: nil, pending: nil)
         }
         return record
     }
@@ -394,16 +402,15 @@ final class PhoneSettingsStore {
     private static func validRecord(_ record: StoredPhoneCredentialRecord) -> Bool {
         guard valid(record.active), valid(record.pending) else { return false }
         guard let pending = record.pending else { return true }
-        if let active = record.active {
-            switch active.provenance {
-            case .relay:
-                guard let activeVersion = active.version,
-                      pending.version == activeVersion + 1 else { return false }
-            case .unknown:
-                guard pending.version == 1 else { return false }
+        // Versions come from the relay's shared counter, which advances for every
+        // phone that pairs. This phone can only require that a pending credential
+        // is newer than the active one it replaces — it cannot predict an exact
+        // successor, and treating a gap as corruption discards a valid pairing.
+        if let active = record.active, active.provenance == .relay,
+           let activeVersion = active.version {
+            guard let pendingVersion = pending.version, pendingVersion > activeVersion else {
+                return false
             }
-        } else {
-            guard pending.version == 1 else { return false }
         }
         return pending.provenance == .relay && pending.relayWebSocketURL != nil
     }

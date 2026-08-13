@@ -141,18 +141,42 @@ final class PhoneSettingsStoreTests: XCTestCase {
         XCTAssertNil(try store.pendingPairingCredential())
     }
 
-    func testCorruptSkippedPairingVersionFailsClosedWithoutOverwritingKeychain() {
+    func testPendingVersionAheadOfActiveIsAcceptedBecauseTheRelayCounterIsShared() throws {
         let secrets = TestSecretStore()
         let active = String(repeating: "a", count: 64)
         let pending = String(repeating: "b", count: 64)
-        let raw = #"{"schema":1,"active":{"token":"\#(active)","version":1,"provenance":"relay"},"pending":{"token":"\#(pending)","version":3,"provenance":"relay"}}"#
+        // Version 3 rather than 2: another phone enrolled in between, which
+        // advances the relay's shared counter. That is an ordinary pairing, not
+        // a corrupt record, so the active credential must stay usable.
+        let raw = #"{"schema":1,"active":{"token":"\#(active)","version":1,"provenance":"relay"},"pending":{"token":"\#(pending)","version":3,"provenance":"relay","relayWebSocketURL":"wss://relay.example/ws"}}"#
         secrets.value = raw
 
-        XCTAssertThrowsError(try PhoneSettingsStore(
+        let store = try PhoneSettingsStore(
             defaults: UserDefaults(suiteName: UUID().uuidString)!,
             secrets: secrets
-        ))
-        XCTAssertEqual(secrets.value, raw)
+        )
+
+        XCTAssertEqual(try store.phoneToken(), active)
+        XCTAssertEqual(try store.pendingPairingCredential(), .init(token: pending, version: 3))
+        XCTAssertEqual(secrets.value, raw, "reading must never rewrite the keychain")
+    }
+
+    func testUnreadableRecordSelfHealsToEmptyInsteadOfBrickingSecureStorage() throws {
+        let secrets = TestSecretStore()
+        let raw = #"{"schema":1,"active":{"token":"not-a-token","provenance":"relay"}}"#
+        secrets.value = raw
+
+        // Failing closed here would surface "Secure storage is unavailable" on
+        // every later launch with no in-app recovery. The relay owns the real
+        // credential list, so an unusable local cache just means "pair again".
+        let store = try PhoneSettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            secrets: secrets
+        )
+
+        XCTAssertNil(try store.phoneToken())
+        XCTAssertFalse(store.hasToken)
+        XCTAssertEqual(secrets.value, raw, "reading must never rewrite the keychain")
     }
 
     func testPendingCredentialPersistsCanonicalRelayOriginAcrossReopen() throws {
