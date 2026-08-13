@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     private let processor: ActionProcessor
     private let permissionService: PostEventPermissionService
     private let activationNotifications: NotificationCenter
+    private let enroll: @Sendable () async throws -> DesktopEnrollment
     private var activationObserver: NSObjectProtocol?
     private var credentialRevision: UInt64 = 0
     private var credentialTask: Task<Void, Never>?
@@ -35,12 +36,16 @@ final class AppState: ObservableObject {
     init(settings: SettingsStore, client: RelayClient, processor: ActionProcessor,
          permissionService: PostEventPermissionService,
          activationNotifications: NotificationCenter = .default,
-         initialNotice: String? = nil) {
+         initialNotice: String? = nil,
+         enroll: @escaping @Sendable () async throws -> DesktopEnrollment = {
+             try await SessionEnrollmentService.enroll()
+         }) {
         self.settings = settings
         self.client = client
         self.processor = processor
         self.permissionService = permissionService
         self.activationNotifications = activationNotifications
+        self.enroll = enroll
         notice = initialNotice
         permission = permissionService.isGranted() ? .ready : .required
         activationObserver = activationNotifications.addObserver(
@@ -196,18 +201,9 @@ final class AppState: ObservableObject {
                 await client.clearConfigurationAndStop(credentialRevision: revision)
                 return
             }
-            let token: String
+            let storedToken: String?
             do {
-                if let storedToken = try settings.macToken(), !storedToken.isEmpty {
-                    token = storedToken
-                } else {
-                    notice = "Creating your private relay session…"
-                    let enrollment = try await SessionEnrollmentService.enroll()
-                    guard revision == credentialRevision, credentialEligible else { return }
-                    try settings.saveEnrollment(enrollment)
-                    token = enrollment.token
-                    notice = "Private relay session created."
-                }
+                storedToken = try settings.macToken()
             } catch {
                 guard revision == credentialRevision, !Task.isCancelled else { return }
                 credentialEligible = false
@@ -215,6 +211,30 @@ final class AppState: ObservableObject {
                 guard revision == credentialRevision, !Task.isCancelled else { return }
                 notice = settings.storageError
                 return
+            }
+            let hasUsableStoredCredential = storedToken?.isEmpty == false
+                && (try? RelayEndpoint.validated(settings.relayURLString, allowLocalSimulator: false)) != nil
+            let token: String
+            if hasUsableStoredCredential, let storedToken {
+                token = storedToken
+            } else {
+                notice = "Creating your private relay session…"
+                do {
+                    let enrollment = try await enroll()
+                    guard revision == credentialRevision, credentialEligible else { return }
+                    try settings.saveEnrollment(enrollment)
+                    token = enrollment.token
+                    notice = "Private relay session created."
+                } catch {
+                    guard revision == credentialRevision, !Task.isCancelled else { return }
+                    if settings.storageError != nil {
+                        credentialEligible = false
+                        await client.clearConfigurationAndStop(credentialRevision: revision)
+                    }
+                    guard revision == credentialRevision, !Task.isCancelled else { return }
+                    notice = settings.storageError ?? error.localizedDescription
+                    return
+                }
             }
             guard revision == credentialRevision, credentialEligible else { return }
             do {

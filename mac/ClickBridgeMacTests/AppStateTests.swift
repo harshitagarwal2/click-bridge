@@ -229,6 +229,30 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.permission, .ready)
     }
 
+    func testInvalidSavedRelayURLAutomaticallyEnrollsAndReplacesStoredCredential() async throws {
+        let suite = "AppStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("https://old-relay.example/ws", forKey: SettingsStore.relayURLKey)
+        let secrets = AppStateSecretStore(token: "old-token")
+        let settings = try SettingsStore(defaults: defaults, secrets: secrets)
+        let permission = PostEventPermissionService(preflight: { false }, request: { false })
+        let processor = ActionProcessor(poster: MacInputExecutor(constructEvents: { nil }), permission: permission)
+        let transport = AppStateTransport(gateClose: false)
+        let client = RelayClient(actionSink: processor, diagnostics: processor, makeTransport: { transport })
+        let enrolledURL = "wss://relay.example/ws/AbCdEfGhIjKlMnOpQrStUv"
+        let enrolledToken = String(repeating: "a", count: 64)
+        let state = AppState(settings: settings, client: client, processor: processor,
+                             permissionService: permission, activationNotifications: NotificationCenter(),
+                             enroll: { DesktopEnrollment(relayURL: enrolledURL, token: enrolledToken) })
+
+        await transport.waitForHello(token: enrolledToken)
+        XCTAssertEqual(settings.relayURLString, enrolledURL)
+        XCTAssertEqual(try settings.macToken(), enrolledToken)
+        XCTAssertEqual(state.notice, "Private relay session created.")
+        await client.stop()
+    }
+
     func testAuthenticatedConnectionExplicitlyRequestsPairingStatusAndPublishesReplacementAction() async throws {
         let suite = "AppStateTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
