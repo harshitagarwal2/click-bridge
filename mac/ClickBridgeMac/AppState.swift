@@ -30,13 +30,34 @@ enum ConnectionActionOutcome: Equatable, Sendable {
 }
 
 struct PairingActionPresentation: Equatable {
+    // Retained for the existing state contract; UI copy is `buttonTitle`.
     let title: String
+    let buttonTitle: String
+    let confirmationActionTitle: String
+    let warning: String
     let requiresReplacementConfirmation: Bool
 
     init(status: PairStatus?) {
-        let replacing = status?.requiresReplacementConfirmation == true
-        title = replacing ? "Replace Phone" : "Pair Phone"
-        requiresReplacementConfirmation = replacing
+        switch status?.enrollmentState {
+        case .legacy:
+            title = "Replace Phone"
+            buttonTitle = "Pair Phone"
+            confirmationActionTitle = "Pair Phone"
+            warning = "Approving the new phone invalidates older shared phone access."
+            requiresReplacementConfirmation = true
+        case .paired:
+            title = "Replace Phone"
+            buttonTitle = "Replace Phone…"
+            confirmationActionTitle = "Replace Phone"
+            warning = "The current phone stops working after you approve the new phone."
+            requiresReplacementConfirmation = true
+        case nil:
+            title = "Pair Phone"
+            buttonTitle = "Pair Phone"
+            confirmationActionTitle = "Pair Phone"
+            warning = "A matching code must be approved on this Mac."
+            requiresReplacementConfirmation = false
+        }
     }
 }
 

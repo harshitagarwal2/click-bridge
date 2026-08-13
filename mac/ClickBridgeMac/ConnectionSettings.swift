@@ -1,7 +1,7 @@
 import Foundation
 
 struct ConnectionSettingsDraft: Equatable, Sendable {
-    let appliedRelayURLString: String
+    var appliedRelayURLString: String
     var relayURLString: String
     var replacementMacToken: String
 
@@ -11,6 +11,16 @@ struct ConnectionSettingsDraft: Equatable, Sendable {
 
     mutating func discardChanges() {
         relayURLString = appliedRelayURLString
+        replacementMacToken = ""
+    }
+
+    mutating func reduce(
+        outcome: ConnectionActionOutcome,
+        acceptedRelayURLString: String
+    ) {
+        guard outcome == .accepted else { return }
+        appliedRelayURLString = acceptedRelayURLString
+        relayURLString = acceptedRelayURLString
         replacementMacToken = ""
     }
 }
