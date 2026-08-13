@@ -444,16 +444,19 @@ function validateDeploymentSecretFlow(source) {
   const secretExpansions = shellSecretParameterExpansions(
     shellWithoutLineContinuations(source),
   );
-  for (const secretName of ["PHONE_TOKEN", "MAC_TOKEN"]) {
+  const expectedReferenceCounts = new Map([
+    ["PHONE_TOKEN", 3],
+    ["MAC_TOKEN", 2],
+  ]);
+  for (const [secretName, expectedCount] of expectedReferenceCounts) {
     const references = secretExpansions.filter(({ name }) => name === secretName);
     assert.equal(
       references.length,
-      1,
-      `deploy script must use ${secretName} only in the reviewed smoke-container environment assignment`,
+      expectedCount,
+      `deploy script must use ${secretName} only in the reviewed credential verifier assignments`,
     );
-    assert.equal(
-      references[0].syntax,
-      "unbraced",
+    assert.ok(
+      references.every(({ syntax }) => syntax === "unbraced"),
       `deploy script must use ${secretName} only as the exact reviewed unbraced parameter expansion`,
     );
   }
@@ -464,21 +467,38 @@ function validateDeploymentSecretFlow(source) {
   });
   assert.equal(
     credentialSegments.length,
-    1,
-    "deploy script must keep credential values in one reviewed command",
+    3,
+    "deploy script must keep credential values in the three reviewed verifier commands",
   );
-  const credentialValues = credentialSegments[0].map(({ value }) => value);
-  const credentialCommandIndex = shellCommandInvocationIndex(credentialSegments[0]);
   assert.deepEqual(
-    credentialValues.slice(0, credentialCommandIndex + 2),
+    credentialSegments.map((segment) => {
+      const commandIndex = shellCommandInvocationIndex(segment);
+      return segment.map(({ value }) => value).slice(0, commandIndex + 2);
+    }),
     [
-      "CLICK_BRIDGE_RELEASE=$release",
-      "PHONE_TOKEN=$PHONE_TOKEN",
-      "MAC_TOKEN=$MAC_TOKEN",
-      "docker",
-      "run",
+      [
+        "if",
+        "CLICK_BRIDGE_RELEASE=$release",
+        "PHONE_TOKEN=$PHONE_TOKEN",
+        "docker",
+        "run",
+      ],
+      [
+        "CLICK_BRIDGE_RELEASE=$release",
+        "PHONE_TOKEN=$PHONE_TOKEN",
+        "MAC_TOKEN=$MAC_TOKEN",
+        "docker",
+        "run",
+      ],
+      [
+        "CLICK_BRIDGE_RELEASE=$release",
+        "PHONE_TOKEN=$PHONE_TOKEN",
+        "MAC_TOKEN=$MAC_TOKEN",
+        "docker",
+        "run",
+      ],
     ],
-    "deploy script must keep credential values confined to the reviewed smoke-container environment assignment",
+    "deploy script must keep credential values confined to the reviewed verifier environment assignments",
   );
   assert.equal(
     source.includes(".compose-compat."),
@@ -638,6 +658,7 @@ const reviewedShellExecutables = new Set([
   "cleanup_candidate",
   "compose_release",
   "continue",
+  "declared_contract",
   "die",
   "docker",
   "done",
@@ -650,20 +671,22 @@ const reviewedShellExecutables = new Set([
   "grep",
   "domain_count",
   "line_number",
+  "legacy_phone_token_is_active",
   "local",
   "mac_token_count",
   "mkdir",
   "mv",
   "path_mode",
   "pairing_count",
-  "phone_auth_record_is_rotated_or_uncertain",
   "phone_token_count",
   "printf",
   "pwd",
   "read",
   "read_pointer",
+  "required_contract",
   "release_directory",
   "release_supports_phone_auth_record",
+  "required_phone_auth_contract",
   "required_key",
   "return",
   "record_count",
@@ -877,7 +900,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
     deployDockerRuns(deployScript);
   assert.deepEqual(
     dockerSubcommands,
-    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"],
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run", "run", "run"],
     "deploy script must contain exactly the reviewed Docker command sequence",
   );
   assert.deepEqual(
@@ -885,7 +908,7 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
       executable,
       subcommand,
     })),
-    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run"].map(
+    ["compose", "compose", "rm", "run", "exec", "logs", "run", "run", "run", "run"].map(
       (subcommand) => ({ executable: "docker", subcommand }),
     ),
     "every deployment Docker invocation must use the exact literal executable",
@@ -912,6 +935,23 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
         ],
         executable: "docker",
         image: "click-bridge-relay:$release",
+      },
+      {
+        args: [
+          "--rm",
+          "--network",
+          "none",
+          "--env",
+          "PHONE_TOKEN",
+          "--volume",
+          "$PHONE_AUTH_RECORD_HOST:/auth/phone-auth.json:ro",
+          reviewedNode,
+          "node",
+          "-e",
+          'const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)',
+        ],
+        executable: "docker",
+        image: reviewedNode,
       },
       {
         args: [
@@ -951,6 +991,31 @@ export function validateDeploymentImages({ dockerfile, compose, deployScript }) 
           "sh",
           "-euc",
           'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"',
+        ],
+        executable: "docker",
+        image: reviewedNode,
+      },
+      {
+        args: [
+          "--rm",
+          "--network",
+          "host",
+          "--add-host",
+          "$CLICK_BRIDGE_DOMAIN:127.0.0.1",
+          "--env",
+          "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN",
+          "--env",
+          "PHONE_TOKEN",
+          "--env",
+          "MAC_TOKEN",
+          "--volume",
+          "$directory/relay:/workspace:ro",
+          "--workdir",
+          "/tmp/smoke",
+          reviewedNode,
+          "sh",
+          "-euc",
+          'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"',
         ],
         executable: "docker",
         image: reviewedNode,

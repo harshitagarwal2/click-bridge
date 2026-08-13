@@ -49,6 +49,14 @@ CLICK_BRIDGE_RELEASE="$release" docker run --detach \\
   "click-bridge-relay:$release" >/dev/null
 docker exec candidate true
 docker logs candidate
+if CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" docker run --rm \\
+  --network none \\
+  --env PHONE_TOKEN \\
+  --volume "$PHONE_AUTH_RECORD_HOST:/auth/phone-auth.json:ro" \\
+  ${healthImage} node -e \\
+  'const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)'; then
+  true
+fi
 CLICK_BRIDGE_RELEASE="$release" docker run --rm --network host \\
   --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
   --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
@@ -64,6 +72,16 @@ CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" MAC_TOKEN="$MAC_TOKEN
   --workdir /tmp/smoke \\
   ${smokeImage} sh -euc \\
   'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://\${CLICK_BRIDGE_DOMAIN}/ws"'
+CLICK_BRIDGE_RELEASE="$release" PHONE_TOKEN="$PHONE_TOKEN" MAC_TOKEN="$MAC_TOKEN" \\
+  docker run --rm --network host \\
+  --add-host "$CLICK_BRIDGE_DOMAIN:127.0.0.1" \\
+  --env "CLICK_BRIDGE_DOMAIN=$CLICK_BRIDGE_DOMAIN" \\
+  --env PHONE_TOKEN \\
+  --env MAC_TOKEN \\
+  --volume "$directory/relay:/workspace:ro" \\
+  --workdir /tmp/smoke \\
+  ${smokeImage} sh -euc \\
+  'cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://\${CLICK_BRIDGE_DOMAIN}/ws"'
 `;
 }
 const validDeployScript = verifierDeployScript(reviewedNode, reviewedNode);

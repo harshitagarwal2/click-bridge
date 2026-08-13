@@ -23,7 +23,9 @@ readonly EXPECTED_DOMAIN='clickbridge.example.test'
 readonly EXPECTED_NODE='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43'
 readonly CANDIDATE_HEALTH_SCRIPT='fetch("http://127.0.0.1:8080/healthz").then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 readonly HEALTH_SCRIPT='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+readonly LEGACY_PHONE_MATCH_SCRIPT='const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)'
 readonly SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+readonly MAC_ONLY_SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 
 fail_fake() {
   printf 'fake docker rejected verifier contract: %s\n' "$1" >&2
@@ -151,7 +153,8 @@ if test "${1:-}" = run; then
   done
   test -n "$RUN_IMAGE" || fail_fake 'docker run image is missing'
 
-  if test "${RUN_COMMAND[0]:-}" = node && test "${RUN_COMMAND[1]:-}" = -e; then
+  if test "${RUN_COMMAND[0]:-}" = node && test "${RUN_COMMAND[1]:-}" = -e &&
+      test "${RUN_COMMAND[2]:-}" = "$HEALTH_SCRIPT"; then
     RUN_KIND=health
     test "$RUN_ENV_FILE" -eq 0 || fail_fake 'health verifier used env-file'
     test "${#RUN_ENVS[@]}" -eq 1 || fail_fake 'health verifier env allowlist'
@@ -164,8 +167,28 @@ if test "${1:-}" = run; then
       --add-host "$EXPECTED_DOMAIN:127.0.0.1" \
       --env "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" \
       "$EXPECTED_NODE" node -e "$HEALTH_SCRIPT"
+  elif test "${RUN_COMMAND[0]:-}" = node && test "${RUN_COMMAND[1]:-}" = -e &&
+      test "${RUN_COMMAND[2]:-}" = "$LEGACY_PHONE_MATCH_SCRIPT"; then
+    RUN_KIND=legacy-phone-match
+    test "$RUN_ENV_FILE" -eq 0 || fail_fake 'legacy phone verifier used env-file'
+    test "${#RUN_ENVS[@]}" -eq 1 || fail_fake 'legacy phone verifier env allowlist'
+    test "${RUN_ENVS[0]}" = PHONE_TOKEN || fail_fake 'legacy phone verifier env allowlist'
+    require_env PHONE_TOKEN "$EXPECTED_PHONE_TOKEN"
+    require_env_absent MAC_TOKEN
+    assert_exact_args legacy-phone-match \
+      run --rm \
+      --network none \
+      --env PHONE_TOKEN \
+      --volume "$CLICK_BRIDGE_ROOT/shared/auth/phone-auth.json:/auth/phone-auth.json:ro" \
+      "$EXPECTED_NODE" node -e "$LEGACY_PHONE_MATCH_SCRIPT"
   elif test "${RUN_COMMAND[0]:-}" = sh && test "${RUN_COMMAND[1]:-}" = -euc; then
-    RUN_KIND=smoke
+    if test "${RUN_COMMAND[2]:-}" = "$SMOKE_SCRIPT"; then
+      RUN_KIND=smoke
+    elif test "${RUN_COMMAND[2]:-}" = "$MAC_ONLY_SMOKE_SCRIPT"; then
+      RUN_KIND=mac-only-smoke
+    else
+      fail_fake 'unrecognized smoke command'
+    fi
     test "$RUN_ENV_FILE" -eq 0 || fail_fake 'smoke verifier used env-file'
     test "${#RUN_ENVS[@]}" -eq 3 || fail_fake 'smoke verifier env allowlist'
     test "${RUN_ENVS[0]}" = "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" ||
@@ -178,7 +201,7 @@ if test "${1:-}" = run; then
     expected_relay_mount="$CLICK_BRIDGE_ROOT/releases/$CLICK_BRIDGE_RELEASE/relay:/workspace:ro"
     test "${DOCKER_ARGS[13]:-}" = "$expected_relay_mount" ||
       fail_fake 'smoke verifier volume'
-    assert_exact_args smoke \
+    assert_exact_args "$RUN_KIND" \
       run --rm --network host \
       --add-host "$EXPECTED_DOMAIN:127.0.0.1" \
       --env "CLICK_BRIDGE_DOMAIN=$EXPECTED_DOMAIN" \
@@ -186,7 +209,7 @@ if test "${1:-}" = run; then
       --env MAC_TOKEN \
       --volume "$expected_relay_mount" \
       --workdir /tmp/smoke \
-      "$EXPECTED_NODE" sh -euc "$SMOKE_SCRIPT"
+      "$EXPECTED_NODE" sh -euc "${RUN_COMMAND[2]}"
   elif test "${#RUN_COMMAND[@]}" -eq 0; then
     RUN_KIND=candidate
     require_env_absent PHONE_TOKEN
@@ -224,8 +247,9 @@ case "${1:-}" in
       fi
       case "$(sed -n 's/^    x-test-rendered-volume-case: //p' "$compose_file")" in
       exact)
+        auth_contract="$(sed -n 's/^    x-click-bridge-pairing-auth-contract: //p' "$compose_file")"
         printf '%s\n' \
-          '    x-click-bridge-pairing-auth-contract: 1' \
+          "    x-click-bridge-pairing-auth-contract: ${auth_contract:-1}" \
           '    environment:' \
           '      PHONE_AUTH_RECORD: /var/lib/click-bridge/auth/phone-auth.json' \
           '    volumes:' \
@@ -326,7 +350,14 @@ log_argv "$@"
 if test "${1:-}" = run && test "$RUN_KIND" = health; then
   exit 0
 fi
-if test "${1:-}" = run && test "$RUN_KIND" = smoke; then
+if test "${1:-}" = run && test "$RUN_KIND" = legacy-phone-match; then
+  case "${FAKE_LEGACY_PHONE_ACTIVE:-1}" in
+    1) exit 0 ;;
+    0) exit 1 ;;
+    *) exit 2 ;;
+  esac
+fi
+if test "${1:-}" = run && { test "$RUN_KIND" = smoke || test "$RUN_KIND" = mac-only-smoke; }; then
   test "${FAKE_SMOKE_FAIL_RELEASE:-}" != "${CLICK_BRIDGE_RELEASE:-}"
   exit
 fi
@@ -435,6 +466,14 @@ write_rotated_auth_record() {
   local root="$1"
   printf '%s\n' \
     '{"schemaVersion":1,"activePhoneCredentialVersion":1,"activePhoneVerifier":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}' \
+    > "$root/shared/auth/phone-auth.json"
+  chmod 600 "$root/shared/auth/phone-auth.json"
+}
+
+write_v2_auth_record() {
+  local root="$1"
+  printf '%s\n' \
+    '{"schemaVersion":2,"macVerifier":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","registryRevision":2,"phones":[{"deviceId":"legacy-phone-device","label":"Legacy phone","credentialVersion":0,"verifier":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","status":"revoked"},{"deviceId":"paired-phone-device","label":"Paired phone","credentialVersion":1,"verifier":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","status":"active"}]}' \
     > "$root/shared/auth/phone-auth.json"
   chmod 600 "$root/shared/auth/phone-auth.json"
 }
@@ -555,6 +594,7 @@ new_case_root() {
 add_release() {
   local root="$1"
   local release="$2"
+  local auth_contract="${3:-1}"
   mkdir -p "$root/releases/$release/deploy/oci" "$root/releases/$release/relay/scripts"
   # Compose, not this test shell, expands the fixture placeholder below.
   # shellcheck disable=SC2016
@@ -562,6 +602,7 @@ add_release() {
     'services:' \
     '  relay:' \
     '    x-test-rendered-volume-case: exact' \
+    "    x-click-bridge-pairing-auth-contract: $auth_contract" \
     '    env_file:' \
     '      - ${CLICK_BRIDGE_SECRETS_FILE}' \
     '    environment:' \
@@ -570,6 +611,7 @@ add_release() {
     '      - /opt/click-bridge/shared/auth:/var/lib/click-bridge/auth' \
     > "$root/releases/$release/deploy/oci/compose.yaml"
   printf '%s\n' 'console.log("smoke fixture")' > "$root/releases/$release/relay/scripts/smoke-relay.mjs"
+  printf '%s\n' 'console.log("mac-only smoke fixture")' > "$root/releases/$release/relay/scripts/smoke-relay-mac-only.mjs"
 }
 
 run_deploy() {
@@ -626,9 +668,15 @@ NODE_VERIFIER='node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd3
 HEALTH_COMMAND='fetch(`https://${process.env.CLICK_BRIDGE_DOMAIN}/healthz`).then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
 # This must match the literal candidate health script passed to Node.
 CANDIDATE_HEALTH_COMMAND='fetch("http://127.0.0.1:8080/healthz").then(async response=>{if(!response.ok||(await response.text())!=="ok")process.exit(1)}).catch(()=>process.exit(1))'
+# This must match the literal script that checks whether the provisioned
+# legacy token still maps to an active persisted phone.
+LEGACY_PHONE_MATCH_SCRIPT='const fs=require("node:fs"),crypto=require("node:crypto");let record;try{record=JSON.parse(fs.readFileSync("/auth/phone-auth.json","utf8"))}catch{process.exit(2)}const token=process.env.PHONE_TOKEN||"";if(!/^[0-9a-f]{64}$/.test(token))process.exit(2);const verifier=crypto.createHash("sha256").update(Buffer.from(token,"hex")).digest("hex");if(record.schemaVersion===1&&record.activePhoneVerifier===verifier)process.exit(0);if(record.schemaVersion===2&&Array.isArray(record.phones)&&record.phones.some(phone=>phone&&phone.status==="active"&&phone.verifier===verifier))process.exit(0);if(record.schemaVersion===1||record.schemaVersion===2)process.exit(1);process.exit(2)'
 # This must match the literal script run in the container.
 # shellcheck disable=SC2016
 SMOKE_COMMAND='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
+# This must match the literal retired-legacy-token smoke command.
+# shellcheck disable=SC2016
+MAC_ONLY_SMOKE_SCRIPT='cp -R /workspace/. .; npm ci --omit=dev --ignore-scripts >/dev/null; node scripts/smoke-relay-mac-only.mjs "wss://${CLICK_BRIDGE_DOMAIN}/ws"'
 root="$(new_case_root first-success)"
 add_release "$root" "$SHA_A"
 
@@ -910,6 +958,54 @@ esac
 assert_log_not_contains 'config --quiet'
 assert_log_not_contains ' build --pull relay'
 assert_log_not_contains ' up -d '
+
+root="$(new_case_root v2-record-requires-v2-contract)"
+add_release "$root" "$SHA_A"
+write_v2_auth_record "$root"
+: > "$FAKE_DOCKER_LOG"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'schema-v2 auth record unexpectedly accepted a contract-v1 release'
+fi
+assert_log_not_contains ' build --pull relay'
+assert_log_not_contains ' up -d '
+
+root="$(new_case_root v2-record-with-retired-legacy-token)"
+add_release "$root" "$SHA_A" 2
+write_v2_auth_record "$root"
+: > "$FAKE_DOCKER_LOG"
+run_deploy "$root" "$SHA_A" FAKE_LEGACY_PHONE_ACTIVE=0
+assert_log_contains 'activePhoneVerifier'
+assert_log_contains 'scripts/smoke-relay-mac-only.mjs'
+assert_log_not_contains 'scripts/smoke-relay.mjs'
+
+root="$(new_case_root v2-record-with-active-legacy-token)"
+add_release "$root" "$SHA_A" 2
+write_v2_auth_record "$root"
+: > "$FAKE_DOCKER_LOG"
+run_deploy "$root" "$SHA_A" FAKE_LEGACY_PHONE_ACTIVE=1
+assert_log_contains 'activePhoneVerifier'
+assert_log_contains 'scripts/smoke-relay.mjs'
+assert_log_not_contains 'scripts/smoke-relay-mac-only.mjs'
+
+root="$(new_case_root v2-record-with-unreadable-credential-status)"
+add_release "$root" "$SHA_A" 2
+write_v2_auth_record "$root"
+: > "$FAKE_DOCKER_LOG"
+if run_deploy "$root" "$SHA_A" FAKE_LEGACY_PHONE_ACTIVE=error; then
+  fail 'unknown legacy phone credential status unexpectedly passed verification'
+fi
+assert_log_not_contains 'scripts/smoke-relay.mjs'
+assert_log_not_contains 'scripts/smoke-relay-mac-only.mjs'
+
+root="$(new_case_root v2-contract-requires-mac-only-smoke)"
+add_release "$root" "$SHA_A" 2
+write_v2_auth_record "$root"
+rm "$root/releases/$SHA_A/relay/scripts/smoke-relay-mac-only.mjs"
+: > "$FAKE_DOCKER_LOG"
+if run_deploy "$root" "$SHA_A"; then
+  fail 'contract-v2 release without mac-only smoke unexpectedly passed compatibility'
+fi
+assert_log_not_contains ' build --pull relay'
 
 root="$(new_case_root comment-spoofed-compatibility)"
 add_release "$root" "$SHA_A"
