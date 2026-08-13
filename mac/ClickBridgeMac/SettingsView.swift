@@ -222,9 +222,14 @@ struct SettingsView: View {
     private func removeCredential() {
         let task = app.clearToken()
         Task { @MainActor in
-            await task.value
-            draft.replacementMacToken = ""
-            feedback = "Saved credential removed."
+            let outcome = await task.value
+            draft.reduceCredentialRemoval(outcome: outcome)
+            switch outcome {
+            case .accepted:
+                feedback = "Saved credential removed."
+            case .rejected(let issue):
+                feedback = issue.localizedDescription
+            }
         }
     }
 }

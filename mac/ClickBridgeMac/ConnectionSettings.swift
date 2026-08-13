@@ -23,6 +23,11 @@ struct ConnectionSettingsDraft: Equatable, Sendable {
         relayURLString = acceptedRelayURLString
         replacementMacToken = ""
     }
+
+    mutating func reduceCredentialRemoval(outcome: ConnectionActionOutcome) {
+        guard outcome == .accepted else { return }
+        replacementMacToken = ""
+    }
 }
 
 enum ConnectionTokenInput: Equatable, Sendable {

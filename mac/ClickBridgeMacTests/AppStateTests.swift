@@ -594,12 +594,13 @@ final class AppStateTests: XCTestCase {
         let connecting = await eventually { await client.currentStatus() == .connecting }
         XCTAssertTrue(connecting)
 
-        state.clearToken()
+        let clear = state.clearToken()
 
         let closeStarted = await eventually { await transport.didStartClose() }
         XCTAssertTrue(closeStarted)
         XCTAssertNotEqual(state.notice, "Token cleared.")
         await transport.releaseClose()
+        let outcome = await clear.value
         let successReported = await eventually { state.notice == "Token cleared." }
         let clearedStatus = await client.currentStatus()
         let closeCount = await transport.closes()
@@ -607,6 +608,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(settings.hasToken)
         XCTAssertEqual(clearedStatus, .disconnected)
         XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(outcome, .accepted)
     }
 
     func testClearTokenDeletionFailureRevokesLiveCredentialAndReportsError() async throws {
@@ -625,7 +627,7 @@ final class AppStateTests: XCTestCase {
         let connecting = await eventually { await client.currentStatus() == .connecting }
         XCTAssertTrue(connecting)
 
-        state.clearToken()
+        let outcome = await state.clearToken().value
 
         let closed = await eventually { await transport.closes() == 1 }
         let errorReported = await eventually { state.notice == settings.storageError }
@@ -635,6 +637,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertNotEqual(state.notice, "Token cleared.")
         XCTAssertFalse(settings.hasToken)
         XCTAssertEqual(clearedStatus, .disconnected)
+        XCTAssertEqual(outcome, .rejected(.keychainUnavailable))
 
         _ = await state.reconnect().value
         let closeCountAfterReconnect = await transport.closes()

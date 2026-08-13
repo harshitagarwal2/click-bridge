@@ -54,6 +54,24 @@ final class ConnectionPresentationTests: XCTestCase {
         }
     }
 
+    func testCredentialRemovalClearsTokenOnlyOnAcceptedOutcome() {
+        let original = ConnectionSettingsDraft(
+            appliedRelayURLString: "wss://old.example/ws",
+            relayURLString: "wss://edited.example/ws",
+            replacementMacToken: "keep-me"
+        )
+
+        var accepted = original
+        accepted.reduceCredentialRemoval(outcome: .accepted)
+        XCTAssertEqual(accepted.appliedRelayURLString, original.appliedRelayURLString)
+        XCTAssertEqual(accepted.relayURLString, original.relayURLString)
+        XCTAssertEqual(accepted.replacementMacToken, "")
+
+        var rejected = original
+        rejected.reduceCredentialRemoval(outcome: .rejected(.keychainUnavailable))
+        XCTAssertEqual(rejected, original)
+    }
+
     func testStableSettingsIdentifiersAreUnique() {
         let identifiers = SettingsAccessibility.all
         XCTAssertEqual(Set(identifiers).count, identifiers.count)

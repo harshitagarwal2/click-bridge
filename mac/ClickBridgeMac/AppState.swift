@@ -274,18 +274,22 @@ final class AppState: ObservableObject {
     }
 
     @discardableResult
-    func clearToken() -> Task<Void, Never> {
+    func clearToken() -> Task<ConnectionActionOutcome, Never> {
         let revision = beginCredentialOperation()
         var persistenceError: String?
         do { try settings.clearConnection() }
         catch { persistenceError = settings.storageError }
+        let outcome: ConnectionActionOutcome = persistenceError == nil
+            ? .accepted
+            : .rejected(.keychainUnavailable)
 
         let task = Task {
-            guard revision == credentialRevision, !Task.isCancelled else { return }
+            guard revision == credentialRevision, !Task.isCancelled else { return outcome }
             let cleared = await client.clearConfigurationAndStop(credentialRevision: revision)
-            guard cleared else { return }
-            guard revision == credentialRevision, !Task.isCancelled else { return }
+            guard cleared else { return outcome }
+            guard revision == credentialRevision, !Task.isCancelled else { return outcome }
             notice = persistenceError ?? "Token cleared."
+            return outcome
         }
         return track(task)
     }
