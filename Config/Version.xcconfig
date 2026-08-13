@@ -3,4 +3,4 @@
 // GitHub TestFlight builds may override CURRENT_PROJECT_VERSION with the
 // explicitly approved, never-reused build selected for that upload.
 MARKETING_VERSION = 1.2
-CURRENT_PROJECT_VERSION = 1
+CURRENT_PROJECT_VERSION = 2
