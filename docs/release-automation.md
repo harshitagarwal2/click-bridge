@@ -1,9 +1,12 @@
 # Release automation setup
 
-All four release workflows are manual (`workflow_dispatch`) and check out only
-the event commit (`github.sha`). The required `release_tag` must match the
-shared `MARKETING_VERSION` as `vX.Y` or `vX.Y.Z`, must already exist, and must
-resolve to that exact commit. Never enter a branch or arbitrary ref.
+TestFlight, GHCR, and the draft macOS release start automatically when a
+matching `vX.Y` or `vX.Y.Z` tag is pushed. They check out only the tagged event
+commit (`github.sha`), read the shared version from `Config/Version.xcconfig`,
+and require the tag to resolve to that exact commit. Never tag a branch or an
+arbitrary ref. App Store submission remains manual (`workflow_dispatch`) because
+it requires both TestFlight builds to finish processing before the explicit
+review-submission decision.
 
 ## Distribution ownership
 
@@ -28,11 +31,10 @@ hidden version owners. For the current App Store records it resolves to
 
 For a new customer release, update both values in that one file, run the Apple
 project generation/tests, merge the change, and tag the exact merge commit with
-the matching `v`-prefixed marketing version. TestFlight accepts one explicit
-Apple build string (one to three numeric components) for both apps. Use the
-shared baseline for the first upload and never reuse a build that either App
-Store Connect record may have accepted. A recovery upload may select a higher
-build without changing the customer-facing version.
+the matching `v`-prefixed marketing version. The tag starts TestFlight with the
+shared Apple build string for both apps; do not reuse a build that either App
+Store Connect record may have accepted. A recovery upload requires a new shared
+build number and matching release tag.
 
 Concrete recovery example: if iOS `1.0 (1)` is accepted but the matching Mac
 upload has not happened, do not try to reuse `1`. Dispatch TestFlight with
@@ -49,23 +51,16 @@ baseline values and checks the built app's Info.plist before notarization.
 
 ## Current external gates
 
-As verified on 2026-08-12, `ghcr-private`, `macos-release`, `testflight`,
-`app-store`, and `production` exist. Each requires independent approval from
-`pulkitcs18`, prevents self-review, disables administrator bypass, and uses a
-custom deployment policy: release environments accept only `v*` tags and
-production accepts only `main`. Immutable Releases are enabled, and the active
+The release environments are not protected with required reviewers or
+administrator-bypass rules. They remain named boundaries for environment-scoped
+secrets and variables, but release workflows do not call the GitHub Environments
+API or wait for an approval. Immutable Releases are enabled, and the active
 `Protect immutable release tags` ruleset rejects updates and deletions under
 `refs/tags/v*`.
 
-The release workflows still perform their own preflight before entering an
-environment. A missing environment can otherwise be created automatically
-without protection, so the preflight uses the authenticated Get Environment API
-and fails closed unless the named environment has required reviewers, prevented
-self-review, and `can_admins_bypass == false`. The mutating job repeats the same
-guard as its first step so a job-specific rerun cannot reuse stale approval
-configuration. After checkout, every publication lane also fails closed unless
-the tag resolves to the dispatched SHA, that SHA is reachable from `origin/main`,
-and an exact-SHA `push` run of `CI` on `main` completed successfully.
+After checkout, every publication lane still fails closed unless the tag resolves
+to the dispatched SHA, that SHA is reachable from `origin/main`, and an exact-SHA
+`push` run of `CI` on `main` completed successfully.
 
 Do **not** dispatch the Apple workflows until their secrets, App Store Connect
 records, metadata, agreements, and physical acceptance evidence below are
@@ -73,20 +68,19 @@ complete. `ghcr-private` needs no custom secret, but its multi-architecture
 workflow must first be merged and pass CI on the exact commit that will be
 tagged.
 
-Configure these GitHub environments with required reviewers, require prevention of self-review, disable administrator bypass, and restrict deployment tags to `v*`:
+Use these GitHub environments to scope release secrets and variables:
 
 | Environment | Purpose | Required configuration |
 | --- | --- | --- |
 | `testflight` | Build and upload aligned iOS and macOS builds; no tester distribution | Secrets `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY_BASE64`, `IOS_DISTRIBUTION_CERTIFICATE_BASE64`, `IOS_DISTRIBUTION_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`, `MAC_DISTRIBUTION_CERTIFICATE_BASE64`, `MAC_DISTRIBUTION_CERTIFICATE_PASSWORD`, `MAC_INSTALLER_CERTIFICATE_BASE64`, `MAC_INSTALLER_CERTIFICATE_PASSWORD`, `MAC_PROVISIONING_PROFILE_BASE64`; variable `APPLE_TEAM_ID` |
 | `app-store` | Select processed iOS and macOS builds and submit both for review, with automatic release off | App Store Connect API-key secrets above |
 | `macos-release` | Developer ID sign, notarize, staple, verify, and create a draft GitHub release | App Store Connect API-key secrets above; secrets `MAC_DEVELOPER_ID_CERTIFICATE_BASE64`, `MAC_DEVELOPER_ID_CERTIFICATE_PASSWORD`; variable `APPLE_TEAM_ID` |
-| `ghcr-private` | Build and push version plus SHA tags to GHCR | No custom secret; the job-scoped `GITHUB_TOKEN` receives narrowly scoped package and attestation permissions. Before first approval, create or inspect `click-bridge-relay` and verify its visibility is **Private**. |
+| `ghcr-private` | Build and push version plus SHA tags to GHCR | No custom secret; the job-scoped `GITHUB_TOKEN` receives narrowly scoped package and attestation permissions. Create or inspect `click-bridge-relay` and verify its visibility is **Private**. |
 
-After the protected environments are created and configured, set the
-`APPLE_TEAM_ID` environment variable for `testflight` and `macos-release` to
-`EC3R6XQ226`. This Team ID is not a credential. Do not store the Apple account
-email, Developer ID record, certificates, profiles, or API private key as
-variables or repository files.
+Set the `APPLE_TEAM_ID` environment variable for `testflight` and
+`macos-release` to `EC3R6XQ226`. This Team ID is not a credential. Do not store
+the Apple account email, Developer ID record, certificates, profiles, or API
+private key as variables or repository files.
 
 Store each `.p8`, `.p12`, `.mobileprovision`, and `.provisionprofile` file as a single-line Base64 value in its environment secret. The workflows decode them into the ephemeral runner only and remove them in an `always()` cleanup step. Do not commit or upload credentials to the repository. The TestFlight workflow separately downloads Apple's public WWDR G3 intermediate from Apple PKI, verifies its pinned SHA-256 and Apple Root trust chain, imports it only into the disposable signing keychain, and removes it during cleanup. This keeps Apple Distribution and Mac Installer Distribution chain building deterministic without changing certificate trust settings.
 
@@ -105,11 +99,11 @@ The macOS App Store provisioning profile must include the App Sandbox entitlemen
 
 The iOS and macOS workflows install XcodeGen 2.46.0 directly from the official `yonaskolb/XcodeGen` release asset and verify SHA-256 `4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806` before executing it. The macOS checksum file records only the ZIP basename, so it verifies from any download directory.
 
-## Before dispatch
+## Before release
 
 1. Replace every `REPLACE BEFORE RELEASE` value under `fastlane/metadata`, including the locale files, copyright owner, and primary category. No screenshot or reviewer-login scaffold is included.
-2. Update `Config/Version.xcconfig`, merge and verify CI, create the matching protected `vX.Y` or `vX.Y.Z` tag on the exact release commit, then dispatch from that tag.
-3. Run TestFlight first. Enter one new build string for both records. It uploads the iOS IPA and then the macOS installer package with the same version/build, creates no GitHub app artifact, and distributes to no testers. The uploads are sequential, not transactional: if one succeeds and the other fails, fix the failure and dispatch a new higher build number instead of reusing the partially uploaded value.
+2. Update `Config/Version.xcconfig`, merge and verify CI, then push the matching `vX.Y` or `vX.Y.Z` tag on the exact release commit. This automatically starts TestFlight, GHCR publication, and the draft macOS release.
+3. TestFlight reads the shared build string and uploads the iOS IPA and macOS installer package with the same version/build, creates no GitHub app artifact, and distributes to no testers. The uploads are sequential, not transactional: if one succeeds and the other fails, update the shared build number, create a matching new version tag, and retry with that release instead of reusing the partially uploaded value.
 4. After both App Store Connect records report that exact version/build as processed, dispatch App Store submission with the same values. Fastlane skips binary upload, submits both apps for review, and sets `automatic_release: false`.
 5. Run and record the applicable physical matrix before publishing a user-facing release. Automated CI, Simulator, unsigned device builds, TestFlight processing, and notarization do not replace the real iPhone, Accessibility, haptic, headset, and Octo observations in `physical-smoke-test.md`.
 6. The GHCR workflow never emits `latest` and never modifies package visibility. It installs a digest-pinned Arm64 QEMU emulator, publishes exactly `linux/amd64` and `linux/arm64`, and adds source/title/description metadata to both platform manifests and the image index so GitHub links the package to this repository. Before building, it queries GHCR and fails closed unless both the version tag and commit-SHA tag are absent. After pushing, it creates a GitHub provenance attestation for the exact image digest and verifies both tag names resolve to that digest.
