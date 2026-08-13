@@ -18,6 +18,13 @@ to this section while it remains an active queue.
 
 ## Archived on 2026-08-12
 
+- **Mac Settings and remote phone pairing:**
+  [plan](archive/2026-08-12/plans/2026-08-12-mac-settings-pairing.md) and
+  [design](archive/2026-08-12/specs/2026-08-12-mac-settings-pairing-design.md).
+  Implementation is complete; physical iPhone scanning, public-relay
+  enrollment, Accessibility-authorized clicking, signing, TestFlight, and
+  production remain **NOT RUN**.
+
 - **Native iOS volume client:**
   [plan](archive/2026-08-12/plans/2026-08-12-native-ios-volume-client.md) and
   [design](archive/2026-08-12/specs/2026-08-12-native-ios-volume-client-design.md).

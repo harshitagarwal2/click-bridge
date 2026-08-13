@@ -8,20 +8,88 @@ final class PairingControllerTests: XCTestCase {
     private let claimID = "22222222-2222-4222-8222-222222222222"
     private let reference = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
-    func testCurrentUnexpiredInvitationCopiesCanonicalWebURL() async throws {
+    func testTransactionOwnedStatesBlockConnectionChangesAndInteractiveDismissal() {
+        let controller = subject(transport: PairingTransportRecorder())
+        let invitation = PairingController.Invitation(
+            url: URL(string: "https://relay.example/pair#v=1&r=\(reference)")!,
+            expiresAt: Date(timeIntervalSince1970: 1_300)
+        )
+        let approval = PairingController.Approval(
+            confirmationCode: "482 917",
+            clientKind: .ios,
+            expiresAt: Date(timeIntervalSince1970: 1_300)
+        )
+        let blocked: [PairingController.State] = [
+            .creating,
+            .invitation(invitation),
+            .approval(approval),
+            .approving,
+            .denying,
+            .cancelling,
+            .cancelFailed
+        ]
+
+        for state in blocked {
+            XCTAssertTrue(PairingController.blocksConnectionChanges(in: state), "expected \(state) to block")
+            controller.forceBlockedConnectionStateForTesting(state)
+            XCTAssertTrue(controller.blocksConnectionChanges, "expected \(state) to block changes")
+            XCTAssertTrue(controller.preventsInteractiveDismissal, "expected \(state) to block dismissal")
+        }
+
+        let safe: [PairingController.State] = [
+            .unavailable,
+            .checkingStatus,
+            .ready,
+            .replacementConfirmation,
+            .completed(activePhoneCredentialVersion: 1),
+            .denied,
+            .expired,
+            .failed
+        ]
+        for state in safe {
+            XCTAssertFalse(PairingController.blocksConnectionChanges(in: state), "expected \(state) to be safe")
+        }
+
+        controller.clearBlockedConnectionStateForTesting()
+        XCTAssertEqual(controller.state, .ready)
+        XCTAssertFalse(controller.blocksConnectionChanges)
+        XCTAssertFalse(controller.preventsInteractiveDismissal)
+
+        let unavailable = subject(transport: PairingTransportRecorder())
+        XCTAssertFalse(unavailable.blocksConnectionChanges)
+        XCTAssertFalse(unavailable.preventsInteractiveDismissal)
+    }
+
+    func testCurrentUnexpiredInvitationExportsCanonicalNativeAndBrowserURLs() async throws {
         let controller = subject(transport: PairingTransportRecorder())
         await moveToInvitation(controller)
         guard case .invitation(let invitation) = controller.state else {
             return XCTFail("Expected invitation")
         }
-        let pasteboard = sentinelPasteboard()
+        let nativePasteboard = sentinelPasteboard()
+        let browserPasteboard = sentinelPasteboard()
 
-        XCTAssertTrue(controller.copyWebInvitation(invitation, to: pasteboard))
-        XCTAssertEqual(pasteboard.string(forType: .string),
-                       "https://relay.example/pair/web#v=1&r=\(reference)")
+        XCTAssertEqual(
+            controller.invitationURL(for: invitation, destination: .nativeApp)?.absoluteString,
+            "https://relay.example/pair#v=1&r=\(reference)"
+        )
+        XCTAssertEqual(
+            controller.invitationURL(for: invitation, destination: .browser)?.absoluteString,
+            "https://relay.example/pair/web#v=1&r=\(reference)"
+        )
+        XCTAssertTrue(controller.copyInvitation(invitation, destination: .nativeApp, to: nativePasteboard))
+        XCTAssertTrue(controller.copyInvitation(invitation, destination: .browser, to: browserPasteboard))
+        XCTAssertEqual(
+            nativePasteboard.string(forType: .string),
+            "https://relay.example/pair#v=1&r=\(reference)"
+        )
+        XCTAssertEqual(
+            browserPasteboard.string(forType: .string),
+            "https://relay.example/pair/web#v=1&r=\(reference)"
+        )
     }
 
-    func testExpiredCapturedInvitationCannotChangePasteboard() async throws {
+    func testCapturedResolverAndCopiesFailClosedAfterExpiry() async throws {
         let transport = PairingTransportRecorder()
         var now = Date(timeIntervalSince1970: 1_000)
         let controller = PairingController(
@@ -34,19 +102,20 @@ final class PairingControllerTests: XCTestCase {
         guard case .invitation(let invitation) = controller.state else {
             return XCTFail("Expected invitation")
         }
-        let pasteboard = sentinelPasteboard()
+        let resolver = controller.invitationURLResolver(for: invitation, destination: .nativeApp)
         now = invitation.expiresAt
 
-        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
-        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(invitation, from: controller)
     }
 
-    func testCapturedInvitationAfterClaimCannotChangePasteboard() async throws {
+    func testCapturedResolverAndCopiesFailClosedAfterClaim() async throws {
         let controller = subject(transport: PairingTransportRecorder())
         await moveToInvitation(controller)
         guard case .invitation(let invitation) = controller.state else {
             return XCTFail("Expected invitation")
         }
+        let resolver = controller.invitationURLResolver(for: invitation, destination: .nativeApp)
         await controller.receive(.pairClaimedMac(PairClaimedMac(
             requestId: requestID,
             claimId: claimID,
@@ -54,26 +123,26 @@ final class PairingControllerTests: XCTestCase {
             expiresAtUnixMs: 1_300_000,
             clientKind: .ios
         )))
-        let pasteboard = sentinelPasteboard()
 
-        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
-        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(invitation, from: controller)
     }
 
-    func testCapturedInvitationAfterCancellationCannotChangePasteboard() async throws {
+    func testCapturedResolverAndCopiesFailClosedWhileCancellationIsPending() async throws {
         let controller = subject(transport: PairingTransportRecorder())
         await moveToInvitation(controller)
         guard case .invitation(let invitation) = controller.state else {
             return XCTFail("Expected invitation")
         }
+        let resolver = controller.invitationURLResolver(for: invitation, destination: .nativeApp)
         await controller.cancel()
-        let pasteboard = sentinelPasteboard()
 
-        XCTAssertFalse(controller.copyWebInvitation(invitation, to: pasteboard))
-        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+        XCTAssertEqual(controller.state, .cancelling)
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(invitation, from: controller)
     }
 
-    func testCapturedInvitationAfterRegenerationCannotChangePasteboard() async throws {
+    func testCapturedResolverAndCopiesFailClosedAfterRegeneration() async throws {
         let transport = PairingTransportRecorder()
         var now = Date(timeIntervalSince1970: 1_000)
         let controller = PairingController(
@@ -86,10 +155,17 @@ final class PairingControllerTests: XCTestCase {
         guard case .invitation(let captured) = controller.state else {
             return XCTFail("Expected invitation")
         }
+        let resolver = controller.invitationURLResolver(for: captured, destination: .nativeApp)
 
         now = captured.expiresAt.addingTimeInterval(1)
         await controller.refreshExpiry()
-        await controller.regenerate()
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
+        await controller.beginPairing()
+        await controller.confirmReplacement()
         let nextReference = Data(repeating: 1, count: 32).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
@@ -99,10 +175,41 @@ final class PairingControllerTests: XCTestCase {
             reference: nextReference,
             expiresAtUnixMs: 1_600_000
         )))
-        let pasteboard = sentinelPasteboard()
 
-        XCTAssertFalse(controller.copyWebInvitation(captured, to: pasteboard))
-        XCTAssertEqual(pasteboard.string(forType: .string), "sentinel")
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(captured, from: controller)
+    }
+
+    func testCapturedResolverFailsClosedAfterStateReplacement() async throws {
+        let controller = subject(transport: PairingTransportRecorder())
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        let resolver = controller.invitationURLResolver(for: invitation, destination: .nativeApp)
+
+        await controller.refreshStatus(capabilityAvailable: false)
+
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(invitation, from: controller)
+    }
+
+    func testCapturedResolverFailsClosedAfterCancellationFailure() async throws {
+        let transport = PairingTransportRecorder(results: [
+            .success(()), .success(()), .failure(TestTransportError.failed)
+        ])
+        let controller = subject(transport: transport)
+        await moveToInvitation(controller)
+        guard case .invitation(let invitation) = controller.state else {
+            return XCTFail("Expected invitation")
+        }
+        let resolver = controller.invitationURLResolver(for: invitation, destination: .nativeApp)
+
+        await controller.cancel()
+
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertNil(resolver())
+        assertInvitationCannotExport(invitation, from: controller)
     }
 
     func testUnavailableCapabilityCannotCreateInvitation() async {
@@ -258,10 +365,11 @@ final class PairingControllerTests: XCTestCase {
         guard case .pairDeny(let deny) = await transport.messages().last else {
             return XCTFail("Expected pair.deny")
         }
+        XCTAssertEqual(deny.requestId, requestID)
         XCTAssertEqual(deny.claimId, claimID)
     }
 
-    func testExpiryCancelsInvitationAndAllowsRegeneration() async throws {
+    func testCountdownExpirySendsCancelAndRetainsFenceUntilAcknowledged() async throws {
         let transport = PairingTransportRecorder()
         var now = Date(timeIntervalSince1970: 1_000)
         let controller = PairingController(
@@ -286,13 +394,21 @@ final class PairingControllerTests: XCTestCase {
 
         now = Date(timeIntervalSince1970: 1_002)
         await controller.refreshExpiry()
-        XCTAssertEqual(controller.state, .expired)
+        XCTAssertEqual(controller.state, .cancelling)
         XCTAssertEqual(controller.recoveryAction, .retry)
-
-        await controller.regenerate()
-        guard case .pairCreate = await transport.messages().last else {
-            return XCTFail("Expected a regenerated pair.create")
+        XCTAssertTrue(controller.blocksConnectionChanges)
+        guard case .pairCancel(let cancel) = await transport.messages().last else {
+            return XCTFail("Expected expiry to send pair.cancel")
         }
+        XCTAssertEqual(cancel.requestId, requestID)
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
+        XCTAssertEqual(controller.state, .ready)
+        XCTAssertFalse(controller.blocksConnectionChanges)
     }
 
     func testCreateFailureCanRetryOnlyFromItsInvitationSafeFailure() async {
@@ -335,7 +451,7 @@ final class PairingControllerTests: XCTestCase {
         }
     }
 
-    func testApprovalExpiryStartsAgainWithFreshStatus() async {
+    func testApprovalExpirySendsCancelAndWaitsForClaimCorrelatedAcknowledgement() async {
         let transport = PairingTransportRecorder()
         var now = Date(timeIntervalSince1970: 1_000)
         let controller = PairingController(
@@ -348,13 +464,16 @@ final class PairingControllerTests: XCTestCase {
 
         now = Date(timeIntervalSince1970: 1_301)
         await controller.refreshExpiry()
-        XCTAssertEqual(controller.state, .expired)
-        XCTAssertEqual(controller.recoveryAction, .startAgain)
+        XCTAssertEqual(controller.state, .cancelling)
+        XCTAssertEqual(controller.recoveryAction, .retry)
+        XCTAssertTrue(controller.blocksConnectionChanges)
 
-        await controller.regenerate()
-        guard case .pairStatusRequest = await transport.messages().last else {
-            return XCTFail("Expected fresh status after approval expiry")
-        }
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .cancelled
+        )))
+        XCTAssertEqual(controller.state, .ready)
     }
 
     func testApproveSendFailureStartsAgainWithFreshStatus() async {
@@ -490,10 +609,36 @@ final class PairingControllerTests: XCTestCase {
         await transport.completeSend(at: 2, with: .success(()))
         await cancel.value
 
+        XCTAssertEqual(controller.state, .cancelling)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
         XCTAssertEqual(controller.state, .ready)
     }
 
-    func testCancellationAcknowledgementEndsCancellationAndClearsCorrelation() async throws {
+    func testExactClaimCorrelatedCancellationAcknowledgementUnblocks() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToApproval(controller, transport: transport)
+
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .cancelled
+        )))
+        XCTAssertEqual(controller.state, .ready)
+
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .ready)
+    }
+
+    func testWrongClaimCancellationAcknowledgementRequiresStatusReconciliation() async throws {
         let transport = PairingTransportRecorder(suspendSends: true)
         let controller = subject(transport: transport)
         try await moveToApproval(controller, transport: transport)
@@ -505,17 +650,135 @@ final class PairingControllerTests: XCTestCase {
             claimId: nil,
             reason: .cancelled
         )))
-        XCTAssertEqual(controller.state, .ready)
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertTrue(controller.blocksConnectionChanges)
 
         await controller.receive(.pairFailed(PairFailed(
             requestId: requestID,
             claimId: claimID,
-            reason: .denied
+            reason: .cancelled
         )))
-        XCTAssertEqual(controller.state, .ready)
+        XCTAssertEqual(controller.state, .cancelFailed)
 
         await transport.completeSend(at: 2, with: .success(()))
         await cancel.value
+        XCTAssertEqual(controller.state, .cancelFailed)
+    }
+
+    func testCancelSendCompletionKeepsVisibleRecoveryAndFenceForLostAcknowledgement() async {
+        let transport = PairingTransportRecorder()
+        let controller = subject(transport: transport)
+        await moveToInvitation(controller)
+
+        await controller.cancel()
+
+        XCTAssertEqual(controller.state, .cancelling)
+        XCTAssertEqual(controller.recoveryAction, .retry)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+        XCTAssertTrue(controller.preventsInteractiveDismissal)
+    }
+
+    func testStaleRequestCancellationAcknowledgementRetainsUncertainty() async {
+        let controller = subject(transport: PairingTransportRecorder())
+        await moveToInvitation(controller)
+        await controller.cancel()
+
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: "33333333-3333-4333-8333-333333333333",
+            claimId: nil,
+            reason: .cancelled
+        )))
+
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertEqual(controller.recoveryAction, .retry)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+    }
+
+    func testLostCancellationAcknowledgementReconcilesWithoutDroppingFenceEarly() async throws {
+        let statusRequestID = "11111111-1111-4111-8111-111111111111"
+        let pairingRequestID = "33333333-3333-4333-8333-333333333333"
+        let reconciliationRequestID = "44444444-4444-4444-8444-444444444444"
+        let identifiers = RequestIDSequence([statusRequestID, pairingRequestID, reconciliationRequestID])
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = PairingController(
+            transport: transport,
+            relayURL: URL(string: "wss://relay.example/ws")!,
+            requestID: { identifiers.next() },
+            now: { Date(timeIntervalSince1970: 1_000) }
+        )
+        let status = Task { await controller.refreshStatus(capabilityAvailable: true) }
+        try await transport.waitUntilSendCount(1)
+        await transport.completeSend(at: 0, with: .success(()))
+        await status.value
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: statusRequestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+        await controller.beginPairing()
+        let create = Task { await controller.confirmReplacement() }
+        try await transport.waitUntilSendCount(2)
+        await transport.completeSend(at: 1, with: .success(()))
+        await create.value
+        await controller.receive(.pairCreated(PairCreated(
+            requestId: pairingRequestID,
+            reference: reference,
+            expiresAtUnixMs: 1_300_000
+        )))
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .cancelling)
+
+        let reconcile = Task { await controller.regenerate() }
+        try await transport.waitUntilSendCount(4)
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: pairingRequestID,
+            claimId: nil,
+            reason: .cancelled
+        )))
+        XCTAssertEqual(controller.state, .cancelFailed)
+        await transport.completeSend(at: 3, with: .success(()))
+        await reconcile.value
+
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: reconciliationRequestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
+        XCTAssertEqual(controller.state, .ready)
+        XCTAssertFalse(controller.blocksConnectionChanges)
+    }
+
+    func testDisconnectDuringCancellationPreservesFenceUntilStatusReconciliation() async throws {
+        let transport = PairingTransportRecorder(suspendSends: true)
+        let controller = subject(transport: transport)
+        try await moveToInvitation(controller, transport: transport)
+
+        let cancel = Task { await controller.cancel() }
+        try await transport.waitUntilSendCount(3)
+        await controller.refreshStatus(capabilityAvailable: false)
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+
+        await transport.completeSend(at: 2, with: .success(()))
+        await cancel.value
+        XCTAssertEqual(controller.state, .cancelFailed)
+
+        let reconnect = Task { await controller.refreshStatus(capabilityAvailable: true) }
+        try await transport.waitUntilSendCount(4)
+        XCTAssertEqual(controller.state, .cancelFailed)
+        XCTAssertTrue(controller.blocksConnectionChanges)
+        await transport.completeSend(at: 3, with: .success(()))
+        await reconnect.value
+        await controller.receive(.pairStatus(PairStatus(
+            requestId: requestID,
+            enrollmentState: .legacy,
+            activePhoneCredentialVersion: 0
+        )))
         XCTAssertEqual(controller.state, .ready)
     }
 
@@ -737,6 +1000,12 @@ final class PairingControllerTests: XCTestCase {
         XCTAssertEqual(messages.count, 3)
         await transport.completeSend(at: 2, with: .success(()))
         await cancel.value
+        XCTAssertEqual(controller.state, .cancelling)
+        await controller.receive(.pairFailed(PairFailed(
+            requestId: requestID,
+            claimId: claimID,
+            reason: .cancelled
+        )))
         XCTAssertEqual(controller.state, .ready)
     }
 
@@ -830,6 +1099,33 @@ final class PairingControllerTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.setString("sentinel", forType: .string)
         return pasteboard
+    }
+
+    private func assertInvitationCannotExport(
+        _ invitation: PairingController.Invitation,
+        from controller: PairingController,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertNil(
+            controller.invitationURL(for: invitation, destination: .nativeApp),
+            file: file,
+            line: line
+        )
+        XCTAssertNil(
+            controller.invitationURL(for: invitation, destination: .browser),
+            file: file,
+            line: line
+        )
+        for destination in [PairingInvitationDestination.nativeApp, .browser] {
+            let pasteboard = sentinelPasteboard()
+            XCTAssertFalse(
+                controller.copyInvitation(invitation, destination: destination, to: pasteboard),
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(pasteboard.string(forType: .string), "sentinel", file: file, line: line)
+        }
     }
 
     private func moveToApproval(_ controller: PairingController) async {

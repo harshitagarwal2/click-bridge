@@ -77,14 +77,16 @@ This evidence proves compilation and deterministic behavior under injected fakes
 1. Generate the project from `ios/project.yml` and open `ios/ClickBridgePhone.xcodeproj`, or build the shared `ClickBridgePhone` scheme with XcodeBuildMCP.
 2. Sign and install the app on an iPhone.
 3. On the connected Mac, open Click Bridge **Settings…** and choose **Pair
-   Phone**. If another phone is enrolled, choose **Replace Phone** and confirm.
-4. Scan the QR code with the iPhone app. If the phone is far away, use **Copy
-   Invitation** or **Share…** on the Mac and open the single-use HTTPS link on
+   Phone**. If another phone is enrolled, choose **Replace Phone…** and confirm.
+4. Scan the QR code with the iPhone app. If the phone is far away, choose
+   **Share Secure Setup Link…** on the Mac and open the single-use HTTPS link on
    the phone; pairing works over the internet and does not require a shared LAN.
 5. Confirm that the same six-digit code appears on both devices, then approve
    on the Mac. Do not approve a mismatch.
 6. Keep the app in its foreground session and wait for **Ready** before changing system volume.
-7. Use either the native client or the PWA as the live phone client, not both simultaneously. For the PWA, choose **Copy PWA Invitation** on the Mac and open its `/pair/web` HTTPS link on the phone.
+7. Use either the native client or the PWA as the live phone client, not both
+   simultaneously. For the PWA, choose **Other Ways to Connect → Copy Browser
+   Invitation Link** on the Mac and open its `/pair/web` HTTPS link on the phone.
 
 For an alternate/self-hosted relay, expand **Advanced Legacy** in Settings and
 enter its exact `wss://<host>/ws` URL and `PHONE_TOKEN`. Credentials, query
