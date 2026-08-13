@@ -360,26 +360,24 @@ test('approval is claim-bound CAS and offers a next-version credential without a
   assert.equal(h.events.at(-1).message.credential, CREDENTIAL);
 });
 
-test('an exact claimant proof rebinds an unacknowledged credential after disconnect without activation', () => {
+test('a claimant disconnect after approval commits the already-issued credential instead of discarding it', async () => {
   const h = harness();
-  const resumed = Object.freeze({ id: 'resumed-claimant' });
   connectAndCreate(h);
   claim(h);
   assert.equal(approve(h), 'ok');
 
-  assert.equal(h.coordinator.disconnectClaimant(PHONE, 5), 'suspended');
-  assert.equal(h.activateCalls(), 0);
-  assert.equal(h.coordinator.claim(resumed, 6, claimMessage()), 'ok');
-  assert.deepEqual(h.events.at(-1), {
-    connection: resumed,
-    message: {
-      type: 'pair.credential', v: 1, claimId: CLAIM_ID,
-      credential: CREDENTIAL, credentialVersion: 8,
-    },
-  });
-  assert.equal(h.coordinator.claim(Object.freeze({ id: 'attacker' }), 7, {
-    ...claimMessage(), sessionNonce: '55'.repeat(32),
-  }), 'used');
+  assert.equal(await h.coordinator.disconnectClaimant(PHONE, 5), 'ok');
+  assert.equal(h.activateCalls(), 1);
+  assert.equal(h.record().activePhoneCredentialVersion, 8);
+  assert.equal(h.events.some(({ message }) => message.type === 'pair.completed'
+    && message.activePhoneCredentialVersion === 8), true);
+  assert.equal(h.events.some(({ message }) => ['cancelled', 'expired', 'mac_offline'].includes(
+    message.reason,
+  )), false);
+
+  // A late duplicate claim from the same claimant is no longer meaningful:
+  // the session already completed and is not resumable.
+  assert.equal(h.coordinator.claim(PHONE, 6, claimMessage()), 'used');
 });
 
 test('a connected replacement Mac cannot approve, deny, or cancel before capability opt-in', async () => {

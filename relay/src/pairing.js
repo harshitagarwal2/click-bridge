@@ -194,18 +194,9 @@ export class PairingCoordinator {
       const duplicate = session.claimId === message.claimId
         && session.sessionNonce === message.sessionNonce
         && verifier !== null
-        && sameHex(verifier, session.claimVerifier);
+        && sameHex(verifier, session.claimVerifier)
+        && this.#owns(session.claimant, connection, generation);
       if (duplicate) {
-        // A credential has already been issued, but it remains inert until
-        // this proof holder returns its HMAC acknowledgement. A transient
-        // socket loss may rebind only this exact claimant proof.
-        if (session.claimant === null && session.pendingCredential && !session.activationPromise) {
-          session.claimant = { connection, generation };
-          this.#log('pairing_claimant_resumed', { phase: this.#phase(session) });
-        } else if (!this.#owns(session.claimant, connection, generation)) {
-          this.#send(connection, failureForClaimant(message.claimId, 'used'));
-          return 'used';
-        }
         if (session.activationPromise) return 'activation_in_progress';
         if (session.pendingCredential) this.#sendCredential(session);
         else this.#sendClaimed(session);
@@ -369,10 +360,19 @@ export class PairingCoordinator {
     if (!this.#session || !this.#owns(this.#session.claimant, connection, generation)) {
       return 'ignored';
     }
-    if (this.#session.pendingCredential) {
-      this.#session.claimant = null;
-      this.#log('pairing_claimant_suspended', { phase: this.#phase(this.#session) });
-      return 'suspended';
+    const session = this.#session;
+    if (session.pendingCredential) {
+      // The credential was already dispatched to the claimant before the
+      // socket dropped — commonly an iOS background suspend during the
+      // approve -> acknowledge handoff. The phone independently recovers by
+      // reconnecting and presenting the credential as a bearer token (see
+      // PhonePairingClient.recoverPending), so commit it now instead of
+      // discarding the session: additive pairing makes this safe even if
+      // the phone never actually received the credential, since an unused
+      // credential entry grants no capability on its own.
+      this.#clearTimer(session);
+      session.activationPromise = this.#activate(session);
+      return session.activationPromise;
     }
     this.#terminate('cancelled', {
       source: 'claimant_disconnect',
