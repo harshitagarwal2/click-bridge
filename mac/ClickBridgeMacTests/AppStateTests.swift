@@ -345,7 +345,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(try settings.macToken(), "stored-token")
         XCTAssertNotNil(state.notice)
 
-        settings.relayURLString = "wss://example.com/ws"
+        settings.stageRelayURLDraft("wss://example.com/ws")
         await state.reconnect().value
 
         XCTAssertEqual(factory.count(), 1)

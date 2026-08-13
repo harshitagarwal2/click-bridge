@@ -8,12 +8,21 @@ struct ClickBridgeApp: App {
     init() {
         let settings: SettingsStore
         let startupNotice: String?
-        do {
-            settings = try SettingsStore()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            let testIsolation = SecretStoreUnavailable(message: "Keychain access is disabled for tests.")
+            settings = SettingsStore(
+                unavailableSecrets: UnavailableSecretStore(failure: testIsolation),
+                failure: testIsolation
+            )
             startupNotice = nil
-        } catch {
-            settings = SettingsStore(unavailableSecrets: UnavailableSecretStore(failure: error), failure: error)
-            startupNotice = "Keychain is unavailable: \(error.localizedDescription)"
+        } else {
+            do {
+                settings = try SettingsStore()
+                startupNotice = nil
+            } catch {
+                settings = SettingsStore(unavailableSecrets: UnavailableSecretStore(failure: error), failure: error)
+                startupNotice = "Keychain is unavailable: \(error.localizedDescription)"
+            }
         }
         let permission = PostEventPermissionService()
         let processor = ActionProcessor(poster: MacInputExecutor(), permission: permission)
@@ -97,7 +106,7 @@ struct SettingsView: View {
                 Section("Relay") {
                     TextField("Relay URL", text: Binding(
                         get: { app.settings.relayURLString },
-                        set: { app.settings.relayURLString = $0 }
+                        set: { app.settings.stageRelayURLDraft($0) }
                     ), prompt: Text("wss://your-host/ws"))
                 }
                 Section("Mac token") {

@@ -51,6 +51,7 @@
 		923AF3B76908705BF3068622 /* mac.state.json in Resources */ = {isa = PBXBuildFile; fileRef = 5ECBCF2F47C0BDB71C7B08E9 /* mac.state.json */; };
 		956213D153C128D6E06466CF /* unknown-field.json in Resources */ = {isa = PBXBuildFile; fileRef = 516FF0124E9165A938858B42 /* unknown-field.json */; };
 		95671BE954AD2E0FF7A38EEC /* action.result.rejected.capacity-exceeded.json in Resources */ = {isa = PBXBuildFile; fileRef = C96BDB33B2EAB4D006FFE4EC /* action.result.rejected.capacity-exceeded.json */; };
+		95CAF6FD62BA0BBD85A2D92B /* ConnectionSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF3E26A5CD424E5F9F111BB8 /* ConnectionSettings.swift */; };
 		9879C54A918CDFD841EB6548 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */; };
 		996439713F387CFB668C8B14 /* wrong-role.json in Resources */ = {isa = PBXBuildFile; fileRef = D1220599A04910F8983C78B1 /* wrong-role.json */; };
 		A04EC3B9943A8A9D37623D80 /* action.request.json in Resources */ = {isa = PBXBuildFile; fileRef = 0D3B3B1819A9E7130A5FC26F /* action.request.json */; };
@@ -87,6 +88,7 @@
 		DBBD569056B17D79612D3991 /* malformed.json in Resources */ = {isa = PBXBuildFile; fileRef = 377F3F4444E5F151769CB04B /* malformed.json */; };
 		DC2F8879E754E2CF3A789220 /* action.result.rejected.json in Resources */ = {isa = PBXBuildFile; fileRef = 13D99F765BCF87D9C0CDCCAB /* action.result.rejected.json */; };
 		DEDB97522262D8CC4ECB9013 /* pair.failed.mac-after-claim.json in Resources */ = {isa = PBXBuildFile; fileRef = 16858FDAB6D7ED9A902F904F /* pair.failed.mac-after-claim.json */; };
+		E1F7FC7FE8F8C182C17D0601 /* ConnectionSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B10620F750D190745883DB /* ConnectionSettingsTests.swift */; };
 		E41553ACC38571F90C506CB3 /* WireMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F140BE0D05E21B51C2626D56 /* WireMessage.swift */; };
 		E7F123B0BF0D7FAAE769A206 /* SettingsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1103FB96DB77440AC51FE1E /* SettingsStoreTests.swift */; };
 		EA0D15A7438981451D4D4000 /* pair.claim.json in Resources */ = {isa = PBXBuildFile; fileRef = A23D543D2C701B5253D97E3C /* pair.claim.json */; };
@@ -161,6 +163,7 @@
 		883CF2666B8E8B0EE47B3132 /* pair-noncanonical-reference.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pair-noncanonical-reference.json"; sourceTree = "<group>"; };
 		8896699E8F0BED7CB52708B4 /* action.result.rejected.event-creation-failed.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "action.result.rejected.event-creation-failed.json"; sourceTree = "<group>"; };
 		956AA383AD3BBC428F257E40 /* PostEventPermissionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostEventPermissionService.swift; sourceTree = "<group>"; };
+		96B10620F750D190745883DB /* ConnectionSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSettingsTests.swift; sourceTree = "<group>"; };
 		96C5A363A685FE07533C827B /* oversized.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = oversized.json; sourceTree = "<group>"; };
 		97039C3EB866FF4FF20CEF37 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		9E9857DAEB715597450B5B53 /* PermissionServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionServiceTests.swift; sourceTree = "<group>"; };
@@ -207,6 +210,7 @@
 		F779F6A9CA441AF7DC5AEB94 /* PairingPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingPresentationTests.swift; sourceTree = "<group>"; };
 		F97C59BEE5894CE2568D7BD9 /* RelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClientTests.swift; sourceTree = "<group>"; };
 		FA88DE5EDDF5D4A87240A655 /* invalid-relay-ack-pairing.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "invalid-relay-ack-pairing.json"; sourceTree = "<group>"; };
+		FF3E26A5CD424E5F9F111BB8 /* ConnectionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSettings.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -219,6 +223,7 @@
 				161E2ADDD69F551099B917E8 /* Assets.xcassets */,
 				EF5E80CABBD9F02298516CAC /* ClickBridgeApp.swift */,
 				45057D654AB297444B145C63 /* ClickBridgeMac-AppStore.entitlements */,
+				FF3E26A5CD424E5F9F111BB8 /* ConnectionSettings.swift */,
 				C9EE92FD9E6234B00DBBB0FA /* Info.plist */,
 				BF6421E052FFDFF56DB7B8B2 /* KeychainStore.swift */,
 				5DFCA4C6E1CBAA181F49D919 /* MacInputExecutor.swift */,
@@ -327,6 +332,7 @@
 			children = (
 				42F56CF837ED2862327D252E /* ActionProcessorTests.swift */,
 				635504752060C9C6F78E9A8D /* AppStateTests.swift */,
+				96B10620F750D190745883DB /* ConnectionSettingsTests.swift */,
 				2E81027EC0D20C547E95E172 /* MacInputExecutorTests.swift */,
 				3D054D14298A3AB8C585BA14 /* PairingControllerTests.swift */,
 				F779F6A9CA441AF7DC5AEB94 /* PairingPresentationTests.swift */,
@@ -540,6 +546,7 @@
 			files = (
 				14076C680E5DBA725DD1DD7C /* ActionProcessorTests.swift in Sources */,
 				BB30EACE97D772798509C6D6 /* AppStateTests.swift in Sources */,
+				E1F7FC7FE8F8C182C17D0601 /* ConnectionSettingsTests.swift in Sources */,
 				4C9339C67D82AB5B662F7B50 /* MacInputExecutorTests.swift in Sources */,
 				7A4955925D4FE8FDB68CABBC /* PairingControllerTests.swift in Sources */,
 				051894352BED05560D533C72 /* PairingPresentationTests.swift in Sources */,
@@ -559,6 +566,7 @@
 				BDEC21571CE1512A736B8C29 /* ActionProcessor.swift in Sources */,
 				3AE66A38830D2748B8649B34 /* AppState.swift in Sources */,
 				C7F547B6F56E2BDFE02DF07B /* ClickBridgeApp.swift in Sources */,
+				95CAF6FD62BA0BBD85A2D92B /* ConnectionSettings.swift in Sources */,
 				9879C54A918CDFD841EB6548 /* KeychainStore.swift in Sources */,
 				6279506B599734959BD49198 /* MacInputExecutor.swift in Sources */,
 				309A0B95559735542BE5AC0B /* PairingController.swift in Sources */,
