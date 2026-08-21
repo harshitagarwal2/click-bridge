@@ -151,18 +151,52 @@ public static class WireCodec
             }
             case "mac.state":
             {
-                JsonReading.RequireExactFields(m, ["type", "v", "remoteEnabled", "permission"]);
+                var allowed = new HashSet<string> { "type", "v", "remoteEnabled", "permission", "platform" };
+                foreach (var prop in m.EnumerateObject()) if (!allowed.Contains(prop.Name)) throw WireException.InvalidValue();
+                foreach (var req in new[] { "type", "v", "remoteEnabled", "permission" }) if (!m.TryGetProperty(req, out _)) throw WireException.InvalidValue();
                 var remoteEnabled = JsonReading.GetBool(m, "remoteEnabled");
                 var permission = JsonReading.RequirePermission(m);
-                return new MacState { RemoteEnabled = remoteEnabled, Permission = permission };
+                var platform = DesktopPlatform.Windows;
+                if (m.TryGetProperty("platform", out var platEl))
+                {
+                    var platStr = platEl.GetString() ?? "mac";
+                    platform = platStr == "windows" ? DesktopPlatform.Windows : DesktopPlatform.Mac;
+                    if (platStr != "mac" && platStr != "windows") throw WireException.InvalidValue();
+                }
+                return new MacState { RemoteEnabled = remoteEnabled, Permission = permission, Platform = platform };
             }
             case "state":
             {
-                JsonReading.RequireExactFields(m, ["type", "v", "macOnline", "remoteEnabled", "permission"]);
+                var allowed = new HashSet<string> { "type", "v", "macOnline", "remoteEnabled", "permission", "desktops", "desktopCount", "macCount", "windowsCount" };
+                foreach (var prop in m.EnumerateObject()) if (!allowed.Contains(prop.Name)) throw WireException.InvalidValue();
+                foreach (var req in new[] { "type", "v", "macOnline", "remoteEnabled", "permission" }) if (!m.TryGetProperty(req, out _)) throw WireException.InvalidValue();
                 var macOnline = JsonReading.GetBool(m, "macOnline");
                 var remoteEnabled = JsonReading.GetBool(m, "remoteEnabled");
                 var permission = JsonReading.RequirePermission(m);
-                return new PhoneState { MacOnline = macOnline, RemoteEnabled = remoteEnabled, Permission = permission };
+                IReadOnlyList<DesktopInfo>? desktops = null;
+                int? desktopCount = null, macCount = null, windowsCount = null;
+                if (m.TryGetProperty("desktops", out var dEl))
+                {
+                    if (dEl.ValueKind != JsonValueKind.Array) throw WireException.InvalidValue();
+                    var list = new List<DesktopInfo>();
+                    foreach (var de in dEl.EnumerateArray())
+                    {
+                        var id = JsonReading.GetString(de, "id");
+                        if (string.IsNullOrEmpty(id) || id.Length > 64) throw WireException.InvalidValue();
+                        var platStr = JsonReading.GetString(de, "platform");
+                        var plat = platStr == "windows" ? DesktopPlatform.Windows : DesktopPlatform.Mac;
+                        if (platStr != "mac" && platStr != "windows") throw WireException.InvalidValue();
+                        var dRemote = de.GetProperty("remoteEnabled").GetBoolean();
+                        var permStr = JsonReading.GetString(de, "permission");
+                        PermissionStateWire.TryFromWire(permStr, out var dPerm);
+                        list.Add(new DesktopInfo { Id = id, Platform = plat, RemoteEnabled = dRemote, Permission = dPerm });
+                    }
+                    desktops = list;
+                }
+                if (m.TryGetProperty("desktopCount", out var dc)) desktopCount = dc.GetInt32();
+                if (m.TryGetProperty("macCount", out var mc)) macCount = mc.GetInt32();
+                if (m.TryGetProperty("windowsCount", out var wc)) windowsCount = wc.GetInt32();
+                return new PhoneState { MacOnline = macOnline, RemoteEnabled = remoteEnabled, Permission = permission, Desktops = desktops, DesktopCount = desktopCount, MacCount = macCount, WindowsCount = windowsCount };
             }
             case "action.request":
             {

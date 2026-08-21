@@ -247,10 +247,13 @@ test('state, action ack, exactly-one forwarding, and terminal result complete a 
     await authenticate(mac, 'mac', MAC_TOKEN);
     mac.send({ type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready' });
     await authenticate(phone, 'phone', PHONE_TOKEN);
-    assert.deepEqual(
-      await phone.wait((m) => m.type === 'state' && m.remoteEnabled),
-      { type: 'state', v: PROTOCOL_VERSION, macOnline: true, remoteEnabled: true, permission: 'ready' },
-    );
+    {
+      const got = await phone.wait((m) => m.type === 'state' && m.remoteEnabled);
+      assert.equal(got.macOnline, true);
+      assert.equal(got.remoteEnabled, true);
+      assert.equal(got.permission, 'ready');
+      assert.equal(got.desktopCount, 1);
+    }
 
     const request = action();
     phone.send(request);
@@ -270,10 +273,13 @@ test('state, action ack, exactly-one forwarding, and terminal result complete a 
     assert.equal(server.state.pendingActions.size, 0);
 
     mac.ws.close();
-    assert.deepEqual(
-      await phone.wait((m) => m.type === 'state' && !m.macOnline),
-      { type: 'state', v: PROTOCOL_VERSION, macOnline: false, remoteEnabled: false, permission: 'unknown' },
-    );
+    {
+      const got = await phone.wait((m) => m.type === 'state' && !m.macOnline);
+      assert.equal(got.macOnline, false);
+      assert.equal(got.remoteEnabled, false);
+      assert.equal(got.permission, 'unknown');
+      assert.equal(got.desktopCount, 0);
+    }
   } finally {
     await server.close();
   }

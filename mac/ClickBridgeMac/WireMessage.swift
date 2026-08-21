@@ -63,9 +63,18 @@ struct DiagnosticsCounters: Codable, Equatable, Sendable {
     var type = "diagnostics.counters"; var v = 1; var requestId: String
     var mouseDownPostCount: Int; var mouseUpPostCount: Int
 }
-struct MacState: Codable, Equatable, Sendable { var type = "mac.state"; var v = 1; var remoteEnabled: Bool; var permission: PermissionState }
+enum DesktopPlatform: String, Codable, Sendable { case mac, windows }
+struct MacState: Codable, Equatable, Sendable {
+    var type = "mac.state"; var v = 1; var remoteEnabled: Bool; var permission: PermissionState; var platform: DesktopPlatform? = .mac
+    enum CodingKeys: String, CodingKey { case type, v, remoteEnabled, permission, platform }
+    init(type: String = "mac.state", v: Int = 1, remoteEnabled: Bool, permission: PermissionState, platform: DesktopPlatform? = .mac) {
+        self.type = type; self.v = v; self.remoteEnabled = remoteEnabled; self.permission = permission; self.platform = platform
+    }
+}
+struct DesktopInfo: Codable, Equatable, Sendable { var id: String; var platform: DesktopPlatform; var remoteEnabled: Bool; var permission: PermissionState }
 struct PhoneState: Codable, Equatable, Sendable {
     var type = "state"; var v = 1; var macOnline: Bool; var remoteEnabled: Bool; var permission: PermissionState
+    var desktops: [DesktopInfo]?; var desktopCount: Int?; var macCount: Int?; var windowsCount: Int?
 }
 struct ActionRequest: Codable, Equatable, Sendable {
     var type = "action.request"; var v = 1; var actionId: String; var action: String

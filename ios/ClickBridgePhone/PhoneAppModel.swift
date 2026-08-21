@@ -523,6 +523,10 @@ final class PhoneAppModel {
                 state.mac = .init(online: relayState.macOnline,
                                   remoteEnabled: relayState.remoteEnabled,
                                   permission: relayState.permission)
+                state.desktops = relayState.desktops ?? []
+                state.desktopCount = relayState.desktopCount ?? relayState.desktops?.count ?? 0
+                state.macCount = relayState.macCount ?? relayState.desktops?.filter { $0.platform == .mac }.count ?? 0
+                state.windowsCount = relayState.windowsCount ?? relayState.desktops?.filter { $0.platform == .windows }.count ?? 0
                 if macIsReady {
                     if !wasReady { startClockCheckIfReady(socketGeneration: generation) }
                 } else if wasReady || state.clock.status != .unchecked {

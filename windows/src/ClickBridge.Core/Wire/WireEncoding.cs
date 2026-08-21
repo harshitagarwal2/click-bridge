@@ -57,11 +57,30 @@ internal static class WireEncoding
             case MacState m:
                 writer.WriteBoolean("remoteEnabled", m.RemoteEnabled);
                 writer.WriteString("permission", m.Permission.ToWire());
+                writer.WriteString("platform", m.Platform == DesktopPlatform.Windows ? "windows" : "mac");
                 break;
             case PhoneState m:
                 writer.WriteBoolean("macOnline", m.MacOnline);
                 writer.WriteBoolean("remoteEnabled", m.RemoteEnabled);
                 writer.WriteString("permission", m.Permission.ToWire());
+                if (m.Desktops is not null)
+                {
+                    writer.WritePropertyName("desktops");
+                    writer.WriteStartArray();
+                    foreach (var d in m.Desktops)
+                    {
+                        writer.WriteStartObject();
+                        writer.WriteString("id", d.Id);
+                        writer.WriteString("platform", d.Platform == DesktopPlatform.Windows ? "windows" : "mac");
+                        writer.WriteBoolean("remoteEnabled", d.RemoteEnabled);
+                        writer.WriteString("permission", d.Permission.ToWire());
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
+                }
+                if (m.DesktopCount is not null) writer.WriteNumber("desktopCount", m.DesktopCount.Value);
+                if (m.MacCount is not null) writer.WriteNumber("macCount", m.MacCount.Value);
+                if (m.WindowsCount is not null) writer.WriteNumber("windowsCount", m.WindowsCount.Value);
                 break;
             case ActionRequest m:
                 writer.WriteString("actionId", m.ActionId);

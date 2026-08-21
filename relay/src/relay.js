@@ -94,7 +94,7 @@ export class RelayState {
     const wasEmpty = this.macs.size === 0;
     this.macs.add(connection);
     if (!this.macStates.has(connection)) {
-      this.macStates.set(connection, { remoteEnabled: false, permission: 'unknown' });
+      this.macStates.set(connection, { remoteEnabled: false, permission: 'unknown', platform: 'mac' });
     }
     if (already) return null;
     // Keep legacy alias in sync for callers that read .mac (only when first)
@@ -133,12 +133,30 @@ export class RelayState {
 
   publishState() {
     const aggregated = this.#aggregatedMacState();
+    const desktops = [];
+    let macCount = 0;
+    let windowsCount = 0;
+    for (const conn of this.macs) {
+      const st = this.macStates.get(conn) ?? { remoteEnabled: false, permission: 'unknown', platform: 'mac' };
+      const platform = st.platform === 'windows' ? 'windows' : 'mac';
+      if (platform === 'windows') windowsCount += 1; else macCount += 1;
+      desktops.push({
+        id: String(conn.id ?? conn.deviceId ?? 'desktop'),
+        platform,
+        remoteEnabled: st.remoteEnabled,
+        permission: st.permission,
+      });
+    }
     const message = {
       type: 'state',
       v: PROTOCOL_VERSION,
       macOnline: aggregated.macOnline,
       remoteEnabled: aggregated.remoteEnabled,
       permission: aggregated.permission,
+      desktops,
+      desktopCount: desktops.length,
+      macCount,
+      windowsCount,
     };
     let sent = false;
     for (const [deviceId, phone] of this.phonesByDevice) {
@@ -213,9 +231,11 @@ export class RelayState {
         });
         return 'ok';
       case 'mac.state': {
+        const prev = this.macStates.get(connection) ?? { platform: 'mac' };
         const next = {
           remoteEnabled: message.remoteEnabled,
           permission: message.permission,
+          platform: message.platform ?? prev.platform ?? 'mac',
         };
         this.macStates.set(connection, next);
         if (this._legacyMac === connection) this._legacyMacState = next;

@@ -320,6 +320,30 @@ private struct DashboardView: View {
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
+                if let label = state.desktopLabel, !state.desktops.isEmpty {
+                    VStack(spacing: 4) {
+                        Label(label, systemImage: "desktopcomputer")
+                            .font(.callout.weight(.medium))
+                            .accessibilityLabel("Connected desktops. \(label)")
+                        ForEach(state.desktops, id: \.id) { d in
+                            HStack {
+                                Image(systemName: d.platform == .windows ? "pc" : "laptopcomputer")
+                                Text("\(d.id.prefix(8)) — \(d.platform == .windows ? "Windows" : "Mac") — \(d.permission == .ready && d.remoteEnabled ? "ready" : "needs attention")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                if d.permission == .ready && d.remoteEnabled {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                } else {
+                                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                                }
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel([state.primaryStatus.title, state.primaryStatusDetail]

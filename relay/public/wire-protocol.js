@@ -19,6 +19,7 @@ export const CREDENTIAL_REPLACED_CLOSE_CODE = 4006;
 export const CREDENTIAL_REPLACED_CLOSE_REASON = 'credential_replaced';
 
 export const ROLES = Object.freeze(['phone', 'mac']);
+export const PLATFORMS = Object.freeze(['mac', 'windows']);
 export const ACTIONS = Object.freeze(['click']);
 export const INGRESSES = Object.freeze(['oci', 'tailscale']);
 export const RELAY_ACK_STATUSES = Object.freeze(['forwarded', 'mac_offline', 'rejected']);
@@ -282,17 +283,38 @@ const TYPES = {
   },
   'mac.state': {
     validate(message) {
-      requireExactFields(message, ['type', 'v', 'remoteEnabled', 'permission']);
+      const allowed = new Set(['type', 'v', 'remoteEnabled', 'permission', 'platform']);
+      for (const key of Object.keys(message)) if (!allowed.has(key)) fail('unknown_field', key);
+      for (const key of ['type', 'v', 'remoteEnabled', 'permission']) if (!Object.hasOwn(message, key)) fail('missing_field', key);
       booleanField(message, 'remoteEnabled');
       enumField(message, 'permission', PERMISSION_STATES);
+      if (Object.hasOwn(message, 'platform')) enumField(message, 'platform', PLATFORMS);
     },
   },
   state: {
     validate(message) {
-      requireExactFields(message, ['type', 'v', 'macOnline', 'remoteEnabled', 'permission']);
+      const allowed = new Set(['type', 'v', 'macOnline', 'remoteEnabled', 'permission', 'desktops', 'desktopCount', 'macCount', 'windowsCount']);
+      for (const key of Object.keys(message)) if (!allowed.has(key)) fail('unknown_field', key);
+      for (const key of ['type', 'v', 'macOnline', 'remoteEnabled', 'permission']) if (!Object.hasOwn(message, key)) fail('missing_field', key);
       booleanField(message, 'macOnline');
       booleanField(message, 'remoteEnabled');
       enumField(message, 'permission', PERMISSION_STATES);
+      if (Object.hasOwn(message, 'desktops')) {
+        if (!Array.isArray(message.desktops)) fail('invalid_type', 'desktops');
+        for (const d of message.desktops) {
+          if (typeof d !== 'object' || d === null || Array.isArray(d)) fail('invalid_type', 'desktops[]');
+          const dAllowed = new Set(['id', 'platform', 'remoteEnabled', 'permission']);
+          for (const k of Object.keys(d)) if (!dAllowed.has(k)) fail('unknown_field', `desktops[].${k}`);
+          for (const k of ['id', 'platform', 'remoteEnabled', 'permission']) if (!Object.hasOwn(d, k)) fail('missing_field', `desktops[].${k}`);
+          const id = d.id; if (typeof id !== 'string' || id.length === 0 || id.length > 64) fail('invalid_value', 'desktops[].id');
+          enumField(d, 'platform', PLATFORMS);
+          booleanField(d, 'remoteEnabled');
+          enumField(d, 'permission', PERMISSION_STATES);
+        }
+      }
+      if (Object.hasOwn(message, 'desktopCount')) safeNonNegativeIntegerField(message, 'desktopCount');
+      if (Object.hasOwn(message, 'macCount')) safeNonNegativeIntegerField(message, 'macCount');
+      if (Object.hasOwn(message, 'windowsCount')) safeNonNegativeIntegerField(message, 'windowsCount');
     },
   },
   'action.request': {

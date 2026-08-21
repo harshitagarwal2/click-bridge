@@ -158,15 +158,23 @@ test('Mac replacement now allows coexistence — multiple desktops fan-out', () 
   // Disconnecting one leaves the other online and re-aggregates state.
   assert.equal(h.state.detachIfCurrent('mac', first), true);
   assert.equal(h.state.macs.size, 1);
-  assert.deepEqual(h.messages(phone, 'state').at(-1), {
-    type: 'state', v: PROTOCOL_VERSION, macOnline: true,
-    remoteEnabled: true, permission: 'ready',
-  });
+  {
+    const got = h.messages(phone, 'state').at(-1);
+    assert.equal(got.macOnline, true);
+    assert.equal(got.remoteEnabled, true);
+    assert.equal(got.permission, 'ready');
+    assert.equal(got.desktopCount, 1);
+    assert.equal(got.macCount, 1);
+    assert.equal(got.desktops.length, 1);
+  }
   assert.equal(h.state.detachIfCurrent('mac', replacement), true);
-  assert.deepEqual(h.messages(phone, 'state').at(-1), {
-    type: 'state', v: PROTOCOL_VERSION, macOnline: false,
-    remoteEnabled: false, permission: 'unknown',
-  });
+  {
+    const got = h.messages(phone, 'state').at(-1);
+    assert.equal(got.macOnline, false);
+    assert.equal(got.remoteEnabled, false);
+    assert.equal(got.permission, 'unknown');
+    assert.equal(got.desktopCount, 0);
+  }
 });
 
 test('Mac state propagation and disconnect reset are transport independent', () => {
@@ -178,16 +186,22 @@ test('Mac state propagation and disconnect reset are transport independent', () 
   h.state.handleMacMessage(mac, {
     type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready',
   });
-  assert.deepEqual(h.messages(phone, 'state').at(-1), {
-    type: 'state', v: PROTOCOL_VERSION, macOnline: true,
-    remoteEnabled: true, permission: 'ready',
-  });
+  {
+    const got = h.messages(phone, 'state').at(-1);
+    assert.equal(got.macOnline, true);
+    assert.equal(got.remoteEnabled, true);
+    assert.equal(got.permission, 'ready');
+    assert.equal(got.desktopCount, 1);
+  }
 
   assert.equal(h.state.detachIfCurrent('mac', mac), true);
-  assert.deepEqual(h.messages(phone, 'state').at(-1), {
-    type: 'state', v: PROTOCOL_VERSION, macOnline: false,
-    remoteEnabled: false, permission: 'unknown',
-  });
+  {
+    const got = h.messages(phone, 'state').at(-1);
+    assert.equal(got.macOnline, false);
+    assert.equal(got.remoteEnabled, false);
+    assert.equal(got.permission, 'unknown');
+    assert.equal(got.desktopCount, 0);
+  }
 });
 
 test('unexpired action is forwarded once and ack remains distinct from result', () => {

@@ -106,10 +106,29 @@ struct StrictPhoneWireDecoder: Sendable {
             try exact(message, ["type", "v", "sequence"])
             _ = try nonnegativeInteger(message, "sequence")
         case "state":
-            try exact(message, ["type", "v", "macOnline", "remoteEnabled", "permission"])
+            // Allow optional desktop inventory fields for multi-desktop fan-out (2 Windows + 1 Mac etc.)
+            let allowedState = Set(["type", "v", "macOnline", "remoteEnabled", "permission", "desktops", "desktopCount", "macCount", "windowsCount"])
+            let extrasState = Set(message.keys).subtracting(allowedState)
+            guard extrasState.isEmpty else { throw PhoneWireError.unknownKeys(Array(extrasState).sorted()) }
+            guard Set(["type", "v", "macOnline", "remoteEnabled", "permission"]).isSubset(of: Set(message.keys)) else { throw PhoneWireError.invalidValue }
             _ = try boolean(message, "macOnline")
             _ = try boolean(message, "remoteEnabled")
             try oneOf(string(message, "permission"), PermissionState.allWireValues)
+            if let desktops = message["desktops"] as? [[String: Any]] {
+                for d in desktops {
+                    let allowedD = Set(["id", "platform", "remoteEnabled", "permission"])
+                    let extraD = Set(d.keys).subtracting(allowedD)
+                    guard extraD.isEmpty else { throw PhoneWireError.unknownKeys(Array(extraD).sorted()) }
+                    guard Set(["id", "platform", "remoteEnabled", "permission"]).isSubset(of: Set(d.keys)) else { throw PhoneWireError.invalidValue }
+                    _ = try string(d, "platform"); try oneOf(try string(d, "platform"), ["mac", "windows"])
+                    _ = try boolean(d, "remoteEnabled")
+                    try oneOf(try string(d, "permission"), PermissionState.allWireValues)
+                    guard let id = d["id"] as? String, !id.isEmpty, id.count <= 64 else { throw PhoneWireError.invalidValue }
+                }
+            } else if message["desktops"] != nil { throw PhoneWireError.invalidValue }
+            if let _ = message["desktopCount"] { _ = try nonnegativeInteger(message, "desktopCount") }
+            if let _ = message["macCount"] { _ = try nonnegativeInteger(message, "macCount") }
+            if let _ = message["windowsCount"] { _ = try nonnegativeInteger(message, "windowsCount") }
         case "relay.ack":
             try exact(message, ["type", "v", "actionId", "status", "reason", "relayProcessingUs"])
             try validUUID(message, "actionId")

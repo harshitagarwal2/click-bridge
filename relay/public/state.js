@@ -32,6 +32,10 @@ export function initialState() {
     takenOver: false,
     credentialReplaced: false,
     mac: { online: false, remoteEnabled: false, permission: 'unknown' },
+    desktops: [],
+    desktopCount: 0,
+    macCount: 0,
+    windowsCount: 0,
     clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null },
     /** in-flight logical action: { id, phase: 'sending'|'forwarded' } */
     action: null,
@@ -47,6 +51,10 @@ const clearVolatile = (s) => ({
   ...s,
   connected: false,
   mac: { online: false, remoteEnabled: false, permission: 'unknown' },
+  desktops: [],
+  desktopCount: 0,
+  macCount: 0,
+  windowsCount: 0,
   clock: { checked: false, healthy: false, unavailable: false, offsetMs: null, uncertaintyMs: null, measuredAtUnixMs: null },
   pointerSequence: null,
 });
@@ -104,6 +112,10 @@ export function reduce(state, event) {
           remoteEnabled: event.remoteEnabled,
           permission: event.permission,
         },
+        desktops: Array.isArray(event.desktops) ? event.desktops : [],
+        desktopCount: Number.isInteger(event.desktopCount) ? event.desktopCount : (Array.isArray(event.desktops) ? event.desktops.length : 0),
+        macCount: Number.isInteger(event.macCount) ? event.macCount : 0,
+        windowsCount: Number.isInteger(event.windowsCount) ? event.windowsCount : 0,
       };
 
     case 'clock.health':
@@ -234,6 +246,22 @@ export function view(state) {
     || phase === PHASE.REJECTED
     || phase === PHASE.UNKNOWN;
 
+  // Human-readable inventory for multi-desktop fan-out (2 Windows + 1 Mac etc.)
+  const desktopLabel = (() => {
+    const total = state.desktopCount ?? (state.desktops?.length ?? 0);
+    if (total === 0) return null;
+    const mc = state.macCount ?? state.desktops?.filter((d) => d.platform === 'mac').length ?? 0;
+    const wc = state.windowsCount ?? state.desktops?.filter((d) => d.platform === 'windows').length ?? 0;
+    const parts = [];
+    if (mc > 0) parts.push(`${mc} Mac${mc>1?'s':''}`);
+    if (wc > 0) parts.push(`${wc} Windows`);
+    const inventory = parts.length ? parts.join(' + ') : `${total} desktops`;
+    // Show per-desktop readiness if any not ready
+    const notReady = state.desktops?.filter((d) => d.permission !== 'ready' || !d.remoteEnabled) ?? [];
+    if (notReady.length > 0) return `${inventory} — ${notReady.length} needs attention`;
+    return inventory;
+  })();
+
   let status;
   switch (phase) {
     case PHASE.MISSING_TOKEN: status = 'Pair this browser'; break;
@@ -241,30 +269,36 @@ export function view(state) {
     case PHASE.TAKEN_OVER: status = 'Another device took over. Reload this page to take control back.'; break;
     case PHASE.CREDENTIAL_REPLACED: status = 'This browser was un-paired. Pair again to reconnect.'; break;
     case PHASE.CONNECTING: status = 'Connecting…'; break;
-    case PHASE.MAC_OFFLINE: status = 'Open Click Bridge on the Mac'; break;
-    case PHASE.PERMISSION_REQUIRED: status = 'Grant input permission on the Mac'; break;
-    case PHASE.REMOTE_DISABLED: status = 'Enable remote control on the Mac'; break;
+    case PHASE.MAC_OFFLINE: status = desktopLabel ? `Open Click Bridge — ${desktopLabel} online` : 'Open Click Bridge on the Mac'; break;
+    case PHASE.PERMISSION_REQUIRED: status = desktopLabel ? `Grant permission — ${desktopLabel}` : 'Grant input permission on the Mac'; break;
+    case PHASE.REMOTE_DISABLED: status = desktopLabel ? `Enable remote control — ${desktopLabel}` : 'Enable remote control on the Mac'; break;
     case PHASE.CLOCK_CHECKING: status = 'Checking clock…'; break;
     case PHASE.CLOCK_UNAVAILABLE: status = 'Clock check unavailable — retry'; break;
     case PHASE.CLOCK_UNHEALTHY: status = 'Clock mismatch — enable automatic date and time'; break;
-    case PHASE.SENDING: status = 'Sending…'; break;
-    case PHASE.FORWARDED: status = 'Forwarded…'; break;
+    case PHASE.SENDING: status = desktopLabel ? `Sending to ${desktopLabel}…` : 'Sending…'; break;
+    case PHASE.FORWARDED: status = desktopLabel ? `Forwarded to ${desktopLabel}…` : 'Forwarded…'; break;
     case PHASE.POSTED:
-      status = state.last.ms == null ? 'Posted' : `Posted in ${Math.round(state.last.ms)} ms`;
+      if (desktopLabel) status = state.last.ms == null ? `Posted to ${desktopLabel}` : `Posted to ${desktopLabel} in ${Math.round(state.last.ms)} ms`;
+      else status = state.last.ms == null ? 'Posted' : `Posted in ${Math.round(state.last.ms)} ms`;
       break;
     case PHASE.REJECTED:
       status = REASON_TEXT[state.last.reason] ?? `Rejected — ${state.last.reason}`;
       break;
     case PHASE.UNKNOWN:
-      status = 'Click may have occurred; check the Mac before trying again.';
+      status = desktopLabel ? 'Click may have occurred; check desktops before trying again.' : 'Click may have occurred; check the Mac before trying again.';
       break;
-    default: status = 'Tap to click';
+    default: status = desktopLabel ? `Tap to click (${desktopLabel})` : 'Tap to click';
   }
   return {
     phase,
     enabled,
     status,
     retryClockVisible: phase === PHASE.CLOCK_UNAVAILABLE,
+    desktopLabel,
+    desktops: state.desktops ?? [],
+    desktopCount: state.desktopCount ?? 0,
+    macCount: state.macCount ?? 0,
+    windowsCount: state.windowsCount ?? 0,
   };
 }
 

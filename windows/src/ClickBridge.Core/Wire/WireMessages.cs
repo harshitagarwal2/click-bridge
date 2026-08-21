@@ -68,11 +68,22 @@ public sealed record DiagnosticsCounters : WireMessage
     public required int MouseUpPostCount { get; init; }
 }
 
+public enum DesktopPlatform { Mac, Windows }
+
+public sealed record DesktopInfo
+{
+    public required string Id { get; init; }
+    public required DesktopPlatform Platform { get; init; }
+    public required bool RemoteEnabled { get; init; }
+    public required PermissionState Permission { get; init; }
+}
+
 public sealed record MacState : WireMessage
 {
     public override string Type => "mac.state";
     public required bool RemoteEnabled { get; init; }
     public required PermissionState Permission { get; init; }
+    public DesktopPlatform Platform { get; init; } = DesktopPlatform.Windows;
 }
 
 /// <summary>Wire type "state" — mirrors Swift's PhoneState struct.</summary>
@@ -82,6 +93,10 @@ public sealed record PhoneState : WireMessage
     public required bool MacOnline { get; init; }
     public required bool RemoteEnabled { get; init; }
     public required PermissionState Permission { get; init; }
+    public IReadOnlyList<DesktopInfo>? Desktops { get; init; }
+    public int? DesktopCount { get; init; }
+    public int? MacCount { get; init; }
+    public int? WindowsCount { get; init; }
 }
 
 public sealed record ActionRequest : WireMessage

@@ -122,6 +122,10 @@ function handleInbound(message, transport) {
       macOnline: message.macOnline,
       remoteEnabled: message.remoteEnabled,
       permission: message.permission,
+      desktops: message.desktops ?? [],
+      desktopCount: message.desktopCount ?? 0,
+      macCount: message.macCount ?? 0,
+      windowsCount: message.windowsCount ?? 0,
     });
     const ready = message.macOnline && message.remoteEnabled && message.permission === 'ready';
     if (ready && lastMacReadyGeneration !== transport.generation) {

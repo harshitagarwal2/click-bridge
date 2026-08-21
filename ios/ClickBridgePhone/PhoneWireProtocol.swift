@@ -162,12 +162,46 @@ struct HeartbeatAck: Codable, Equatable, Sendable {
     let sequence: Int
 }
 
+enum DesktopPlatform: String, Codable, Sendable { case mac, windows }
+struct DesktopInfo: Codable, Equatable, Sendable {
+    let id: String
+    let platform: DesktopPlatform
+    let remoteEnabled: Bool
+    let permission: PermissionState
+}
 struct RelayState: Codable, Equatable, Sendable {
     var type = "state"
     var v = PhoneProtocolV1.version
     let macOnline: Bool
     let remoteEnabled: Bool
     let permission: PermissionState
+    let desktops: [DesktopInfo]?
+    let desktopCount: Int?
+    let macCount: Int?
+    let windowsCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case type, v, macOnline, remoteEnabled, permission, desktops, desktopCount, macCount, windowsCount
+    }
+
+    init(macOnline: Bool, remoteEnabled: Bool, permission: PermissionState,
+         desktops: [DesktopInfo]? = nil, desktopCount: Int? = nil, macCount: Int? = nil, windowsCount: Int? = nil) {
+        self.macOnline = macOnline; self.remoteEnabled = remoteEnabled; self.permission = permission
+        self.desktops = desktops; self.desktopCount = desktopCount; self.macCount = macCount; self.windowsCount = windowsCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? "state"
+        v = try c.decodeIfPresent(Int.self, forKey: .v) ?? PhoneProtocolV1.version
+        macOnline = try c.decode(Bool.self, forKey: .macOnline)
+        remoteEnabled = try c.decode(Bool.self, forKey: .remoteEnabled)
+        permission = try c.decode(PermissionState.self, forKey: .permission)
+        desktops = try c.decodeIfPresent([DesktopInfo].self, forKey: .desktops)
+        desktopCount = try c.decodeIfPresent(Int.self, forKey: .desktopCount)
+        macCount = try c.decodeIfPresent(Int.self, forKey: .macCount)
+        windowsCount = try c.decodeIfPresent(Int.self, forKey: .windowsCount)
+    }
 }
 
 struct RelayAck: Codable, Equatable, Sendable {

@@ -73,11 +73,27 @@ struct PhoneState: Equatable, Sendable {
     var foregroundSessionActive = false
     var connection: PhoneConnectionState = .disconnected
     var mac = MacReadiness()
+    var desktops: [DesktopInfo] = []
+    var desktopCount: Int = 0
+    var macCount: Int = 0
+    var windowsCount: Int = 0
     var clock = ClockHealth(status: .unchecked, offsetMilliseconds: nil, uncertaintyMilliseconds: nil)
     var volume = VolumeReading(value: 0)
     var actionPhase: PhoneActionPhase = .idle
     var lastActionOutcome: String?
     var issue: PhoneAppIssue?
+
+    var desktopLabel: String? {
+        let total = desktopCount
+        if total == 0 { return nil }
+        var parts: [String] = []
+        if macCount > 0 { parts.append("\(macCount) Mac\(macCount>1 ? "s" : "")") }
+        if windowsCount > 0 { parts.append("\(windowsCount) Windows") }
+        let inv = parts.isEmpty ? "\(total) desktops" : parts.joined(separator: " + ")
+        let notReady = desktops.filter { $0.permission != .ready || !$0.remoteEnabled }.count
+        if notReady > 0 { return "\(inv) — \(notReady) needs attention" }
+        return inv
+    }
 
     var phoneTakenOver: Bool { connection == .takenOver }
     var credentialReplaced: Bool { connection == .credentialReplaced }
