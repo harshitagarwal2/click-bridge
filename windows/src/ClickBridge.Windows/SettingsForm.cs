@@ -22,6 +22,15 @@ public sealed class SettingsForm : Form
     private readonly Button _pairButton = new() { Text = "Add Phone", AutoSize = true };
     private readonly Button _recoveryButton = new() { Visible = false, AutoSize = true };
 
+    // Multi-desktop fan-out: allow this Windows PC to join the SAME bridge (same relay URL + token)
+    // as your Mac(s). A single iPhone click then fans out to all desktops on that bridge.
+    private readonly TextBox _relayUrlBox = new() { Width = 400, PlaceholderText = "wss://your-host/ws/xxxxxxxxxxxxxxxxxxxxxx" };
+    private readonly TextBox _tokenBox = new() { Width = 400, PlaceholderText = "64 hex characters (leave blank to keep stored token)", UseSystemPasswordChar = true };
+    private readonly Label _connectionFeedbackLabel = new() { AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = SystemColors.GrayText };
+    private readonly Button _saveConnectionButton = new() { Text = "Save & Reconnect", AutoSize = true };
+    private readonly Button _copyConnectionButton = new() { Text = "Copy Relay URL", AutoSize = true };
+    private readonly CheckBox _showTokenBox = new() { Text = "Show token", AutoSize = true };
+
     public SettingsForm(AppState app)
     {
         _app = app;
@@ -53,6 +62,28 @@ public sealed class SettingsForm : Form
         phoneLayout.Controls.Add(_recoveryButton);
         phoneGroup.Controls.Add(phoneLayout);
 
+        // Connection group for multi-desktop fan-out
+        var connectionGroup = new GroupBox { Text = "Connection (for multi-desktop fan-out)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Width = 440 };
+        var connectionLayout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false };
+        var urlRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        urlRow.Controls.Add(new Label { Text = "Relay URL:", AutoSize = true, TextAlign = ContentAlignment.MiddleLeft });
+        urlRow.Controls.Add(_relayUrlBox);
+        var tokenRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        tokenRow.Controls.Add(new Label { Text = "Mac token:", AutoSize = true });
+        tokenRow.Controls.Add(_tokenBox);
+        tokenRow.Controls.Add(_showTokenBox);
+        var connectionButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        connectionButtons.Controls.Add(_saveConnectionButton);
+        connectionButtons.Controls.Add(_copyConnectionButton);
+        var hint = new Label { Text = "Use the SAME Relay URL + token on every Mac and this Windows PC to receive the same iPhone click. Copy the Relay URL from your first Mac's Settings → Advanced Connection.", AutoSize = true, MaximumSize = new Size(420, 0), ForeColor = SystemColors.GrayText };
+        connectionLayout.Controls.Add(urlRow);
+        connectionLayout.Controls.Add(tokenRow);
+        connectionLayout.Controls.Add(connectionButtons);
+        connectionLayout.Controls.Add(_connectionFeedbackLabel);
+        connectionLayout.Controls.Add(hint);
+        connectionGroup.Controls.Add(connectionLayout);
+
+        root.Controls.Add(connectionGroup);
         root.Controls.Add(phoneGroup);
         Controls.Add(root);
 
@@ -61,6 +92,11 @@ public sealed class SettingsForm : Form
         _copyPwaInvitationButton.Click += (_, _) => CopyPwaInvitation();
         _cancelInvitationButton.Click += (_, _) => _ = _subscribedPairing?.CancelAsync();
         _recoveryButton.Click += (_, _) => _ = _subscribedPairing?.RegenerateAsync();
+        _copyConnectionButton.Click += (_, _) => { if (!string.IsNullOrWhiteSpace(_app.Settings.RelayUrlString)) Clipboard.SetText(_app.Settings.RelayUrlString); };
+        _saveConnectionButton.Click += async (_, _) => await SaveConnectionAsync();
+        _showTokenBox.CheckedChanged += (_, _) => _tokenBox.UseSystemPasswordChar = !_showTokenBox.Checked;
+        _relayUrlBox.Text = _app.Settings.RelayUrlString;
+        _app.Changed += () => BeginInvoke(() => { _relayUrlBox.Text = _app.Settings.RelayUrlString; _connectionFeedbackLabel.Text = _app.Notice ?? ""; });
         RefreshFromState();
     }
 
@@ -178,6 +214,44 @@ public sealed class SettingsForm : Form
     {
         if (_app.Pairing is not { } pairing || pairing.State is not PairingState.InvitationState invitation) return;
         pairing.CopyWebInvitation(invitation.Invitation, new WindowsClipboard());
+    }
+
+    private async Task SaveConnectionAsync()
+    {
+        var url = _relayUrlBox.Text.Trim();
+        var tokenInput = _tokenBox.Text.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            _connectionFeedbackLabel.Text = "Enter a relay URL (wss://host/ws/...).";
+            return;
+        }
+        try { ClickBridge.Core.Relay.RelayEndpoint.Validated(url, allowLocalSimulator: false); }
+        catch { _connectionFeedbackLabel.Text = "Invalid relay URL. Must be wss://host/ws or wss://host/ws/<id>."; return; }
+        string tokenToSave = tokenInput;
+        if (string.IsNullOrEmpty(tokenInput))
+        {
+            try
+            {
+                var existing = _app.Settings.MacToken();
+                if (string.IsNullOrEmpty(existing)) { _connectionFeedbackLabel.Text = "No stored token. Enter a 64-char hex token."; return; }
+                tokenToSave = existing;
+            }
+            catch (Exception ex) { _connectionFeedbackLabel.Text = ex.Message; return; }
+        }
+        else
+        {
+            if (tokenToSave.Length != 64 || !System.Text.RegularExpressions.Regex.IsMatch(tokenToSave, "^[0-9a-f]{64}$"))
+            { _connectionFeedbackLabel.Text = "Token must be 64 lowercase hex characters."; return; }
+        }
+        try
+        {
+            _app.Settings.SaveEnrollment(url, tokenToSave);
+            _connectionFeedbackLabel.Text = "Connection saved. Reconnecting…";
+            _tokenBox.Text = "";
+            await _app.ReconnectAsync();
+            _connectionFeedbackLabel.Text = _app.Notice ?? "Reconnecting…";
+        }
+        catch (Exception ex) { _connectionFeedbackLabel.Text = ex.Message; }
     }
 
 }

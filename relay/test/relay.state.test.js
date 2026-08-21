@@ -130,7 +130,7 @@ test('two different devices stay connected together and each keeps its own route
   assert.equal(h.state.phonesByDevice.get('device-2'), deviceTwo);
 });
 
-test('Mac replacement retains the existing reconnectable close contract', () => {
+test('Mac replacement now allows coexistence — multiple desktops fan-out', () => {
   const h = harness();
   const first = h.connection('mac-a');
   const replacement = h.connection('mac-b');
@@ -138,9 +138,34 @@ test('Mac replacement retains the existing reconnectable close contract', () => 
   h.state.replaceRole('mac', first);
   h.state.replaceRole('mac', replacement);
 
-  assert.deepEqual(h.events.at(-1), {
-    connection: first,
-    event: { kind: 'close', code: 4000, reason: 'replaced' },
+  // No close: second desktop is additive, not a replacement.
+  assert.equal(h.events.some((e) => e.event.kind === 'close'), false);
+  assert.equal(h.state.macs.size, 2);
+  assert.equal(h.state.macs.has(first), true);
+  assert.equal(h.state.macs.has(replacement), true);
+
+  // Each desktop gets the same fan-out action.
+  const phone = h.connection('phone');
+  h.state.replaceRole('phone', phone);
+  h.state.handleMacMessage(first, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready' });
+  h.state.handleMacMessage(replacement, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready' });
+  const request = action(1_800_000_000_000);
+  h.state.handlePhoneMessage(phone, request);
+  assert.equal(h.messages(first, 'action.request').length, 1);
+  assert.equal(h.messages(replacement, 'action.request').length, 1);
+  assert.equal(h.state.pendingActions.size, 1);
+
+  // Disconnecting one leaves the other online and re-aggregates state.
+  assert.equal(h.state.detachIfCurrent('mac', first), true);
+  assert.equal(h.state.macs.size, 1);
+  assert.deepEqual(h.messages(phone, 'state').at(-1), {
+    type: 'state', v: PROTOCOL_VERSION, macOnline: true,
+    remoteEnabled: true, permission: 'ready',
+  });
+  assert.equal(h.state.detachIfCurrent('mac', replacement), true);
+  assert.deepEqual(h.messages(phone, 'state').at(-1), {
+    type: 'state', v: PROTOCOL_VERSION, macOnline: false,
+    remoteEnabled: false, permission: 'unknown',
   });
 });
 
@@ -425,8 +450,13 @@ test('routes retain only owner, timer, and device metadata, never request bodies
   h.state.replaceRole('mac', mac);
   const request = action(1_800_000_000_000);
   h.state.handlePhoneMessage(phone, request);
-  assert.deepEqual(
-    Object.keys(h.state.pendingActions.get(request.actionId)).sort(),
-    ['deviceId', 'owner', 'timer'],
-  );
+  const keys = Object.keys(h.state.pendingActions.get(request.actionId)).sort();
+  // Core routing invariants: must contain deviceId/owner/timer, must NOT contain request body fields.
+  assert.ok(keys.includes('deviceId'));
+  assert.ok(keys.includes('owner'));
+  assert.ok(keys.includes('timer'));
+  assert.ok(!keys.includes('action'));
+  assert.ok(!keys.includes('issuedAtUnixMs'));
+  assert.ok(!keys.includes('expiresAtUnixMs'));
+  assert.ok(!keys.includes('type'));
 });

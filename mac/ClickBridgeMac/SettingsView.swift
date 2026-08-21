@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum SettingsAccessibility {
@@ -168,6 +169,29 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .accessibilityIdentifier(SettingsAccessibility.inlineFeedback)
                                 .accessibilityAddTraits(.updatesFrequently)
+                        }
+                        Divider()
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Additional Desktops (Multi-Mac + Windows)")
+                                .font(.headline)
+                            Text("To send one iPhone click to several Macs and one Windows PC, use the SAME Relay URL + token on each desktop. This Mac's current Relay URL is shown above — copy it to your other desktops via their Settings → Advanced Connection. Pair the phone once (via any desktop); the relay then fans out each click to every connected desktop on this bridge.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                Button("Copy Relay URL") {
+                                    let pb = NSPasteboard.general
+                                    pb.clearContents()
+                                    pb.setString(app.settings.relayURLString, forType: .string)
+                                }
+                                .disabled(app.settings.relayURLString.isEmpty)
+                                Button("Copy URL + Token Hint") {
+                                    let pb = NSPasteboard.general
+                                    pb.clearContents()
+                                    let hint = app.settings.relayURLString + "  (use same 64-hex token stored in Keychain on this Mac)"
+                                    pb.setString(hint, forType: .string)
+                                }
+                                .disabled(app.settings.relayURLString.isEmpty)
+                            }
                         }
                     }
                     .padding(.top, 10)

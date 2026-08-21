@@ -39,8 +39,31 @@ export class RelayState {
     this.authorizePhone = authorizePhone;
 
     this.phonesByDevice = new Map();
-    this.mac = null;
-    this.macState = { remoteEnabled: false, permission: 'unknown' };
+    this.macs = new Set();
+    this.macStates = new Map();
+    // Legacy aliases kept for backward-compat with tests/tools that read .mac/.macState
+    this._legacyMac = null;
+    this._legacyMacState = { remoteEnabled: false, permission: 'unknown' };
+    Object.defineProperty(this, 'mac', {
+      get: () => {
+        for (const c of this.macs) return c;
+        return this._legacyMac;
+      },
+      set: (v) => { this._legacyMac = v; },
+      configurable: true,
+      enumerable: true,
+    });
+    Object.defineProperty(this, 'macState', {
+      get: () => {
+        if (this.macStates.size > 0) {
+          for (const c of this.macs) return this.macStates.get(c) ?? this._legacyMacState;
+        }
+        return this._legacyMacState;
+      },
+      set: (v) => { this._legacyMacState = v; },
+      configurable: true,
+      enumerable: true,
+    });
     this.pendingActions = new Map();
     this.pendingSync = new Map();
     this.pendingDiagnostics = new Map();
@@ -65,18 +88,22 @@ export class RelayState {
       }
       return previous;
     }
-    const previous = this.mac;
-    this.mac = connection;
-    this.macState = { remoteEnabled: false, permission: 'unknown' };
-    if (previous && previous !== connection) {
-      this.#emit(previous, { kind: 'close', code: 4000, reason: 'replaced' });
-      this.log('role_replaced', {
-        role,
-        previousConnectionId: previous.id,
-        replacementConnectionId: connection.id,
-      });
+    // Multi-mac: allow coexistence. Each distinct connection is a separate desktop (Mac or Windows).
+    // Do not close previous macs; just add and initialize its state.
+    const already = this.macs.has(connection);
+    const wasEmpty = this.macs.size === 0;
+    this.macs.add(connection);
+    if (!this.macStates.has(connection)) {
+      this.macStates.set(connection, { remoteEnabled: false, permission: 'unknown' });
     }
-    return previous ?? null;
+    if (already) return null;
+    // Keep legacy alias in sync for callers that read .mac (only when first)
+    if (wasEmpty) {
+      this._legacyMac = connection;
+      this._legacyMacState = this.macStates.get(connection);
+    }
+    this.log('mac_added', { connectionId: connection.id, totalMacs: this.macs.size });
+    return null;
   }
 
   detachIfCurrent(role, connection) {
@@ -88,20 +115,30 @@ export class RelayState {
       this.#dropOwnedRoutes(connection);
       return true;
     }
-    if (this.mac !== connection) return false;
-    this.mac = null;
-    this.macState = { remoteEnabled: false, permission: 'unknown' };
+    if (!this.macs.has(connection)) return false;
+    this.macs.delete(connection);
+    this.macStates.delete(connection);
+    if (this._legacyMac === connection) {
+      this._legacyMac = null;
+      this._legacyMacState = { remoteEnabled: false, permission: 'unknown' };
+      for (const c of this.macs) {
+        this._legacyMac = c;
+        this._legacyMacState = this.macStates.get(c);
+        break;
+      }
+    }
     this.publishState();
     return true;
   }
 
   publishState() {
+    const aggregated = this.#aggregatedMacState();
     const message = {
       type: 'state',
       v: PROTOCOL_VERSION,
-      macOnline: this.mac !== null,
-      remoteEnabled: this.macState.remoteEnabled,
-      permission: this.macState.permission,
+      macOnline: aggregated.macOnline,
+      remoteEnabled: aggregated.remoteEnabled,
+      permission: aggregated.permission,
     };
     let sent = false;
     for (const [deviceId, phone] of this.phonesByDevice) {
@@ -112,6 +149,19 @@ export class RelayState {
       sent = this.#send(phone, message) || sent;
     }
     return sent;
+  }
+
+  #aggregatedMacState() {
+    if (this.macs.size === 0) {
+      return { macOnline: false, remoteEnabled: false, permission: 'unknown' };
+    }
+    const states = [...this.macStates.values()];
+    const remoteEnabled = states.every((s) => s.remoteEnabled === true);
+    let permission;
+    if (states.every((s) => s.permission === 'ready')) permission = 'ready';
+    else if (states.some((s) => s.permission === 'required')) permission = 'required';
+    else permission = 'unknown';
+    return { macOnline: true, remoteEnabled, permission };
   }
 
   handlePhoneMessage(connection, message) {
@@ -133,14 +183,18 @@ export class RelayState {
         return 'ok';
       case 'action.request':
         return this.#handleActionRequest(connection, message);
-      case 'time.sync.request':
+      case 'time.sync.request': {
+        const dest = this.#firstMac();
         return this.#forwardWithRoute(
-          this.pendingSync, message.syncId, connection, this.mac, message, 'sync',
+          this.pendingSync, message.syncId, connection, dest, message, 'sync',
         );
-      case 'diagnostics.request':
+      }
+      case 'diagnostics.request': {
+        const dest = this.#firstMac();
         return this.#forwardWithRoute(
-          this.pendingDiagnostics, message.requestId, connection, this.mac, message, 'diagnostics',
+          this.pendingDiagnostics, message.requestId, connection, dest, message, 'diagnostics',
         );
+      }
       default:
         this.log('unexpected_validated_message', { role: 'phone', type: message.type });
         return 'ignored';
@@ -148,7 +202,7 @@ export class RelayState {
   }
 
   handleMacMessage(connection, message) {
-    if (connection !== this.mac) {
+    if (!this.macs.has(connection)) {
       this.log('stale_socket_message', { role: 'mac', type: message.type });
       return 'ignored';
     }
@@ -158,15 +212,18 @@ export class RelayState {
           type: 'heartbeat.ack', v: PROTOCOL_VERSION, sequence: message.sequence,
         });
         return 'ok';
-      case 'mac.state':
-        this.macState = {
+      case 'mac.state': {
+        const next = {
           remoteEnabled: message.remoteEnabled,
           permission: message.permission,
         };
+        this.macStates.set(connection, next);
+        if (this._legacyMac === connection) this._legacyMacState = next;
         this.publishState();
         return 'ok';
+      }
       case 'action.result':
-        return this.#routeResponse(this.pendingActions, message.actionId, message, 'action');
+        return this.#routeActionResult(message.actionId, message);
       case 'time.sync.response':
         return this.#routeResponse(this.pendingSync, message.syncId, message, 'sync');
       case 'diagnostics.counters':
@@ -177,6 +234,11 @@ export class RelayState {
         this.log('unexpected_validated_message', { role: 'mac', type: message.type });
         return 'ignored';
     }
+  }
+
+  #firstMac() {
+    for (const c of this.macs) return c;
+    return null;
   }
 
   #handleActionRequest(connection, message) {
@@ -197,17 +259,30 @@ export class RelayState {
       this.#ack(connection, message.actionId, 'rejected', 'invalid_request', startedUs);
       return 'ok';
     }
-    if (!this.mac) {
+    if (this.macs.size === 0) {
       this.#ack(connection, message.actionId, 'mac_offline', 'mac_offline', startedUs);
       return 'ok';
     }
 
     const entry = this.#addRoute(this.pendingActions, message.actionId, connection, 'action');
-    if (!this.#send(this.mac, message)) {
+    // Snapshot expected desktop count for result aggregation.
+    entry.expectedMacs = this.macs.size;
+    entry.results = [];
+    entry.aggregateTimer = null;
+    entry.hasPosted = false;
+    let forwarded = 0;
+    let lastEmitFailed = false;
+    for (const macConn of this.macs) {
+      if (this.#send(macConn, message)) forwarded += 1;
+      else lastEmitFailed = true;
+    }
+    if (forwarded === 0) {
       this.#removeRoute(this.pendingActions, message.actionId, entry);
+      this.log('action_not_forwarded_to_any_mac', { actionId: message.actionId, totalMacs: this.macs.size });
       this.#ack(connection, message.actionId, 'rejected', 'invalid_request', startedUs);
       return 'ok';
     }
+    if (lastEmitFailed) this.log('action_partial_forward', { actionId: message.actionId, forwarded, totalMacs: this.macs.size });
     this.#ack(connection, message.actionId, 'forwarded', 'ok', startedUs);
     return 'ok';
   }
@@ -252,6 +327,74 @@ export class RelayState {
     return this.#send(entry.owner, message) ? 'ok' : 'ignored';
   }
 
+  #routeActionResult(actionId, message) {
+    const entry = this.pendingActions.get(actionId);
+    if (!entry) {
+      this.log('action_without_route', { id: actionId });
+      return 'ignored';
+    }
+    if (this.phonesByDevice.get(entry.deviceId) !== entry.owner
+        || !this.authorizePhone(entry.owner)) {
+      this.detachDevice(entry.deviceId, entry.owner);
+      this.log('action_for_replaced_phone', { id: actionId });
+      return 'ignored';
+    }
+    // Single-desktop fast path: preserve original at-most-once immediate delivery.
+    if ((entry.expectedMacs ?? 1) <= 1) {
+      const sent = this.#send(entry.owner, message) ? 'ok' : 'ignored';
+      this.#removeRoute(this.pendingActions, actionId, entry);
+      return sent;
+    }
+    // Multi-desktop aggregation: collect results for a short window and send
+    // one aggregated outcome that prefers posted over any rejection. This
+    // prevents the phone from seeing a spurious rejected when one desktop is
+    // not ready but the others posted.
+    entry.results = entry.results ?? [];
+    entry.results.push(message);
+    if (message.status === 'posted') entry.hasPosted = true;
+    // If we have all expected results, flush immediately.
+    if (entry.results.length >= (entry.expectedMacs ?? this.macs.size)) {
+      return this.#flushAggregatedAction(actionId, entry);
+    }
+    // First result in multi-desktop mode: start the 150ms aggregation window.
+    if (!entry.aggregateTimer) {
+      entry.aggregateTimer = this.schedule(() => {
+        if (this.pendingActions.get(actionId) !== entry) return;
+        this.#flushAggregatedAction(actionId, entry);
+      }, 150);
+      entry.aggregateTimer?.unref?.();
+    }
+    return 'ok';
+  }
+
+  #flushAggregatedAction(actionId, entry) {
+    if (entry.aggregateTimer) {
+      this.cancel(entry.aggregateTimer);
+      entry.aggregateTimer = null;
+    }
+    // Prefer posted; otherwise pick first result (most informative rejection).
+    let best = entry.results?.[0] ?? null;
+    if (entry.results) {
+      const posted = entry.results.find((r) => r.status === 'posted');
+      if (posted) best = posted;
+    }
+    if (!best) {
+      this.#removeRoute(this.pendingActions, actionId, entry);
+      return 'ignored';
+    }
+    if (this.phonesByDevice.get(entry.deviceId) !== entry.owner
+        || !this.authorizePhone(entry.owner)) {
+      this.#removeRoute(this.pendingActions, actionId, entry);
+      this.detachDevice(entry.deviceId, entry.owner);
+      this.log('action_for_replaced_phone', { id: actionId });
+      return 'ignored';
+    }
+    const sent = this.#send(entry.owner, best) ? 'ok' : 'ignored';
+    this.#removeRoute(this.pendingActions, actionId, entry);
+    this.log('action_aggregated', { actionId, totalMacs: entry.expectedMacs, received: entry.results.length, chose: best.status });
+    return sent;
+  }
+
   #addRoute(map, id, owner, routeType) {
     const entry = { owner, deviceId: this.#phoneDeviceId(owner), timer: null };
     entry.timer = this.schedule(() => {
@@ -267,6 +410,7 @@ export class RelayState {
     if (map.get(id) !== entry) return false;
     map.delete(id);
     this.cancel(entry.timer);
+    if (entry.aggregateTimer) this.cancel(entry.aggregateTimer);
     return true;
   }
 
@@ -317,7 +461,10 @@ export class RelayState {
 
   dispose() {
     for (const map of [this.pendingActions, this.pendingSync, this.pendingDiagnostics]) {
-      for (const entry of map.values()) this.cancel(entry.timer);
+      for (const entry of map.values()) {
+        this.cancel(entry.timer);
+        if (entry.aggregateTimer) this.cancel(entry.aggregateTimer);
+      }
       map.clear();
     }
   }
