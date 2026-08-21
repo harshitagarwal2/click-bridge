@@ -177,6 +177,43 @@ test('Mac replacement now allows coexistence — multiple desktops fan-out', () 
   }
 });
 
+test('Windows is limited to a single desktop — second windows replaces the first', () => {
+  const h = harness();
+  const mac1 = h.connection('mac-1');
+  const mac2 = h.connection('mac-2');
+  const win1 = h.connection('win-1');
+  const win2 = h.connection('win-2');
+  const phone = h.connection('phone');
+  h.state.replaceRole('mac', mac1);
+  h.state.replaceRole('mac', mac2);
+  h.state.replaceRole('mac', win1);
+  h.state.replaceRole('mac', win2);
+  h.state.replaceRole('phone', phone);
+  h.state.handleMacMessage(mac1, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready', platform: 'mac' });
+  h.state.handleMacMessage(mac2, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready', platform: 'mac' });
+  h.state.handleMacMessage(win1, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready', platform: 'windows' });
+  assert.equal(h.state.macs.size, 4);
+  assert.equal([...h.state.macStates.values()].filter((s) => s.platform === 'windows').length, 1);
+  h.state.handleMacMessage(win2, { type: 'mac.state', v: PROTOCOL_VERSION, remoteEnabled: true, permission: 'ready', platform: 'windows' });
+  // Second windows must evict the first
+  assert.equal(h.state.macs.size, 3);
+  assert.equal(h.state.macs.has(win1), false);
+  assert.equal(h.state.macs.has(win2), true);
+  assert.equal(h.events.filter((e) => e.connection === win1 && e.event.kind === 'close').length, 1);
+  const got = h.messages(phone, 'state').at(-1);
+  assert.equal(got.desktopCount, 3);
+  assert.equal(got.macCount, 2);
+  assert.equal(got.windowsCount, 1);
+  assert.equal(got.desktops.filter((d) => d.platform === 'windows').length, 1);
+  // Fan-out still reaches both macs and the surviving windows
+  const req = action(1_800_000_000_000);
+  h.state.handlePhoneMessage(phone, req);
+  assert.equal(h.messages(mac1, 'action.request').length, 1);
+  assert.equal(h.messages(mac2, 'action.request').length, 1);
+  assert.equal(h.messages(win2, 'action.request').length, 1);
+  assert.equal(h.messages(win1, 'action.request').length, 0);
+});
+
 test('Mac state propagation and disconnect reset are transport independent', () => {
   const h = harness();
   const phone = h.connection('phone');

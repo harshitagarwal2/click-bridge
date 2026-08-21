@@ -239,6 +239,22 @@ export class RelayState {
         };
         this.macStates.set(connection, next);
         if (this._legacyMac === connection) this._legacyMacState = next;
+        // Enforce single Windows invariant: only 1 windows desktop allowed, second replaces first.
+        // Macs are unlimited. This satisfies "N macs + 1 windows" requirement.
+        if (next.platform === 'windows') {
+          const windowsConns = [...this.macs].filter((c) => c !== connection && (this.macStates.get(c)?.platform === 'windows'));
+          for (const old of windowsConns) {
+            this.log('windows_replaced', { previousConnectionId: old.id, replacementConnectionId: connection.id });
+            this.#emit(old, { kind: 'close', code: 4000, reason: 'replaced' });
+            this.macs.delete(old);
+            this.macStates.delete(old);
+            if (this._legacyMac === old) {
+              this._legacyMac = null;
+              this._legacyMacState = { remoteEnabled: false, permission: 'unknown' };
+              for (const c of this.macs) { this._legacyMac = c; this._legacyMacState = this.macStates.get(c); break; }
+            }
+          }
+        }
         this.publishState();
         return 'ok';
       }
