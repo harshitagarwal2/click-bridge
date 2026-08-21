@@ -63,14 +63,40 @@ struct StrictWireDecoder: Sendable {
             _ = try nonNegativeInteger(message, "mouseDownPostCount")
             _ = try nonNegativeInteger(message, "mouseUpPostCount")
         case "mac.state":
-            try exact(message, ["type", "v", "remoteEnabled", "permission"])
+            let allowedMacState = Set(["type", "v", "remoteEnabled", "permission", "platform"])
+            let extrasMac = Set(message.keys).subtracting(allowedMacState).sorted()
+            guard extrasMac.isEmpty else { throw WireError.unknownKeys(extrasMac) }
+            guard Set(["type", "v", "remoteEnabled", "permission"]).isSubset(of: Set(message.keys)) else { throw WireError.invalidValue }
             _ = try boolean(message, "remoteEnabled")
             try permission(message)
+            if let platform = message["platform"] as? String {
+                try oneOf(platform, ["mac", "windows"])
+            } else if message["platform"] != nil { throw WireError.invalidValue }
         case "state":
-            try exact(message, ["type", "v", "macOnline", "remoteEnabled", "permission"])
+            let allowedState = Set(["type", "v", "macOnline", "remoteEnabled", "permission", "desktops", "desktopCount", "macCount", "windowsCount"])
+            let extrasState = Set(message.keys).subtracting(allowedState).sorted()
+            guard extrasState.isEmpty else { throw WireError.unknownKeys(extrasState) }
+            guard Set(["type", "v", "macOnline", "remoteEnabled", "permission"]).isSubset(of: Set(message.keys)) else { throw WireError.invalidValue }
             _ = try boolean(message, "macOnline")
             _ = try boolean(message, "remoteEnabled")
             try permission(message)
+            if let desktops = message["desktops"] as? [[String: Any]] {
+                for d in desktops {
+                    let allowedD = Set(["id", "platform", "remoteEnabled", "permission"])
+                    let extraD = Set(d.keys).subtracting(allowedD).sorted()
+                    guard extraD.isEmpty else { throw WireError.unknownKeys(extraD) }
+                    guard Set(["id", "platform", "remoteEnabled", "permission"]).isSubset(of: Set(d.keys)) else { throw WireError.invalidValue }
+                    guard let id = d["id"] as? String, !id.isEmpty, id.count <= 64 else { throw WireError.invalidValue }
+                    guard let plat = d["platform"] as? String else { throw WireError.invalidValue }
+                    try oneOf(plat, ["mac", "windows"])
+                    _ = try boolean(d, "remoteEnabled")
+                    guard let perm = d["permission"] as? String else { throw WireError.invalidValue }
+                    try oneOf(perm, ["ready", "required", "unknown"])
+                }
+            } else if message["desktops"] != nil { throw WireError.invalidValue }
+            if message["desktopCount"] != nil { _ = try nonNegativeInteger(message, "desktopCount") }
+            if message["macCount"] != nil { _ = try nonNegativeInteger(message, "macCount") }
+            if message["windowsCount"] != nil { _ = try nonNegativeInteger(message, "windowsCount") }
         case "action.request":
             try exact(message, ["type", "v", "actionId", "action", "issuedAtUnixMs", "expiresAtUnixMs"])
             try uuid(message, "actionId")
